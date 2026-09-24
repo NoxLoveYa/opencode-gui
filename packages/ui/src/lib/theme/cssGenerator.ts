@@ -196,6 +196,13 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
     vars.push(`  --surface-elevated-foreground: ${surface.elevatedForeground};`);
     vars.push(`  --surface-overlay: ${surface.overlay};`);
     vars.push(`  --surface-subtle: ${surface.subtle};`);
+    // Opaque snapshots for window-material translucency. design-system.css
+    // mixes these with the Backdrop opacity slider inside #root; overlays
+    // mounted in #root pin back to these solids via .oc-opaque-overlay.
+    vars.push(`  --surface-background-solid: ${surface.background};`);
+    vars.push(`  --surface-muted-solid: ${surface.muted};`);
+    vars.push(`  --surface-elevated-solid: ${surface.elevated};`);
+    vars.push(`  --surface-subtle-solid: ${surface.subtle};`);
     return vars;
   }
 
