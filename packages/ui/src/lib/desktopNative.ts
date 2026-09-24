@@ -92,6 +92,23 @@ export const setDesktopWindowTheme = async (
   }
 };
 
+/**
+ * Tell the shell which backdrop to paint behind the main window.
+ * Renderer CSS makes the app background translucent to match; both run on
+ * every change and once on boot. Non-Windows shells ignore it.
+ */
+export const setDesktopWindowMaterial = async (material: string): Promise<void> => {
+  if (!isDesktopShell()) {
+    return;
+  }
+
+  try {
+    await invokeDesktopCommand('desktop_set_window_material', { material });
+  } catch {
+    // ignore
+  }
+};
+
 export const getDesktopAppVersion = async (): Promise<string | null> => {
   if (!isDesktopShell()) {
     return null;

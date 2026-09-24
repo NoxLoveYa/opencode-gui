@@ -166,6 +166,7 @@ const VisualSectionContent: React.FC = () => {
     return <OpenChamberVisualSettings visibleSettings={[
         'theme',
         'windowControlsPosition',
+        'windowMaterial',
         'pwaInstallName',
         'pwaOrientation',
         'mobileKeyboardMode',

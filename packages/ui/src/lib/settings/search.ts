@@ -505,6 +505,22 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => ctx.isDesktop && (ctx.isWindows || !ctx.isMac),
   },
   {
+    id: 'appearance.window-material',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.desktopNetwork.field.windowMaterial',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.windowMaterialDescription',
+    keywords: ['desktop', 'window', 'material', 'mica', 'acrylic', 'transparency', 'translucent', 'backdrop', 'blur', 'fluent'],
+    isAvailable: (ctx) => ctx.isDesktop && ctx.isWindows,
+  },
+  {
+    id: 'appearance.window-material-opacity',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.desktopNetwork.field.windowMaterialOpacity',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.windowMaterialOpacityDescription',
+    keywords: ['desktop', 'window', 'material', 'opacity', 'transparency', 'translucent', 'backdrop'],
+    isAvailable: (ctx) => ctx.isDesktop && ctx.isWindows,
+  },
+  {
     id: 'sessions.desktop-mac-menu-bar',
     page: 'general',
     titleKey: 'settings.openchamber.desktopNetwork.field.macMenuBar',

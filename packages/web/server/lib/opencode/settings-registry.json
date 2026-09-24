@@ -575,6 +575,18 @@
         "desktop"
       ]
     },
+    "desktopWindowMaterial": {
+      "scope": "device",
+      "surfaces": [
+        "desktop"
+      ]
+    },
+    "desktopWindowMaterialOpacity": {
+      "scope": "device",
+      "surfaces": [
+        "desktop"
+      ]
+    },
     "inputBarOffset": {
       "scope": "device",
       "surfaces": [

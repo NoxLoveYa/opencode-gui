@@ -18,7 +18,7 @@
  *   only ever lived in the local store are in `LOCAL_DEVICE_KEYS`.
  */
 import type { ProjectEntry, TerminalShell } from '@/lib/api/types';
-import type { DesktopWindowControlsPosition, DesktopWindowControlsStyle } from '@/lib/desktop';
+import type { DesktopWindowControlsPosition, DesktopWindowControlsStyle, DesktopWindowMaterial } from '@/lib/desktop';
 import { getDirectoryShowHidden, setDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import { sanitizeStarterRefs } from '@/lib/draftStarters';
@@ -514,6 +514,18 @@ export const SETTINGS_REGISTRY = {
     surfaces: ['desktop'],
     parse: parseOneOf(['classic', 'traffic-lights']),
     ui: uiStore('desktopWindowControlsStyle', (v) => useUIStore.getState().setDesktopWindowControlsStyle(v)),
+  }),
+  desktopWindowMaterial: field<DesktopWindowMaterial>({
+    scope: 'device',
+    surfaces: ['desktop'],
+    parse: parseOneOf(['off', 'mica', 'acrylic']),
+    ui: uiStore('desktopWindowMaterial', (v) => useUIStore.getState().setDesktopWindowMaterial(v)),
+  }),
+  desktopWindowMaterialOpacity: field({
+    scope: 'device',
+    surfaces: ['desktop'],
+    parse: parseIntegerInRange(30, 100),
+    ui: uiStore('desktopWindowMaterialOpacity', (v) => useUIStore.getState().setDesktopWindowMaterialOpacity(v)),
   }),
   inputBarOffset: field({ scope: 'device', surfaces: ['mobile', 'web'], parse: parseFiniteNumber, ui: uiStore('inputBarOffset', (v) => useUIStore.getState().setInputBarOffset(v)) }),
 } as const;

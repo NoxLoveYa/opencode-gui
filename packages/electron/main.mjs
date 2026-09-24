@@ -4158,6 +4158,28 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
     }
 
+    // Main-window-only Mica/Acrylic backdrop (Windows). Deliberately absent
+    // from COMMANDS_SAFE_FOR_REMOTE: remote pages must not drive the local
+    // window chrome. The choice is persisted as a shell-owned boot hint so
+    // the next cold start paints it before the renderer loads.
+    case 'desktop_set_window_material': {
+      const raw = typeof args.material === 'string' ? args.material.trim().toLowerCase() : '';
+      const native = raw === 'mica' || raw === 'acrylic' ? raw : 'none';
+      const target = state.mainWindow && !state.mainWindow.isDestroyed() ? state.mainWindow : null;
+      if (process.platform === 'win32' && target && typeof target.setBackgroundMaterial === 'function') {
+        try {
+          target.setBackgroundMaterial(native);
+        } catch (error) {
+          log.warn(`[window] failed to set background material: ${error?.message || error}`);
+        }
+      }
+      const stored = native === 'none' ? 'off' : native;
+      if (readSettingsRoot().desktopWindowMaterial !== stored) {
+        void mutateSettingsRoot((root) => ({ ...root, desktopWindowMaterial: stored }));
+      }
+      return { material: stored };
+    }
+
     case 'desktop_check_for_updates': {
       assertUpdaterCapability({ packaged: app.isPackaged });
       const currentVersion = APP_VERSION;
