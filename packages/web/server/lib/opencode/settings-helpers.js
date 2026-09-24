@@ -272,7 +272,7 @@ export const createSettingsHelpers = (dependencies) => {
       }
     }
     if (typeof candidate.desktopWindowMaterialOpacity === 'number' && Number.isFinite(candidate.desktopWindowMaterialOpacity)) {
-      result.desktopWindowMaterialOpacity = Math.max(30, Math.min(100, Math.round(candidate.desktopWindowMaterialOpacity)));
+      result.desktopWindowMaterialOpacity = Math.max(5, Math.min(95, Math.round(candidate.desktopWindowMaterialOpacity)));
     }
     if (candidate.permissionAutoAccept && typeof candidate.permissionAutoAccept === 'object' && !Array.isArray(candidate.permissionAutoAccept)) {
       const sessions = {};

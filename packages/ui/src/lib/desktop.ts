@@ -34,10 +34,10 @@ export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 /** Native backdrop for the main desktop window (Windows 11 Mica/Acrylic). */
 export type DesktopWindowMaterial = 'off' | 'mica' | 'acrylic';
 export const DEFAULT_DESKTOP_WINDOW_MATERIAL: DesktopWindowMaterial = 'off';
-/** Translucency of the material backdrop, 30 (more see-through) to 100 (solid). */
+/** Translucency of the material backdrop, 5 (more see-through) to 95 (nearly solid). */
 export const DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY = 75;
-export const MIN_DESKTOP_WINDOW_MATERIAL_OPACITY = 30;
-export const MAX_DESKTOP_WINDOW_MATERIAL_OPACITY = 100;
+export const MIN_DESKTOP_WINDOW_MATERIAL_OPACITY = 5;
+export const MAX_DESKTOP_WINDOW_MATERIAL_OPACITY = 95;
 
 // The settings document is defined once, in the registry, and re-exported here
 // so the many existing importers keep their path.
