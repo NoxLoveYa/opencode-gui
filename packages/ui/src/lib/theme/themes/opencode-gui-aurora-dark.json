@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-aurora-dark",
+    "name": "Aurora GUI",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Aurora theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "aurora"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#6ec9a0"
+    },
+    "surface": {
+      "background": "#0C1411",
+      "foreground": "#d6e8df",
+      "muted": "#14201C",
+      "mutedForeground": "#8fb0a0",
+      "elevated": "#172622"
+    },
+    "interactive": {
+      "border": "rgba(214, 232, 223, 0.09)",
+      "borderHover": "rgba(214, 232, 223, 0.16)"
+    },
+    "status": {
+      "error": "#e07a9a",
+      "warning": "#e8a86d",
+      "success": "#d4b57f",
+      "info": "#8fc4e0"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#5e7a6e",
+        "keyword": "#6ec9a0",
+        "string": "#d4b57f",
+        "number": "#e8a86d",
+        "function": "#96e0bc",
+        "variable": "#d6e8df",
+        "type": "#8fc4e0",
+        "operator": "#6fa08a"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-vaporwave-dark",
+    "name": "Vaporwave GUI",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Vaporwave theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "vaporwave"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#ff7edb"
+    },
+    "surface": {
+      "background": "#0E0918",
+      "foreground": "#e4dcf2",
+      "muted": "#1A1128",
+      "mutedForeground": "#ab9cc4",
+      "elevated": "#231936"
+    },
+    "interactive": {
+      "border": "rgba(228, 220, 242, 0.1)",
+      "borderHover": "rgba(228, 220, 242, 0.18)"
+    },
+    "status": {
+      "error": "#ff6e6e",
+      "warning": "#ffe66d",
+      "success": "#ffaf7b",
+      "info": "#9d8cff"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#7c6e99",
+        "keyword": "#57d7fa",
+        "string": "#ffaf7b",
+        "number": "#ffe66d",
+        "function": "#ffa8eb",
+        "variable": "#e4dcf2",
+        "type": "#9d8cff",
+        "operator": "#a58fd0"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

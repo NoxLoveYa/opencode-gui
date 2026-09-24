@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-nebula-dark",
+    "name": "Nebula GUI",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Nebula theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "nebula"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#a78bfa"
+    },
+    "surface": {
+      "background": "#120E1C",
+      "foreground": "#dcd6ee",
+      "muted": "#1F1A2D",
+      "mutedForeground": "#a89fc4",
+      "elevated": "#251E38"
+    },
+    "interactive": {
+      "border": "rgba(220, 214, 238, 0.1)",
+      "borderHover": "rgba(220, 214, 238, 0.18)"
+    },
+    "status": {
+      "error": "#e08f8f",
+      "warning": "#d4b57f",
+      "success": "#9fce8f",
+      "info": "#7fc4dd"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#776e94",
+        "keyword": "#a78bfa",
+        "string": "#9fce8f",
+        "number": "#d4b57f",
+        "function": "#c4b5fd",
+        "variable": "#dcd6ee",
+        "type": "#7fc4dd",
+        "operator": "#948ac0"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

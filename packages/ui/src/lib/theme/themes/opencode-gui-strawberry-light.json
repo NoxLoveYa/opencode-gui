@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-strawberry-light",
+    "name": "Strawberry GUI",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Strawberry theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "strawberry"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#c14e67"
+    },
+    "surface": {
+      "background": "#FCF3F6",
+      "foreground": "#4f3a40",
+      "muted": "#F0E6E9",
+      "mutedForeground": "#7f626a",
+      "elevated": "#F8EEF1"
+    },
+    "interactive": {
+      "border": "rgba(105, 50, 64, 0.14)",
+      "borderHover": "rgba(105, 50, 64, 0.22)"
+    },
+    "status": {
+      "error": "#bf3a3a",
+      "warning": "#8a5c1d",
+      "success": "#4f6a2a",
+      "info": "#33608a"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#8f6672",
+        "keyword": "#a83b53",
+        "string": "#4f6a2a",
+        "number": "#8a5c1d",
+        "function": "#a83b53",
+        "variable": "#4f3a40",
+        "type": "#33608a",
+        "operator": "#7c4557"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

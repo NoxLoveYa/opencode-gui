@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-abyss-dark",
+    "name": "Abyss GUI",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Abyss theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "abyss"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#5ba8f5"
+    },
+    "surface": {
+      "background": "#060D12",
+      "foreground": "#cfe0e8",
+      "muted": "#0C161E",
+      "mutedForeground": "#93aab8",
+      "elevated": "#0F1C27"
+    },
+    "interactive": {
+      "border": "rgba(207, 224, 232, 0.09)",
+      "borderHover": "rgba(207, 224, 232, 0.16)"
+    },
+    "status": {
+      "error": "#e08f8f",
+      "warning": "#d4b57f",
+      "success": "#9fce8f",
+      "info": "#7fd4c4"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#5b7080",
+        "keyword": "#5ba8f5",
+        "string": "#9fce8f",
+        "number": "#d4b57f",
+        "function": "#8ac2fa",
+        "variable": "#cfe0e8",
+        "type": "#7fd4c4",
+        "operator": "#6f93b0"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

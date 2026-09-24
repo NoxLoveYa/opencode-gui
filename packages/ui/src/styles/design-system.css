@@ -194,6 +194,47 @@
     }
   }
 
+  /* Window material: main-view panels follow the Backdrop opacity slider.
+     Flat layout surfaces go translucent; text, borders, status, code,
+     buttons and inputs keep authored colors. Overlay primitives portal to
+     document.body (outside #root) so they keep opaque tokens; the few
+     overlays mounted inside #root are pinned back to solid below. */
+  :root[data-window-material='mica'] #root,
+  :root[data-window-material='acrylic'] #root {
+    --background: color-mix(in srgb, var(--surface-background-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --surface-background: color-mix(in srgb, var(--surface-background-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --muted: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --secondary: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --surface-muted: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --card: color-mix(in srgb, var(--surface-elevated-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --surface-elevated: color-mix(in srgb, var(--surface-elevated-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --accent: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --surface-subtle: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --sidebar-base: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --sidebar-accent-base: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+  }
+
+  /* Non-portaled overlays mounted inside #root stay opaque. */
+  :root[data-window-material='mica'] #root .toaster,
+  :root[data-window-material='acrylic'] #root .toaster {
+    --surface-elevated: var(--surface-elevated-solid) !important;
+  }
+
+  :root[data-window-material='mica'] #root .oc-opaque-overlay,
+  :root[data-window-material='acrylic'] #root .oc-opaque-overlay {
+    --background: var(--surface-background-solid) !important;
+    --surface-background: var(--surface-background-solid) !important;
+    --muted: var(--surface-muted-solid) !important;
+    --secondary: var(--surface-muted-solid) !important;
+    --surface-muted: var(--surface-muted-solid) !important;
+    --card: var(--surface-elevated-solid) !important;
+    --surface-elevated: var(--surface-elevated-solid) !important;
+    --accent: var(--surface-subtle-solid) !important;
+    --surface-subtle: var(--surface-subtle-solid) !important;
+    --sidebar-base: var(--surface-muted-solid) !important;
+    --sidebar-accent-base: var(--surface-subtle-solid) !important;
+  }
+
   .font-sans {
     font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif) !important;
   }

@@ -21,6 +21,19 @@ const CLAUDE_CODE_PROVIDER = 'claude-code';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+// OpenCode refuses its free tier on background generation: the model lists as
+// enabled, but `/api/experimental/generate` answers with a
+// `ServiceUnavailableError` naming the free-tier restriction. The UI falls
+// back to the session transport on 404 only, so map that refusal here.
+const isFreeTierRefusal = (error) => (
+  /free tier can only be used/i.test(String(error?.message ?? ''))
+);
+
+const freeTierError = ({ providerID, modelID, cause }) => Object.assign(
+  new Error(`No small model available — OpenCode's free tier can only be used from within OpenCode (${providerID}/${modelID})`),
+  { statusCode: 404, code: 'small-model-unavailable', providerID, modelID, cause },
+);
+
 const OPENCHAMBER_SETTINGS_FILE = path.join(
   process.env.OPENCHAMBER_DATA_DIR
     ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
@@ -315,6 +328,9 @@ export async function generateSmallModelText({ prompt, system, maxOutputTokens, 
     try {
       return await send();
     } catch (error) {
+      if (isFreeTierRefusal(error)) {
+        throw freeTierError({ providerID: resolved.providerID, modelID: resolved.modelID, cause: error });
+      }
       if (error?._tag !== 'InvalidRequestError' || error.message !== unavailableMessage) throw error;
       // OpenCode 2 can resolve a cold catalog before its models arrive.
       // This rejection precedes provider dispatch; other failures must not retry.

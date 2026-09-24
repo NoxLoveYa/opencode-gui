@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-tidal-dark",
+    "name": "Tidal GUI",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Tidal theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "tidal"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#2ec4b6"
+    },
+    "surface": {
+      "background": "#0A1616",
+      "foreground": "#cfe8e6",
+      "muted": "#122424",
+      "mutedForeground": "#8fb8b4",
+      "elevated": "#172C2C"
+    },
+    "interactive": {
+      "border": "rgba(207, 232, 230, 0.09)",
+      "borderHover": "rgba(207, 232, 230, 0.16)"
+    },
+    "status": {
+      "error": "#e07a7a",
+      "warning": "#e8a86d",
+      "success": "#d4b57f",
+      "info": "#7fd4c4"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#5f8a86",
+        "keyword": "#2ec4b6",
+        "string": "#d4b57f",
+        "number": "#e8a86d",
+        "function": "#7de8de",
+        "variable": "#cfe8e6",
+        "type": "#7fd4c4",
+        "operator": "#6fb0a8"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-latte-light",
+    "name": "Latte GUI",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Latte theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "latte"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#a37b45"
+    },
+    "surface": {
+      "background": "#FAF5ED",
+      "foreground": "#54493c",
+      "muted": "#EEE9E1",
+      "mutedForeground": "#7d7161",
+      "elevated": "#F6F1E9"
+    },
+    "interactive": {
+      "border": "rgba(92, 74, 52, 0.15)",
+      "borderHover": "rgba(92, 74, 52, 0.23)"
+    },
+    "status": {
+      "error": "#bd5f4e",
+      "warning": "#99452f",
+      "success": "#55662a",
+      "info": "#4a607f"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#86755c",
+        "keyword": "#8a6636",
+        "string": "#55662a",
+        "number": "#99452f",
+        "function": "#8a6636",
+        "variable": "#54493c",
+        "type": "#4a607f",
+        "operator": "#6e5a38"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}
