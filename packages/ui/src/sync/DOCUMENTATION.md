@@ -368,6 +368,8 @@ Reconciliation walks the running turns and asks the snapshot whether it covers e
 
 **Only the stamp expires a persisted start.** A snapshot that covers a session without reporting it busy is not proof the turn ended: bootstrap fetches status and sessions in parallel and directory scopes resolve at different times, so a snapshot legitimately arrives before it can see a running session. Treating one of those as a settle deleted the start moments before the real busy snapshot arrived, which reset every counter to zero on reload. Settles therefore act only on sessions that already have a live start in this page session.
 
+Forks (`forked-session.ts`): OpenCode 2.x publishes only `session.forked` for a fork, with ids and no record, and no `session.created` follows. `handleEvent` reads the fork's record with `session.get` and replays it as a `session.created`, so other clients show the fork without a list reload. A session the global cache already holds (the forking client inserted it from the fork response) is skipped; a failed read or a runtime switch applies nothing.
+
 Child-session discovery (`child-session-discovery.ts`) adds only children the global sessions cache does not list as archived: the listing asks for active children, but a response that left the server before an archive completed still carries them without `time.archived`, and re-adding them would show the just-archived subagents as active orphans until the next refresh.
 
 The active-session watchdog in `sync-context.tsx` sends status recovery through the active-session priority of `runBackgroundNetworkTask`. Its child-session discovery pages use `runSessionListNetworkTask`, alongside global and bootstrap session pages. Both lanes live in `@/lib/background-network`. Git, skills, and directory initialization use the background lane. These limits reserve browser connections for interactive message requests rather than letting startup fan-out occupy the whole pool.
@@ -442,7 +444,11 @@ error for the open session under its last message while that turn is the
 latest one (`SessionErrorNotice`), and also names a user message that an idle
 session has left unanswered for five seconds, since an accepted send that
 produced neither a message nor an error would otherwise look like nothing
-happened. Both buffers — session errors and rejected sends — appear in the
+happened. Before that no-reply notice shows, the session tail is re-read
+from the server (the live stream may have dropped the reply); the notice
+appears only if that read settles with the prompt still last, or fails. Two
+more reads, at 10 and 30 seconds, keep running under the visible notice so a
+late reply still replaces it. Both buffers — session errors and rejected sends — appear in the
 status report (`buildOpenCodeStatusReport`, Ctrl/Cmd+Shift+L or
 `__opencodeDebug.statusReport()`) together with the managed OpenCode
 process's last error and stderr tail and the expected log file locations.

@@ -440,5 +440,29 @@ describe('walkSkillMdFiles', () => {
 
     expect(foundRelative()).toEqual(['real-skill/SKILL.md']);
   });
+
+  it('follows a link nested below the top level of the scanned root', () => {
+    const outside = `${FIXTURE_DIR}-outside`;
+    fs.rmSync(outside, { recursive: true, force: true });
+    fs.mkdirSync(path.join(outside, 'deep-skill'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'deep-skill', 'SKILL.md'), STANDARD_MD);
+    fs.mkdirSync(path.join(FIXTURE_DIR, 'group'), { recursive: true });
+    try {
+      linkDirectory(path.join(outside, 'deep-skill'), path.join('group', 'linked'));
+      expect(foundRelative()).toEqual(['group/linked/SKILL.md']);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('ends on a nested link loop between two directories', () => {
+    fs.mkdirSync(path.join(FIXTURE_DIR, 'a'), { recursive: true });
+    fs.mkdirSync(path.join(FIXTURE_DIR, 'b'), { recursive: true });
+    writeSkill('a');
+    linkDirectory(path.join(FIXTURE_DIR, 'b'), path.join('a', 'to-b'));
+    linkDirectory(path.join(FIXTURE_DIR, 'a'), path.join('b', 'to-a'));
+
+    expect(foundRelative()).toEqual(['a/SKILL.md', 'b/to-a/SKILL.md']);
+  });
 });
 

@@ -53,6 +53,10 @@ describe('live split while a fence stays open', () => {
     expectSameAsFreshAtEveryStep(head, 'ok\n[ref]: https://example.com\nmore\n');
   });
 
+  test('a message that opens with a fence holding a reference definition matches the lexer path', () => {
+    expectSameAsFreshAtEveryStep('```ts\n[ref]: https://example.com\n', `${'x\n'.repeat(305)}y`);
+  });
+
   test('text that is not an extension of a remembered split is lexed', () => {
     resetLiveSplitMemoForTests();
     __streamBlocksForTests(`${head}let a = 1\n`, true);

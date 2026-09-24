@@ -289,4 +289,48 @@ describe('skill-routes directory soft fallback', () => {
       stubServer.close();
     }
   });
+  it('flags the list as partial when OpenCode skill list fails, and not when it succeeds', async () => {
+    projectRoot = createTempProject();
+    fs.mkdirSync(path.join(projectRoot, '.agents', 'skills', 'disk-skill'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, '.agents', 'skills', 'disk-skill', 'SKILL.md'),
+      '---\nname: disk-skill\ndescription: On disk\n---\nBody\n',
+    );
+
+    let failing = true;
+    const stub = express();
+    stub.get('/api/skill', (_req, res) => {
+      if (failing) {
+        res.status(500).json({ error: 'boom' });
+        return;
+      }
+      res.json({ data: [] });
+    });
+    const stubServer = await new Promise((resolve) => {
+      const server = stub.listen(0, () => resolve(server));
+    });
+    const stubPort = stubServer.address().port;
+
+    try {
+      appHandle = startSkillsApp({
+        projectRoot,
+        overrides: {
+          buildOpenCodeUrl: () => `http://127.0.0.1:${stubPort}/`,
+          getOpenCodePort: () => stubPort,
+        },
+      });
+      const url = `${appHandle.baseUrl}/api/config/skills?directory=${encodeURIComponent(projectRoot)}`;
+
+      const failed = await (await fetch(url)).json();
+      expect(failed.openCodeSkillsUnavailable).toBe(true);
+      expect(failed.skills.map((skill) => skill.name)).toContain('disk-skill');
+
+      failing = false;
+      const complete = await (await fetch(url)).json();
+      expect(complete.openCodeSkillsUnavailable).toBeUndefined();
+      expect(complete.skills.map((skill) => skill.name)).toContain('disk-skill');
+    } finally {
+      stubServer.close();
+    }
+  });
 });

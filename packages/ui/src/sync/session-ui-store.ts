@@ -227,7 +227,7 @@ export async function routeMessage(params: {
     // them as prompt attachments rather than commands.
     let matchedCommand = selectCommandsForDirectory(useCommandsStore.getState(), requestDirectory)
       .find((c) => c.name === cmdName)
-    const matchedSkill = selectSkillsForDirectory(useSkillsStore.getState(), requestDirectory)
+    let matchedSkill = selectSkillsForDirectory(useSkillsStore.getState(), requestDirectory)
       .find((s) => s.name === cmdName)
 
     // The command list is no longer pre-warmed at bootstrap (listing it
@@ -236,9 +236,23 @@ export async function routeMessage(params: {
     // route: a successful no-match is a plain prompt, while a failed lookup is
     // a send failure, because treating it as a prompt would silently send the
     // raw "/name" text instead of running the command.
+    // The skills list is loaded per directory on demand too, so a skill of a
+    // directory the store has not loaded yet gets the same live lookup. A
+    // failed skills load is a send failure for the same reason. Commands keep
+    // precedence when both lookups match.
     if (!matchedCommand && !matchedSkill) {
-      matchedCommand = (await opencodeClient.listCommands(requestDirectory))
-        .find((c) => c.name === cmdName)
+      const [liveCommands, skillsLoaded] = await Promise.all([
+        opencodeClient.listCommands(requestDirectory),
+        useSkillsStore.getState().loadSkills(requestDirectory),
+      ])
+      matchedCommand = liveCommands.find((c) => c.name === cmdName)
+      if (!matchedCommand) {
+        if (!skillsLoaded) {
+          throw new Error(`Could not load skills to resolve /${cmdName}`)
+        }
+        matchedSkill = selectSkillsForDirectory(useSkillsStore.getState(), requestDirectory)
+          .find((s) => s.name === cmdName)
+      }
     }
 
     if (matchedCommand) {

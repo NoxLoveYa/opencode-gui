@@ -957,6 +957,8 @@ describe('routeMessage skill invocation', () => {
   let originalSendCommand;
   let originalSendMessage;
   let originalListCommands;
+  let originalLoadSkills;
+  let liveSkillsLoad = async () => true;
 
   beforeEach(() => {
     sendCommandCalls.length = 0;
@@ -990,6 +992,9 @@ describe('routeMessage skill invocation', () => {
 
     originalSendCommand = opencodeClient.sendCommand;
     originalSendMessage = opencodeClient.sendMessage;
+    originalLoadSkills = useSkillsStore.getState().loadSkills;
+    liveSkillsLoad = async () => true;
+    useSkillsStore.setState({ loadSkills: (directory) => liveSkillsLoad(directory) });
     originalListCommands = opencodeClient.listCommands;
     opencodeClient.listCommands = async (directory) => {
       liveLookupCalls.push(directory);
@@ -1009,8 +1014,64 @@ describe('routeMessage skill invocation', () => {
     opencodeClient.sendCommand = originalSendCommand;
     opencodeClient.sendMessage = originalSendMessage;
     opencodeClient.listCommands = originalListCommands;
-    useSkillsStore.setState({ skills: [], skillsByDirectory: {} });
+    useSkillsStore.setState({ skills: [], skillsByDirectory: {}, loadSkills: originalLoadSkills });
     useCommandsStore.setState({ commands: [], commandsByDirectory: {} });
+  });
+
+  test('loads skills for an unloaded directory and attaches a skill found there', async () => {
+    liveSkillsLoad = async (directory) => {
+      useSkillsStore.setState({
+        skillsByDirectory: { [directory]: [{ name: 'late-skill', path: '/skills/late-skill/SKILL.md', scope: 'project', source: 'opencode' }] },
+      });
+      return true;
+    };
+
+    await routeMessage({
+      sessionId: 'session-skill',
+      directory: '/skills/project',
+      content: '/late-skill go',
+      providerID: 'provider-a',
+      modelID: 'model-a',
+    });
+
+    expect(liveLookupCalls).toEqual(['/skills/project']);
+    expect(sendCommandCalls).toHaveLength(0);
+    expect(sendMessageCalls).toHaveLength(1);
+    expect(sendMessageCalls[0].skills.names).toEqual(['late-skill']);
+  });
+
+  test('keeps command precedence when the live lookups find both', async () => {
+    liveLookup = async () => [{ name: 'both' }];
+    liveSkillsLoad = async (directory) => {
+      useSkillsStore.setState({
+        skillsByDirectory: { [directory]: [{ name: 'both', path: '/skills/both/SKILL.md', scope: 'project', source: 'opencode' }] },
+      });
+      return true;
+    };
+
+    await routeMessage({
+      sessionId: 'session-skill',
+      directory: '/skills/project',
+      content: '/both',
+      providerID: 'provider-a',
+      modelID: 'model-a',
+    });
+
+    expect(sendCommandCalls).toHaveLength(1);
+    expect(sendMessageCalls).toHaveLength(0);
+  });
+
+  test('fails the send instead of sending bare text when the skills load fails', async () => {
+    liveSkillsLoad = async () => false;
+
+    await expect(routeMessage({
+      sessionId: 'session-skill',
+      directory: '/skills/project',
+      content: '/unknown-thing',
+      providerID: 'provider-a',
+      modelID: 'model-a',
+    })).rejects.toThrow();
+    expect(sendMessageCalls).toHaveLength(0);
   });
 
   test('attaches a user-installed skill without caller-provided mentions', async () => {

@@ -12,11 +12,10 @@ import type { LinearIssueListAssignee, LinearIssueListPriority, LinearIssueListS
 import type { ProjectRef } from '@/lib/projectContextApi';
 import { directoryMayHaveActiveProjectAction, useTerminalStore } from '@/stores/useTerminalStore';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
-import { isWindowsArm64 } from '@/lib/platform';
 import { DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY, isVSCodeRuntime, normalizeDesktopWindowMaterial, normalizeDesktopWindowMaterialOpacity, type DesktopWindowMaterial } from '@/lib/desktop';
 import { isContextPanelMode, type ContextPanelMode } from '@/lib/surfaces/modes';
 import { getRuntimeKey, isTransientRuntimeKey } from '@/lib/runtime-switch';
-import { sanitizeWorkStatusSectionOrder, type WorkStatusSectionId } from '@/components/chat/work-status/sections';
+import { sanitizeWorkStatusSectionOrder, type WorkStatusPanelSectionId } from '@/components/chat/work-status/sections';
 
 export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch' | 'commit' | 'pr';
 export type { ContextPanelMode };
@@ -834,7 +833,7 @@ interface UIStore {
    * Persisted to server settings, not just this browser.
    */
   workStatusHiddenSections: string[];
-  workStatusSectionOrder: WorkStatusSectionId[];
+  workStatusSectionOrder: WorkStatusPanelSectionId[];
   /** Explicitly chosen hidden-section state. False keeps the default opt-in seed. */
   workStatusHiddenSectionsExplicit: boolean;
   isSessionSwitcherOpen: boolean;
@@ -921,6 +920,9 @@ interface UIStore {
   diffLayoutPreference: 'dynamic' | 'inline' | 'side-by-side';
   diffFileLayout: Record<string, 'inline' | 'side-by-side'>;
   diffWrapLines: boolean;
+  diffFileListMode: 'flat' | 'tree';
+  /** Width of the diff view's file tree column, in pixels. */
+  diffFileTreeWidth: number;
   /** Width of the walkthrough table of contents, in pixels. */
   walkthroughTocWidth: number;
   gitChangesViewMode: 'flat' | 'tree';
@@ -979,6 +981,7 @@ interface UIStore {
   /** Who answers the agent's browser actions: `builtin` (the in-app view) or an extension id. */
   browserProvider: string;
   agentMemoryToolEnabled: boolean;
+  agentNotifyToolEnabled: boolean;
   /**
    * Whether this build has agent memory at all. Server-owned and not
    * persisted: an unreleased feature must not come back from a stale cache.
@@ -1043,6 +1046,8 @@ interface UIStore {
   openContextPreview: (directory: string, url: string) => void;
   openContextBrowser: (directory: string, url?: string, options?: { reveal?: boolean }) => void;
   openNewContextBrowserTab: (directory: string) => void;
+  /** A new background browser tab for an agent at `url`; returns its tab id, or null where there is no browser. */
+  openAgentBrowserTab: (directory: string, url: string) => string | null;
   setContextPanelTabTargetPath: (directory: string, tabID: string, targetPath: string) => void;
   setActiveContextPanelTab: (directory: string, tabID: string) => void;
   reorderContextPanelTabs: (directory: string, activeTabID: string, overTabID: string) => void;
@@ -1153,6 +1158,8 @@ interface UIStore {
   setDiffLayoutPreference: (mode: 'dynamic' | 'inline' | 'side-by-side') => void;
   setDiffFileLayout: (filePath: string, mode: 'inline' | 'side-by-side') => void;
   setDiffWrapLines: (wrap: boolean) => void;
+  setDiffFileListMode: (mode: 'flat' | 'tree') => void;
+  setDiffFileTreeWidth: (width: number) => void;
   setWalkthroughTocWidth: (width: number) => void;
   setGitChangesViewMode: (mode: 'flat' | 'tree') => void;
   setToolJsonViewMode: (mode: 'summary' | 'formatted' | 'raw') => void;
@@ -1192,6 +1199,7 @@ interface UIStore {
   setAgentWebToolEnabled: (value: boolean) => void;
   setBrowserProvider: (value: string) => void;
   setAgentMemoryToolEnabled: (value: boolean) => void;
+  setAgentNotifyToolEnabled: (value: boolean) => void;
   setAgentMemoryFeatureAvailable: (value: boolean) => void;
   setRoutingFeatureAvailable: (value: boolean) => void;
   markAgentMemoryViewed: (key: string, viewedAt: number) => void;
@@ -1332,6 +1340,8 @@ export const useUIStore = create<UIStore>()(
         diffLayoutPreference: 'inline',
         diffFileLayout: {},
         diffWrapLines: false,
+        diffFileListMode: 'flat',
+        diffFileTreeWidth: 240,
         walkthroughTocWidth: 224,
         gitChangesViewMode: 'flat',
         toolJsonViewMode: 'summary',
@@ -1370,11 +1380,12 @@ export const useUIStore = create<UIStore>()(
         showTerminalQuickKeysOnDesktop: false,
         sessionTabsEnabled: false,
         persistChatDraft: true,
-        showOpenCodeUpdateNotifications: !isWindowsArm64(),
+        showOpenCodeUpdateNotifications: true,
         agentControlToolEnabled: true,
         agentWebToolEnabled: true,
         browserProvider: 'builtin',
         agentMemoryToolEnabled: false,
+        agentNotifyToolEnabled: false,
         agentMemoryFeatureAvailable: false,
         routingFeatureAvailable: false,
         agentMemoryViewedAt: {},
@@ -1617,6 +1628,22 @@ export const useUIStore = create<UIStore>()(
             dedupeKey: normalizedUrl,
             label: null,
           });
+        },
+        // An agent's page gets its own tab in the background: never the tab
+        // the user is on, never an existing tab that happens to show the same
+        // address, and the panel stays as the user left it.
+        openAgentBrowserTab: (directory, url) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          if (!normalizedDirectory || isVSCodeRuntime()) return null;
+          browserTabSequence += 1;
+          const dedupeKey = `browser:agent:${Date.now()}-${browserTabSequence}`;
+          get().openContextPanelTab(normalizedDirectory, {
+            mode: 'browser',
+            targetPath: url.trim(),
+            dedupeKey,
+            label: null,
+          }, { reveal: false });
+          return buildContextPanelTabID('browser', dedupeKey);
         },
         // Always a new tab, never the existing one: the whole point of asking
         // for one is to keep what is already open.
@@ -2327,6 +2354,14 @@ export const useUIStore = create<UIStore>()(
           }));
         },
 
+        setDiffFileListMode: (mode) => {
+          set({ diffFileListMode: mode });
+        },
+
+        setDiffFileTreeWidth: (width) => {
+          set({ diffFileTreeWidth: Math.round(width) });
+        },
+
         setDiffWrapLines: (wrap) => {
           set({ diffWrapLines: wrap });
         },
@@ -2724,6 +2759,9 @@ export const useUIStore = create<UIStore>()(
         },
         setAgentMemoryToolEnabled: (value) => {
           set({ agentMemoryToolEnabled: value });
+        },
+        setAgentNotifyToolEnabled: (value) => {
+          set({ agentNotifyToolEnabled: value });
         },
         setAgentMemoryFeatureAvailable: (value) => {
           set({ agentMemoryFeatureAvailable: value });
@@ -3184,6 +3222,8 @@ export const useUIStore = create<UIStore>()(
           recentEfforts: state.recentEfforts,
           diffLayoutPreference: state.diffLayoutPreference,
           diffWrapLines: state.diffWrapLines,
+          diffFileListMode: state.diffFileListMode,
+          diffFileTreeWidth: state.diffFileTreeWidth,
           walkthroughTocWidth: state.walkthroughTocWidth,
           gitChangesViewMode: state.gitChangesViewMode,
           toolJsonViewMode: state.toolJsonViewMode,
@@ -3212,6 +3252,7 @@ export const useUIStore = create<UIStore>()(
           agentWebToolEnabled: state.agentWebToolEnabled,
           browserProvider: state.browserProvider,
           agentMemoryToolEnabled: state.agentMemoryToolEnabled,
+          agentNotifyToolEnabled: state.agentNotifyToolEnabled,
           agentMemoryViewedAt: state.agentMemoryViewedAt,
           projectContextSidebarWidth: state.projectContextSidebarWidth,
           inputSpellcheckEnabled: state.inputSpellcheckEnabled,
