@@ -714,6 +714,10 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.cornerRadius === 'number' && Number.isFinite(candidate.cornerRadius)) {
       result.cornerRadius = Math.max(0, Math.min(32, Math.round(candidate.cornerRadius)));
     }
+    if (typeof candidate.widgetCorners === 'string') {
+      const corners = candidate.widgetCorners.trim();
+      if (corners === 'round' || corners === 'square') result.widgetCorners = corners;
+    }
     if (typeof candidate.inputBarOffset === 'number' && Number.isFinite(candidate.inputBarOffset)) {
       result.inputBarOffset = Math.max(0, Math.min(100, Math.round(candidate.inputBarOffset)));
     }

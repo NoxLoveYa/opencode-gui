@@ -7,6 +7,7 @@ import { ThemeSystemProvider } from '@/contexts/ThemeSystemContext';
 import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import type { RuntimeAPIs } from '@/lib/api/types';
 import { I18nProvider } from '@/lib/i18n';
+import { useUIStore } from '@/stores/useUIStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 
 import { OpenChamberVisualSettings } from './OpenChamberVisualSettings';
@@ -67,5 +68,36 @@ describe('OpenChamberVisualSettings', () => {
     ));
 
     expect(host.querySelector('[data-settings-item="appearance.session-activity"]')).not.toBeNull();
+  });
+
+  test('renders widget corners and toggles the square override', async () => {
+    const initial = useUIStore.getState().widgetCorners;
+    try {
+      await act(async () => root.render(
+        <RuntimeAPIContext.Provider value={runtimeAPIs}>
+          <ThemeSystemProvider>
+            <I18nProvider>
+              <OpenChamberVisualSettings visibleSettings={['widgetCorners']} />
+            </I18nProvider>
+          </ThemeSystemProvider>
+        </RuntimeAPIContext.Provider>,
+      ));
+
+      expect(host.querySelector('[data-settings-item="appearance.widget-corners"]')).not.toBeNull();
+      const chips = Array.from(host.querySelectorAll('[aria-pressed]'), (el) => el.textContent);
+      expect(chips).toContain('Round');
+      expect(chips).toContain('Squared');
+      await act(async () => {
+        useUIStore.getState().setWidgetCorners('square');
+      });
+      expect(document.documentElement.getAttribute('data-widget-corners')).toBe('square');
+      await act(async () => {
+        useUIStore.getState().setWidgetCorners('round');
+      });
+      expect(document.documentElement.hasAttribute('data-widget-corners')).toBe(false);
+    } finally {
+      useUIStore.setState({ widgetCorners: initial });
+      useUIStore.getState().applyWidgetCorners();
+    }
   });
 });

@@ -4,7 +4,7 @@ import { ThemePicker } from './ThemePicker';
 
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import type { ThemeMode } from '@/types/theme';
-import { useUIStore, type LargeTextPasteBehavior } from '@/stores/useUIStore';
+import { useUIStore, type LargeTextPasteBehavior, type WidgetCorners } from '@/stores/useUIStore';
 import { useMessageQueueStore, type FollowUpBehavior } from '@/stores/messageQueueStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { cn } from '@/lib/utils';
@@ -266,6 +266,17 @@ const WEEK_START_OPTIONS: Option<'auto' | 'monday' | 'sunday'>[] = [
     },
 ];
 
+const WIDGET_CORNER_OPTIONS: Option<WidgetCorners>[] = [
+    {
+        id: 'round',
+        labelKey: 'settings.openchamber.visual.option.widgetCorners.round',
+    },
+    {
+        id: 'square',
+        labelKey: 'settings.openchamber.visual.option.widgetCorners.square',
+    },
+];
+
 const FOLLOW_UP_BEHAVIOR_OPTIONS: Option<FollowUpBehavior>[] = [
     {
         id: 'steer',
@@ -307,7 +318,7 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
     return mode === 'markdown' ? 'markdown' : 'plain';
 };
 
-type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'windowMaterial' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'scrollbars' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs' | 'animatedActivityIndicators';
+type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'windowMaterial' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'widgetCorners' | 'scrollbars' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs' | 'animatedActivityIndicators';
 
 const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPosition; labelKey: string }> = [
     { id: 'left', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsLeft' },
@@ -392,6 +403,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setMonoFont = useUIStore(state => state.setMonoFont);
     const padding = useUIStore(state => state.padding);
     const setPadding = useUIStore(state => state.setPadding);
+    const widgetCorners = useUIStore(state => state.widgetCorners);
+    const setWidgetCorners = useUIStore(state => state.setWidgetCorners);
     const inputBarOffset = useUIStore(state => state.inputBarOffset);
     const setInputBarOffset = useUIStore(state => state.setInputBarOffset);
     const mobileKeyboardMode = useUIStore(state => state.mobileKeyboardMode);
@@ -609,6 +622,10 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ chatRenderMode: mode });
     }, [setChatRenderMode]);
 
+    const handleWidgetCornersChange = React.useCallback((corners: WidgetCorners) => {
+        setWidgetCorners(corners);
+        void updateDesktopSettings({ widgetCorners: corners });
+    }, [setWidgetCorners]);
     const handleMessageStreamTransportChange = React.useCallback((mode: 'auto' | 'ws' | 'sse') => {
         setMessageStreamTransport(mode);
         void updateDesktopSettings({ messageStreamTransport: mode });
@@ -727,7 +744,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const hasAppearanceSettings = isVSCode
         ? hasLocalizationSettings
         : (shouldShow('theme') || showWindowControlsPositionSetting || showWindowMaterialSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
-    const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || (shouldShow('scrollbars') && !hasThemeSettings) || (shouldShow('inputBarOffset') && isMobile);
+    const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || shouldShow('widgetCorners') || (shouldShow('scrollbars') && !hasThemeSettings) || (shouldShow('inputBarOffset') && isMobile);
     const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('autoSaveEnabled') || (shouldShow('sessionTabs') && !isVSCode && !isMobile);
     const hasBehaviorSettings = shouldShow('mermaidRendering')
         || (shouldShow('sessionGoal') && !isVSCode)
@@ -1566,6 +1583,26 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         </div>
                                     </SettingsStackedField>
                                 )}
+                            </SettingsTwoColumn>
+                        ) : null}
+                        {shouldShow('widgetCorners') ? (
+                            <SettingsTwoColumn>
+                                <SettingsStackedField
+                                    label={t('settings.openchamber.visual.field.widgetCorners')}
+                                    info={t('settings.openchamber.visual.field.widgetCornersHint')}
+                                    settingsItem="appearance.widget-corners"
+                                    controlClassName="w-full"
+                                >
+                                    <SettingsChipGroup
+                                        value={widgetCorners}
+                                        options={WIDGET_CORNER_OPTIONS.map((option) => ({
+                                            value: option.id,
+                                            label: tUnsafe(option.labelKey),
+                                        }))}
+                                        onChange={handleWidgetCornersChange}
+                                        aria-label={t('settings.openchamber.visual.field.widgetCornersAria')}
+                                    />
+                                </SettingsStackedField>
                             </SettingsTwoColumn>
                         ) : null}
                         {!hasThemeSettings && scrollbarSetting}

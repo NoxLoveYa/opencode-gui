@@ -148,6 +148,23 @@
     background-color: var(--background) !important;
   }
 
+  /* Squared widgets: round keeps the exact current style (no override);
+     square zeroes every radius token and flattens hardcoded radii. */
+  :root[data-widget-corners='square'] {
+    --radius: 0;
+    --radius-sm: 0;
+    --radius-md: 0;
+    --radius-lg: 0;
+    --radius-xl: 0;
+    --radius-full: 0;
+  }
+
+  :root[data-widget-corners='square'] *,
+  :root[data-widget-corners='square'] *::before,
+  :root[data-widget-corners='square'] *::after {
+    border-radius: 0 !important;
+  }
+
   /* Windows Mica/Acrylic on the main window: the shell paints the DWM
      backdrop behind the window, and the app canvas turns translucent so it
      shows through. Floating surfaces keep their own glass tint; only the

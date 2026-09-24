@@ -413,6 +413,10 @@
       "scope": "profile",
       "perSurface": true
     },
+    "widgetCorners": {
+      "scope": "profile",
+      "perSurface": true
+    },
     "shortcutOverrides": {
       "scope": "profile"
     },

@@ -176,6 +176,7 @@ const VisualSectionContent: React.FC = () => {
         'terminalFontSize',
         'editorFontSize',
         'spacing',
+        'widgetCorners',
         'scrollbars',
         'inputBarOffset',
         'animatedActivityIndicators',
