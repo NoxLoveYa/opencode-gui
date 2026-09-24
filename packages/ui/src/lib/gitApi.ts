@@ -2,6 +2,7 @@
 import * as gitHttp from './gitApiHttp';
 import { opencodeClient } from './opencode/client';
 import { renderMagicPrompt } from './magicPrompts';
+import { generateTextViaSilentSubagent, isOpencodeManagedProvider } from './subagentGeneration';
 import { requestSmallModel } from './smallModelRequest';
 import { materializeOpenDraftSession, useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
@@ -304,16 +305,68 @@ async function generateCommitMessageViaSession(
   return { message: parseCommitStructured(structured) };
 }
 
+async function generateCommitMessageViaSilentSubagent({
+  directory,
+  files,
+  visiblePrompt,
+  hiddenPrompt,
+  providerID,
+  modelID,
+  startedAt,
+}: {
+  directory: string;
+  files: string[];
+  visiblePrompt: string;
+  hiddenPrompt: string;
+  providerID: string;
+  modelID: string;
+  startedAt: number;
+}): Promise<{ message: import('./api/types').GeneratedCommitMessage }> {
+  const diffs = await collectSelectedFileDiffs(directory, files);
+  const prompt = [visiblePrompt, `${hiddenPrompt}\n\nDiffs of the selected files:\n${diffs}`]
+    .filter((section) => section.trim().length > 0)
+    .join('\n\n');
+  try {
+    const { text } = await generateTextViaSilentSubagent({ directory, prompt, providerID, modelID });
+    const result = { message: parseCommitStructured(extractJsonObject(text)) };
+    console.info('[git-generation][browser] success', {
+      transport: 'subagent',
+      kind: 'commit',
+      elapsedMs: Date.now() - startedAt,
+      subjectLength: result.message.subject.length,
+      highlightsCount: result.message.highlights.length,
+    });
+    return result;
+  } catch (error) {
+    console.error('[git-generation][browser] failed', {
+      transport: 'subagent',
+      kind: 'commit',
+      elapsedMs: Date.now() - startedAt,
+      message: error instanceof Error ? error.message : String(error),
+      error,
+    });
+    throw error;
+  }
+}
+
 export async function generateCommitMessage(
   directory: string,
   files: string[],
   options?: { zenModel?: string; providerId?: string; modelId?: string }
 ): Promise<{ message: import('./api/types').GeneratedCommitMessage }> {
   const startedAt = Date.now();
-  void options;
+  const { providerId: optionProviderId, modelId: optionModelId } = options ?? {};
+  void options?.zenModel;
+
+  const config = useConfigStore.getState();
+  const targetProviderID = optionProviderId ?? config.currentProviderId ?? undefined;
+  const targetModelID = optionModelId ?? config.currentModelId ?? undefined;
+  const useSubagent = Boolean(
+    targetProviderID && targetModelID && isOpencodeManagedProvider(targetProviderID),
+  );
 
   console.info('[git-generation][browser] request', {
-    transport: 'small-model',
+    transport: useSubagent ? 'subagent' : 'small-model',
     kind: 'commit',
     directory,
     selectedFiles: files.length,
@@ -325,6 +378,21 @@ export async function generateCommitMessage(
     selected_files: files.map((file) => `- ${file}`).join('\n'),
     recent_commits: recentCommits,
   });
+
+  if (useSubagent && targetProviderID && targetModelID) {
+    // OpenCode-served models do not answer the stateless generate endpoint;
+    // run the prompt in a throwaway session instead. Failures surface — the
+    // visible session fallback would hijack the active chat.
+    return generateCommitMessageViaSilentSubagent({
+      directory,
+      files,
+      visiblePrompt,
+      hiddenPrompt,
+      providerID: targetProviderID,
+      modelID: targetModelID,
+      startedAt,
+    });
+  }
 
   try {
     const diffs = await collectSelectedFileDiffs(directory, files);
