@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-vaporwave-light",
+    "name": "Vaporwave GUI",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Vaporwave theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "vaporwave"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#c93f9b"
+    },
+    "surface": {
+      "background": "#FCF7FE",
+      "foreground": "#453a58",
+      "muted": "#EFEAF2",
+      "mutedForeground": "#716489",
+      "elevated": "#F7F2FA"
+    },
+    "interactive": {
+      "border": "rgba(110, 60, 150, 0.13)",
+      "borderHover": "rgba(110, 60, 150, 0.21)"
+    },
+    "status": {
+      "error": "#c04848",
+      "warning": "#8a6a00",
+      "success": "#9a5417",
+      "info": "#5b4bc4"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#837596",
+        "keyword": "#1583ad",
+        "string": "#9a5417",
+        "number": "#8a6a00",
+        "function": "#a82d80",
+        "variable": "#453a58",
+        "type": "#5b4bc4",
+        "operator": "#6d5a94"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

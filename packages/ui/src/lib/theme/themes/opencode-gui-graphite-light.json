@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-graphite-light",
+    "name": "Graphite GUI",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Graphite theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "graphite"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#5b6f8a"
+    },
+    "surface": {
+      "background": "#FCFCFD",
+      "foreground": "#2e3238",
+      "muted": "#EEEEEF",
+      "mutedForeground": "#60646d",
+      "elevated": "#F7F7F8"
+    },
+    "interactive": {
+      "border": "rgba(46, 50, 56, 0.12)",
+      "borderHover": "rgba(46, 50, 56, 0.2)"
+    },
+    "status": {
+      "error": "#b94f4f",
+      "warning": "#7a5920",
+      "success": "#4d6a2e",
+      "info": "#3b5a6b"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#6f7581",
+        "keyword": "#43566e",
+        "string": "#4d6a2e",
+        "number": "#7a5920",
+        "function": "#43566e",
+        "variable": "#2e3238",
+        "type": "#3b5a6b",
+        "operator": "#5c6675"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

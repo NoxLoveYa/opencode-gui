@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-matcha-light",
+    "name": "Matcha GUI",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Matcha theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "matcha"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#55873f"
+    },
+    "surface": {
+      "background": "#F2F8ED",
+      "foreground": "#38442e",
+      "muted": "#E5EBE0",
+      "mutedForeground": "#65755a",
+      "elevated": "#EDF4E8"
+    },
+    "interactive": {
+      "border": "rgba(56, 78, 44, 0.15)",
+      "borderHover": "rgba(56, 78, 44, 0.23)"
+    },
+    "status": {
+      "error": "#bb5a50",
+      "warning": "#8f5326",
+      "success": "#82621c",
+      "info": "#23716b"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#6d7c63",
+        "keyword": "#446e31",
+        "string": "#82621c",
+        "number": "#8f5326",
+        "function": "#446e31",
+        "variable": "#38442e",
+        "type": "#23716b",
+        "operator": "#4c6b40"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}
