@@ -24,6 +24,11 @@ import type { StreamPhase } from './message/types';
 import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useSessionPartsForMessages } from '@/sync/sync-context';
 import type { ReviewTransferDirection } from '@/lib/reviewFlow';
+import { Icon } from '@/components/icon/Icon';
+import { BusyDots } from './message/parts/BusyDots';
+import { useI18n } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
+import { useAssistantStatus } from '@/hooks/useAssistantStatus';
 import { resolveTimelineIsAtEnd } from './lib/scroll/timelineScrollAnchoring';
 
 const EMPTY_STATIC_ENTRY_MESSAGES: ChatMessageEntry[] = [];
@@ -992,6 +997,41 @@ const StreamingTailContent: React.FC<{
 
 StreamingTailContent.displayName = 'StreamingTailContent';
 
+// Inline mirror of the composer pill while the session works: it stays mounted
+// for the whole working period (thinking AND streaming) so there is an
+// animated signal directly under the last history text. The label follows the
+// same `useAssistantStatus` source as the pill and capitalizes the same way
+// its no-model fallback does; before the first part lands there is no status
+// yet, so it falls back to the translated Thinking string. The pill owns the
+// live announcement — this row is deliberately not a live region, so screen
+// readers do not hear every status change twice.
+// Non-interactive on purpose (no hover tokens). BusyDots is opacity-only and
+// reduced-motion safe.
+const PendingThinkingIndicator: React.FC = () => {
+    const { t } = useI18n();
+    const statusText = useAssistantStatus().working.statusText;
+    const rawText = statusText ?? t('chat.reasoningTrace.thinking');
+    const label = rawText.charAt(0).toUpperCase() + rawText.slice(1);
+    return (
+        <div className="chat-message-column">
+            <div className="flex items-center gap-1.5 px-1 py-1.5">
+                <span style={{ color: 'var(--tools-icon)' }} className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">
+                    <Icon name="brain-ai-3" className="h-3.5 w-3.5" />
+                </span>
+                <span
+                    className={cn('typography-meta font-medium !text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal flex items-center gap-1')}
+                    style={{ color: 'var(--tools-title)' }}
+                >
+                    <span>{label}</span>
+                    <BusyDots />
+                </span>
+            </div>
+        </div>
+    );
+};
+
+PendingThinkingIndicator.displayName = 'PendingThinkingIndicator';
+
 const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     sessionKey,
     messages,
@@ -1188,6 +1228,13 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
             nextMessage: undefined,
         } satisfies RenderEntry;
     }, [displayMessages, projection.lastTurnId, projection.ungroupedMessageIds, streamingTurn]);
+
+    // Working indicator: mounted for the whole working period, footer-placed
+    // so it reads directly under the last history text. Gated on the same
+    // `sessionIsWorking` authority the list itself uses; the label inside
+    // follows the live assistant status, so it tracks thinking → composing →
+    // tool phases instead of vanishing when the first token lands.
+    const showWorkingIndicator = sessionIsWorking;
 
     if (trailingStreamingEntry) {
         streamPerfCount('ui.message_list.render.streaming');
@@ -1601,6 +1648,19 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
         };
     }, [findMessageElement, historyEntries.length, messageIndexMap, resolveScrollContainer, scrollHistoryIndexIntoView, scrollMessageElementIntoView, settleNavigationTarget, turnIndexMap, ref]);
 
+    // The pending Thinking row lives in the footer, outside the virtualized
+    // rows: no index, key, or navigation changes, and the list's own
+    // footerLayout maintenance follows it while the session works.
+    const combinedFooter = React.useMemo(() => {
+        if (!showWorkingIndicator) return listFooter;
+        return (
+            <>
+                <PendingThinkingIndicator />
+                {listFooter}
+            </>
+        );
+    }, [listFooter, showWorkingIndicator]);
+
     const rowContext = React.useMemo(() => ({
         scrollToBottom: stableScrollToBottom,
         stickyUserHeader,
@@ -1651,7 +1711,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
                 onListMetricsChange={stableListMetricsChange}
                 onTimelineDataChange={stableTimelineDataChange}
                 listHeader={listHeader}
-                listFooter={listFooter}
+                listFooter={combinedFooter}
                 scrollContainerProps={scrollContainerProps}
                 rowContext={rowContext}
                 endPinningReleased={endPinningReleased}
