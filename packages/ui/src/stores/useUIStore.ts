@@ -42,6 +42,8 @@ export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 export type FileEditorKeymap = 'default' | 'vim';
 export type LargeTextPasteBehavior = 'ask' | 'attach' | 'inline';
 
+export type WidgetCorners = 'round' | 'square';
+
 export const DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR: LargeTextPasteBehavior = 'ask';
 
 export const normalizeLargeTextPasteBehavior = (value: unknown): LargeTextPasteBehavior => {
@@ -904,6 +906,7 @@ interface UIStore {
   monoFont: MonoFontOption;
   padding: number;
   cornerRadius: number;
+  widgetCorners: WidgetCorners;
   inputBarOffset: number;
   mobileKeyboardMode: MobileKeyboardMode;
 
@@ -1123,10 +1126,12 @@ interface UIStore {
   setMonoFont: (font: MonoFontOption) => void;
   setPadding: (size: number) => void;
   setCornerRadius: (radius: number) => void;
+  setWidgetCorners: (corners: WidgetCorners) => void;
   setInputBarOffset: (offset: number) => void;
   setMobileKeyboardMode: (mode: MobileKeyboardMode) => void;
   applyTypography: () => void;
   applyPadding: () => void;
+  applyWidgetCorners: () => void;
   toggleFavoriteModel: (providerID: string, modelID: string) => void;
   reorderFavoriteModel: (
     activeProviderID: string,
@@ -1314,6 +1319,7 @@ export const useUIStore = create<UIStore>()(
         monoFont: DEFAULT_MONO_FONT,
         padding: 100,
         cornerRadius: 18,
+        widgetCorners: 'round',
         inputBarOffset: 0,
         mobileKeyboardMode: getStoredMobileKeyboardMode(),
         favoriteModels: [],
@@ -2237,6 +2243,11 @@ export const useUIStore = create<UIStore>()(
           set({ cornerRadius: radius });
         },
 
+        setWidgetCorners: (corners) => {
+          set({ widgetCorners: corners });
+          get().applyWidgetCorners();
+        },
+
         applyTypography: () => {
           const { fontSize } = get();
           const root = document.documentElement;
@@ -2291,6 +2302,16 @@ export const useUIStore = create<UIStore>()(
           root.style.setProperty('--line-height-normal', (1.5 * lineHeightScale).toFixed(3));
           root.style.setProperty('--line-height-relaxed', (1.625 * lineHeightScale).toFixed(3));
           root.style.setProperty('--line-height-loose', (2 * lineHeightScale).toFixed(3));
+        },
+
+        applyWidgetCorners: () => {
+          const { widgetCorners } = get();
+          const root = document.documentElement;
+          if (widgetCorners === 'square') {
+            root.setAttribute('data-widget-corners', 'square');
+            return;
+          }
+          root.removeAttribute('data-widget-corners');
         },
 
         setDiffLayoutPreference: (mode) => {
@@ -3153,6 +3174,7 @@ export const useUIStore = create<UIStore>()(
           monoFont: state.monoFont,
           padding: state.padding,
           cornerRadius: state.cornerRadius,
+          widgetCorners: state.widgetCorners,
           favoriteModels: state.favoriteModels,
           hiddenModels: state.hiddenModels,
           providerOrder: state.providerOrder,

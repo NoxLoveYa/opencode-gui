@@ -179,6 +179,14 @@ describe('settings registry', () => {
     expect(useUIStore.getState().workStatusHiddenSectionsExplicit).toBe(true);
   });
 
+  test('round-trips widget corners through the settings boundary', () => {
+    expect(parseSettingsDocument({ widgetCorners: 'square' })).toEqual({ widgetCorners: 'square' });
+    expect(parseSettingsDocument({ widgetCorners: 'round' })).toEqual({ widgetCorners: 'round' });
+    expect(parseSettingsDocument({ widgetCorners: 'oval' })).toEqual({});
+    expect(AUTO_SAVE_KEYS).toContain('widgetCorners');
+    expect(MIRRORED_KEYS).toContain('widgetCorners');
+  });
+
   test('the checked-in JSON snapshots match the registry (run `bun run settings-registry:generate`)', () => {
     const rendered = renderSettingsRegistrySnapshot();
     for (const relativePath of SETTINGS_REGISTRY_SNAPSHOT_PATHS) {

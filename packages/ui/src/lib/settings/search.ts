@@ -161,6 +161,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['density', 'compact', 'comfortable', 'spacing'],
   },
   {
+    id: 'appearance.widget-corners',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.widgetCorners',
+    descriptionKey: 'settings.openchamber.visual.field.widgetCornersHint',
+    keywords: ['radius', 'rounded', 'square', 'corners', 'shape', 'widgets'],
+  },
+  {
     id: 'appearance.input-bar-offset',
     page: 'appearance',
     titleKey: 'settings.openchamber.visual.field.inputBarOffset',
