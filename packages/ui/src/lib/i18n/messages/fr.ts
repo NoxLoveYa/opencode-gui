@@ -2170,6 +2170,7 @@ export const dict = {
   'chat.chatInput.toast.reviewFailed': 'Échec de l\'examen des modifications',
   'chat.chatInput.toast.attachmentsTooLarge': 'Les pièces jointes sont trop volumineuses pour être envoyées. Veuillez essayer de réduire le nombre ou la taille des images.',
   'chat.chatInput.toast.sendAttachmentsFailed': 'Échec de l\'envoi des pièces jointes. Essayez moins de fichiers ou des images plus petites.',
+  'chat.chatInput.toast.skippedMissingAttachments': 'Pièces jointes ignorées pour les fichiers manquants, envoi du reste : {names}',
   'chat.chatInput.toast.messageSendFailed': 'Le message n\'a pas pu être envoyé. Pièces jointes restaurées.',
   'chat.chatInput.toast.noModelSelected': 'Sélectionnez un fournisseur et un modèle avant d\'envoyer.',
   'chat.chatInput.toast.clipboardAttachFailed': 'Échec de la pièce jointe de l\'image du presse-papiers',

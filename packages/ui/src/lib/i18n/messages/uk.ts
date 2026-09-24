@@ -2432,6 +2432,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.chatInput.toast.exploreFailed": "Не вдалося розпочати огляд",
   "chat.chatInput.toast.attachmentsTooLarge": "Вкладені файли завеликі для надсилання. Спробуйте зменшити кількість або розмір зображень.",
   "chat.chatInput.toast.sendAttachmentsFailed": "Не вдалося надіслати вкладення. Спробуйте зменшити кількість файлів або зображень.",
+  "chat.chatInput.toast.skippedMissingAttachments": "Пропущено вкладення для відсутніх файлів, надсилається решта: {names}",
   "chat.chatInput.toast.messageSendFailed": "Не вдалося надіслати повідомлення. Вкладення відновлено.",
   "chat.chatInput.toast.noModelSelected": "Виберіть постачальника та модель перед надсиланням.",
   "chat.chatInput.toast.clipboardAttachFailed": "Не вдалося вкласти зображення з буфера обміну",

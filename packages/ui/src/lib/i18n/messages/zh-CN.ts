@@ -2432,6 +2432,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.toast.exploreFailed': '无法开始导览',
   'chat.chatInput.toast.attachmentsTooLarge': '附件过大，无法发送。请减少图片数量或大小。',
   'chat.chatInput.toast.sendAttachmentsFailed': '发送附件失败。请尝试更少文件或更小图片。',
+  'chat.chatInput.toast.skippedMissingAttachments': '已跳过缺失文件的附件，提交其余部分：{names}',
   'chat.chatInput.toast.messageSendFailed': '消息发送失败，附件已恢复。',
   'chat.chatInput.toast.noModelSelected': '发送前请先选择提供商和模型。',
   'chat.chatInput.toast.clipboardAttachFailed': '从剪贴板附加图片失败',

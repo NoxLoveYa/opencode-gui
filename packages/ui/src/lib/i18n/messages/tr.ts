@@ -2402,6 +2402,7 @@ export const dict = {
   'chat.chatInput.toast.exploreFailed': 'Tur başlatılamadı',
   'chat.chatInput.toast.attachmentsTooLarge': 'Ekler gönderilemeyecek kadar büyük. Görsel sayısını veya boyutunu azaltmayı dene.',
   'chat.chatInput.toast.sendAttachmentsFailed': 'Ekler gönderilemedi. Daha az dosya veya daha küçük görseller deneyin.',
+  'chat.chatInput.toast.skippedMissingAttachments': 'Bulunamayan dosyaların ekleri atlandı, geri kalan gönderiliyor: {names}',
   'chat.chatInput.toast.messageSendFailed': 'Mesaj gönderilemedi. Ekler geri yüklendi.',
   'chat.chatInput.toast.clipboardAttachFailed': 'Panodan görsel eklenemedi',
   'chat.chatInput.toast.clipboardTextAttachFailed': 'Yapıştırılan metin dosya olarak eklenemedi',

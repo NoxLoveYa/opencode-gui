@@ -74,10 +74,14 @@ type MobileFilesSurfaceProps = {
 };
 
 export const MobileFilesSurface: React.FC<MobileFilesSurfaceProps> = ({ onClose }) => {
+  const root = normalizePath(useEffectiveDirectory() ?? null);
+  return <MobileFilesSurfaceForRoot key={root} root={root} onClose={onClose} />;
+};
+
+const MobileFilesSurfaceForRoot: React.FC<MobileFilesSurfaceProps & { root: string }> = ({ root, onClose }) => {
   const { t } = useI18n();
   const { files } = useRuntimeAPIs();
   const setSelectedPath = useFilesViewTabsStore((state) => state.setSelectedPath);
-  const root = normalizePath(useEffectiveDirectory() ?? null);
   const [route, setRoute] = React.useState<MobileFilesRoute>(() => ({ type: 'browser', directory: root }));
   const [entries, setEntries] = React.useState<FileListEntry[]>([]);
   const [isLoadingDirectory, setIsLoadingDirectory] = React.useState(false);
@@ -86,14 +90,6 @@ export const MobileFilesSurface: React.FC<MobileFilesSurfaceProps> = ({ onClose 
   const [searchResults, setSearchResults] = React.useState<FileSearchResult[]>([]);
   const [isSearching, setIsSearching] = React.useState(false);
   const directoryLoadRequestIdRef = React.useRef(0);
-
-  React.useEffect(() => {
-    if (!root) return;
-    setRoute((current) => {
-      if (current.type === 'browser' && current.directory) return current;
-      return { type: 'browser', directory: root };
-    });
-  }, [root]);
 
   const currentDirectory = route.type === 'browser' ? route.directory : route.returnDirectory;
 
