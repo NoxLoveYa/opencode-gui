@@ -173,8 +173,8 @@
   :root[data-window-material='acrylic'] body,
   :root[data-window-material='mica'] #root,
   :root[data-window-material='acrylic'] #root {
-    background: color-mix(in srgb, hsl(var(--background)) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
-    background-color: color-mix(in srgb, hsl(var(--background)) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    background: color-mix(in srgb, var(--background) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    background-color: color-mix(in srgb, var(--background) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
   }
 
   @media (prefers-reduced-transparency: reduce) {
