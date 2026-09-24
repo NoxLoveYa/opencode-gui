@@ -165,6 +165,13 @@
     border-radius: 0 !important;
   }
 
+  /* Foreign platform chrome keeps its authored shape: the macOS traffic
+     lights stay circular in square mode. Higher specificity than the
+     flattening rule above, so order between them does not matter. */
+  :root[data-widget-corners='square'] .oc-keep-round {
+    border-radius: 9999px !important;
+  }
+
   /* Windows Mica/Acrylic on the main window: the shell paints the DWM
      backdrop behind the window, and the app canvas turns translucent so it
      shows through. Floating surfaces keep their own glass tint; only the
@@ -173,8 +180,8 @@
   :root[data-window-material='acrylic'] body,
   :root[data-window-material='mica'] #root,
   :root[data-window-material='acrylic'] #root {
-    background: color-mix(in srgb, hsl(var(--background)) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
-    background-color: color-mix(in srgb, hsl(var(--background)) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    background: color-mix(in srgb, var(--background) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    background-color: color-mix(in srgb, var(--background) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
   }
 
   @media (prefers-reduced-transparency: reduce) {
