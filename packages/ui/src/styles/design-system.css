@@ -175,13 +175,19 @@
   /* Windows Mica/Acrylic on the main window: the shell paints the DWM
      backdrop behind the window, and the app canvas turns translucent so it
      shows through. Floating surfaces keep their own glass tint; only the
-     canvas goes translucent. Opacity is 0.05-0.95 from the slider. */
+     canvas goes translucent. Opacity is 0.30-1.00 from the slider. Two faint
+     theme-accent radial glows sit over the flat mix so the backdrop reads
+     as lit glass rather than a flat wash. */
   :root[data-window-material='mica'] body,
   :root[data-window-material='acrylic'] body,
   :root[data-window-material='mica'] #root,
   :root[data-window-material='acrylic'] #root {
     background: color-mix(in srgb, var(--background) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     background-color: color-mix(in srgb, var(--background) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    background-image:
+      radial-gradient(1100px 700px at 50% -12%, color-mix(in srgb, var(--primary-base) 5.5%, transparent), transparent 62%),
+      radial-gradient(900px 640px at 88% 112%, color-mix(in srgb, var(--primary-base) 3.5%, transparent), transparent 60%) !important;
+    background-attachment: fixed !important;
   }
 
   @media (prefers-reduced-transparency: reduce) {
@@ -191,6 +197,14 @@
     :root[data-window-material='acrylic'] #root {
       background: var(--background) !important;
       background-color: var(--background) !important;
+      background-image: none !important;
+    }
+    :root[data-window-material='mica'] #root aside.bg-sidebar,
+    :root[data-window-material='acrylic'] #root aside.bg-sidebar,
+    :root[data-window-material='mica'] #root .header-safe-area.bg-background,
+    :root[data-window-material='acrylic'] #root .header-safe-area.bg-background {
+      -webkit-backdrop-filter: none !important;
+      backdrop-filter: none !important;
     }
   }
 
@@ -211,13 +225,27 @@
     --accent: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --surface-subtle: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --sidebar-base: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --sidebar: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --sidebar-accent-base: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --sidebar-accent: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
   }
 
   /* Non-portaled overlays mounted inside #root stay opaque. */
   :root[data-window-material='mica'] #root .toaster,
   :root[data-window-material='acrylic'] #root .toaster {
     --surface-elevated: var(--surface-elevated-solid) !important;
+  }
+
+  /* Window-material chrome: the sidebar and chat header blur the backdrop
+     behind them so they read as glass over the desktop. Scoped to static
+     chrome only — never the scrolling transcript, which would re-rasterize
+     every scroll frame and flicker. */
+  :root[data-window-material='mica'] #root aside.bg-sidebar,
+  :root[data-window-material='acrylic'] #root aside.bg-sidebar,
+  :root[data-window-material='mica'] #root .header-safe-area.bg-background,
+  :root[data-window-material='acrylic'] #root .header-safe-area.bg-background {
+    -webkit-backdrop-filter: blur(14px) saturate(1.2) !important;
+    backdrop-filter: blur(14px) saturate(1.2) !important;
   }
 
   :root[data-window-material='mica'] #root .oc-opaque-overlay,
@@ -232,7 +260,9 @@
     --accent: var(--surface-subtle-solid) !important;
     --surface-subtle: var(--surface-subtle-solid) !important;
     --sidebar-base: var(--surface-muted-solid) !important;
+    --sidebar: var(--surface-muted-solid) !important;
     --sidebar-accent-base: var(--surface-subtle-solid) !important;
+    --sidebar-accent: var(--surface-subtle-solid) !important;
   }
 
   .font-sans {

@@ -77,6 +77,7 @@ describe('renderGhosttySnapshot', () => {
       beginPath: () => {},
       clip: () => {},
       fillRect: (...args: number[]) => fillRectCalls.push(args),
+      clearRect: () => {},
       fillText: () => {},
       rect: () => {},
       resetTransform: () => {},
@@ -143,6 +144,7 @@ describe('renderGhosttySnapshot', () => {
       beginPath: () => {},
       clip: () => {},
       fillRect: () => {},
+      clearRect: () => {},
       fillText: (...args: unknown[]) => fillTextCalls.push(args),
       rect: () => {},
       resetTransform: () => {},
@@ -202,6 +204,7 @@ describe('renderGhosttySnapshot', () => {
       beginPath: () => {},
       clip: () => {},
       fillRect: () => {},
+      clearRect: () => {},
       fillText: (...args: unknown[]) => fillTextCalls.push(args),
       rect: () => {},
       resetTransform: () => {},
@@ -268,6 +271,7 @@ describe('renderGhosttySnapshot', () => {
       fillRect: (_left: number, top: number, _width: number, height: number) => {
         if (height === 16) clearedRows.push(top);
       },
+      clearRect: () => {},
       fillText: () => {},
       rect: () => {},
       resetTransform: () => {},
@@ -320,5 +324,122 @@ describe('renderGhosttySnapshot', () => {
     });
 
     expect(clearedRows).toEqual([4, 36, 36]);
+  });
+
+  test('clears the default background instead of painting it when translucent', () => {
+    const filled: number[][] = [];
+    const cleared: number[][] = [];
+    const context = {
+      canvas: { width: 200, height: 40 },
+      beginPath: () => {},
+      clip: () => {},
+      fillRect: (...args: number[]) => filled.push(args),
+      clearRect: (...args: number[]) => cleared.push(args),
+      fillText: () => {},
+      rect: () => {},
+      resetTransform: () => {},
+      restore: () => {},
+      save: () => {},
+      fillStyle: '',
+      strokeStyle: '',
+      font: '',
+      textBaseline: 'alphabetic' as const,
+      strokeRect: () => {},
+      lineWidth: 1,
+      lineCap: 'butt' as const,
+      moveTo: () => {},
+      lineTo: () => {},
+      quadraticCurveTo: () => {},
+      closePath: () => {},
+      fill: () => {},
+      stroke: () => {},
+    };
+    const snapshot: GhosttySnapshot = {
+      cols: 2,
+      rows: 1,
+      foreground: { r: 255, g: 255, b: 255 },
+      background: { r: 0, g: 0, b: 0 },
+      cursor: { r: 255, g: 255, b: 255 },
+      cursorX: -1,
+      cursorY: -1,
+      cursorVisible: false,
+      cursorBlinking: false,
+      cursorStyle: 1,
+      dirtyRows: new Set([0]),
+      rowData: [{ cells: [cell('a'), cell('b')], text: 'ab', isWrapContinuation: false, wrapsToNext: false }],
+    };
+
+    renderGhosttySnapshot({
+      context,
+      snapshot,
+      metrics: { width: 10, height: 20, baseline: 15 },
+      fontSize: 12,
+      fontFamily: 'monospace',
+      padding: 4,
+      forceFull: true,
+      cursorOn: false,
+      transparentBackground: true,
+    });
+
+    expect(filled).toEqual([]);
+    expect(cleared.length).toBeGreaterThan(0);
+  });
+
+  test('still paints explicit cell backgrounds when translucent', () => {
+    const filled: number[][] = [];
+    const context = {
+      canvas: { width: 200, height: 40 },
+      beginPath: () => {},
+      clip: () => {},
+      fillRect: (...args: number[]) => filled.push(args),
+      clearRect: () => {},
+      fillText: () => {},
+      rect: () => {},
+      resetTransform: () => {},
+      restore: () => {},
+      save: () => {},
+      fillStyle: '',
+      strokeStyle: '',
+      font: '',
+      textBaseline: 'alphabetic' as const,
+      strokeRect: () => {},
+      lineWidth: 1,
+      lineCap: 'butt' as const,
+      moveTo: () => {},
+      lineTo: () => {},
+      quadraticCurveTo: () => {},
+      closePath: () => {},
+      fill: () => {},
+      stroke: () => {},
+    };
+    const highlighted = { ...cell('a'), background: { r: 200, g: 0, b: 0 } };
+    const snapshot: GhosttySnapshot = {
+      cols: 2,
+      rows: 1,
+      foreground: { r: 255, g: 255, b: 255 },
+      background: { r: 0, g: 0, b: 0 },
+      cursor: { r: 255, g: 255, b: 255 },
+      cursorX: -1,
+      cursorY: -1,
+      cursorVisible: false,
+      cursorBlinking: false,
+      cursorStyle: 1,
+      dirtyRows: new Set([0]),
+      rowData: [{ cells: [highlighted, cell('b')], text: 'ab', isWrapContinuation: false, wrapsToNext: false }],
+    };
+
+    renderGhosttySnapshot({
+      context,
+      snapshot,
+      metrics: { width: 10, height: 20, baseline: 15 },
+      fontSize: 12,
+      fontFamily: 'monospace',
+      padding: 4,
+      forceFull: false,
+      cursorOn: false,
+      transparentBackground: true,
+    });
+
+    expect(filled.length).toBeGreaterThan(0);
   });
 });

@@ -9,6 +9,7 @@ import {
   isTerminalCopyShortcut,
   isTerminalLinkPointerGesture,
   isTerminalPasteShortcut,
+  isTerminalWindowMaterialTranslucent,
   resolveTerminalMouseData,
   shouldBlinkTerminalCursor,
   terminalContentOriginY,
@@ -175,5 +176,26 @@ describe('layout helpers', () => {
     expect(shouldBlinkTerminalCursor({ focused: true, cursorBlinking: true, cursorVisible: true, reducedMotion: false })).toBe(true);
     expect(shouldBlinkTerminalCursor({ focused: false, cursorBlinking: true, cursorVisible: true, reducedMotion: false })).toBe(false);
     expect(shouldBlinkTerminalCursor({ focused: true, cursorBlinking: true, cursorVisible: true, reducedMotion: true })).toBe(false);
+  });
+});
+
+describe('isTerminalWindowMaterialTranslucent', () => {
+  test('stays opaque without a window material dataset', () => {
+    expect(isTerminalWindowMaterialTranslucent()).toBe(false);
+  });
+
+  test('follows the live Mica/Acrylic dataset like the main panels', () => {
+    // SAFETY: Bun tests run without a DOM; stubbing the holder exercises the dataset branch and restores it below.
+    const holder = globalThis as { document?: unknown };
+    const previous = holder.document;
+    holder.document = {
+      documentElement: { dataset: { windowMaterial: 'mica' } },
+    };
+    try {
+      expect(isTerminalWindowMaterialTranslucent()).toBe(true);
+    } finally {
+      if (previous === undefined) delete holder.document;
+      else holder.document = previous;
+    }
   });
 });

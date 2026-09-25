@@ -55,6 +55,19 @@ const TERMINAL_FONT_LOAD_VARIANTS = [
   'italic 700',
 ] as const;
 
+/**
+ * Whether the main window currently paints a translucent Mica/Acrylic
+ * backdrop. Mirrors the CSS activation (`:root[data-window-material]`) so the
+ * terminal canvas and the main panels turn translucent together. Other
+ * runtimes (VS Code, web, mobile) stay opaque.
+ */
+export function isTerminalWindowMaterialTranslucent(): boolean {
+  // SAFETY: Bun unit tests run without a DOM; the optional chain below treats a missing document as opaque.
+  const doc = (globalThis as { document?: { documentElement?: { dataset?: { windowMaterial?: string } } } }).document;
+  const material = doc?.documentElement?.dataset?.windowMaterial;
+  return material === 'mica' || material === 'acrylic';
+}
+
 /** Requested terminal font; omitted fields fall back to the defaults. */
 export interface GhosttyTerminalFont {
   readonly family?: string;
@@ -724,13 +737,21 @@ export class GhosttyTerminalSurface {
     // load rendered thin, pencil-like glyphs while the first one stayed on the
     // software path. The renderer repaints dirty rows only, so CPU raster is
     // cheap, and it also makes the pixel readbacks of the tests exact.
-    const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    // Alpha stays enabled so a translucent Mica/Acrylic backdrop can show
+    // through the default background like the main panels; opaque runtimes
+    // still fill every default run below.
+    const context = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
     if (!context) throw new Error('Canvas 2D is unavailable');
-    // An opaque canvas backing store initializes to solid black, and the font
-    // and WASM loads below leave it on screen for the whole setup window; paint
-    // the theme background first so the mount never flashes a black box.
-    context.fillStyle = `rgb(${options.theme.background.r}, ${options.theme.background.g}, ${options.theme.background.b})`;
-    context.fillRect(0, 0, canvas.width, canvas.height);
+    // The font and WASM loads below leave the mount on screen for the whole
+    // setup window. Opaque runtimes paint the theme background first so the
+    // mount never flashes a black box; translucent ones stay cleared so the
+    // backdrop shows through immediately.
+    if (isTerminalWindowMaterialTranslucent()) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    } else {
+      context.fillStyle = `rgb(${options.theme.background.r}, ${options.theme.background.g}, ${options.theme.background.b})`;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
     const fontSize = terminalFontSize(options.font?.size);
     try {
       // Cell metrics must come from the faces that will render; measuring before
@@ -1880,6 +1901,7 @@ export class GhosttyTerminalSurface {
       focused: this.focused,
       hoveredLinkRange: this.hoveredLink?.range ?? null,
       selectionBackground: this.theme.selectionBackground,
+      transparentBackground: isTerminalWindowMaterialTranslucent(),
     });
     this.positionInput();
     this.renderedCursorY =
