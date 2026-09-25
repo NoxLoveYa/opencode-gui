@@ -248,6 +248,17 @@
     backdrop-filter: blur(14px) saturate(1.2) !important;
   }
 
+  /* Window-material composer: the floating input box tracks the Backdrop
+     slider instead of compounding it. Its glass color resolves from the
+     already-translucent --surface-elevated, which would stack two mixes;
+     pin it to the solid snapshot so the slider is the single control, like
+     the main panels. Blur stays for readability over the transcript. */
+  :root[data-window-material='mica'] #root .oc-glass-composer,
+  :root[data-window-material='acrylic'] #root .oc-glass-composer {
+    --oc-glass-color: var(--surface-elevated-solid) !important;
+    --oc-glass-opacity: calc(var(--oc-window-material-opacity, 0.75) * 100%) !important;
+  }
+
   :root[data-window-material='mica'] #root .oc-opaque-overlay,
   :root[data-window-material='acrylic'] #root .oc-opaque-overlay {
     --background: var(--surface-background-solid) !important;
