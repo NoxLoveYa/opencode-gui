@@ -252,11 +252,17 @@
      slider instead of compounding it. Its glass color resolves from the
      already-translucent --surface-elevated, which would stack two mixes;
      pin it to the solid snapshot so the slider is the single control, like
-     the main panels. Blur stays for readability over the transcript. */
-  :root[data-window-material='mica'] #root .oc-glass-composer,
-  :root[data-window-material='acrylic'] #root .oc-glass-composer {
+     the main panels. Blur stays for readability over the transcript. The
+     card shadow and strong border flatten to hairline chrome: a drop
+     shadow smears darkness past the edges and reads as a solid card no
+     matter the fill. Dragging keeps the default glass so the drop-target
+     ring still shows. */
+  :root[data-window-material='mica'] #root .oc-glass-composer:not(.ring-2),
+  :root[data-window-material='acrylic'] #root .oc-glass-composer:not(.ring-2) {
     --oc-glass-color: var(--surface-elevated-solid) !important;
     --oc-glass-opacity: calc(var(--oc-window-material-opacity, 0.75) * 100%) !important;
+    border-color: color-mix(in srgb, var(--interactive-border) 40%, transparent) !important;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.045) !important;
   }
 
   :root[data-window-material='mica'] #root .oc-opaque-overlay,

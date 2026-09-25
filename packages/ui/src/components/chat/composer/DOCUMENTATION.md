@@ -108,7 +108,8 @@ never stacks glass on glass: a CSS rule in `design-system.css` hides the
 composer's own contents while it is up, leaving the box as the single glass
 surface on desktop and the overlay itself on mobile. Under a window material
 (Mica/Acrylic) the box tracks the Backdrop opacity slider instead of its
-fixed glass opacity, so it stays in step with the main panels.
+fixed glass opacity, and its card shadow and border flatten to hairline
+chrome, so it stays in step with the main panels.
 
 ## Layers
 
