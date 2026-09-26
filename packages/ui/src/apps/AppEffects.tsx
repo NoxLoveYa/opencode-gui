@@ -5,6 +5,7 @@ import { useMessageQueueHoldSync } from '@/hooks/useMessageQueueHoldSync';
 import { useQueuedMessageAutoSend } from '@/hooks/useQueuedMessageAutoSend';
 import { useSessionAutoCleanup } from '@/hooks/useSessionAutoCleanup';
 import { useWindowControlsOverlayLayout } from '@/hooks/useWindowControlsOverlayLayout';
+import { useWindowMaterialEffect } from '@/lib/windowMaterial';
 import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
@@ -81,6 +82,7 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
 }) {
   usePwaManifestSync();
   useWindowControlsOverlayLayout();
+  useWindowMaterialEffect();
   useKeyboardShortcuts();
 
   return (

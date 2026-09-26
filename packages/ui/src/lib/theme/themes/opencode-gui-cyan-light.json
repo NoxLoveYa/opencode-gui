@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-cyan-light",
+    "name": "Cyan",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Cyan theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "cyan"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#177e7e"
+    },
+    "surface": {
+      "background": "#FFFFFF",
+      "foreground": "#20292f",
+      "muted": "#EFF0F0",
+      "mutedForeground": "#56666f",
+      "elevated": "#F9FAFA"
+    },
+    "interactive": {
+      "border": "rgba(15, 30, 40, 0.12)",
+      "borderHover": "rgba(15, 30, 40, 0.2)"
+    },
+    "status": {
+      "error": "#b85050",
+      "warning": "#82591a",
+      "success": "#35702c",
+      "info": "#205d7a"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#64767e",
+        "keyword": "#107072",
+        "string": "#35702c",
+        "number": "#82591a",
+        "function": "#10696b",
+        "variable": "#20292f",
+        "type": "#205d7a",
+        "operator": "#48666f"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

@@ -11,6 +11,7 @@ import { toGhosttyTheme } from '@/lib/terminalTheme';
 import { openExternalUrl } from '@/lib/url';
 import { useI18n } from '@/lib/i18n';
 import type { TerminalChunk } from '@/stores/useTerminalStore';
+import { useUIStore } from '@/stores/useUIStore';
 
 import { selectTerminalChunkReplay } from './terminalChunkReplay';
 
@@ -139,6 +140,10 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   const restoreMenuFocusRef = React.useRef(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [menuSelection, setMenuSelection] = React.useState('');
+  // Repaint the canvas when the window backdrop toggles: the surface reads
+  // the live Mica/Acrylic dataset per frame, so an idle terminal needs one
+  // refresh to swap its opaque fill for the translucent clear (and back).
+  const windowMaterial = useUIStore((s) => s.desktopWindowMaterial);
   inputRef.current = onInput;
   resizeRef.current = onResize;
   provisionalSizeCallbackRef.current = onProvisionalSize;
@@ -243,6 +248,11 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   React.useEffect(() => {
     surfaceRef.current?.setVisible(isVisible);
   }, [isVisible, ready]);
+
+  React.useEffect(() => {
+    if (ready === 0) return;
+    surfaceRef.current?.refresh();
+  }, [windowMaterial, ready]);
 
   React.useEffect(() => {
     setMenuOpen(false);

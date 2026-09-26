@@ -239,6 +239,7 @@ Use an explicit override when testing a different OpenCode CLI build or when a u
   while terminal and file-editor focus adjust their own font sizes.
 - New Mini Chat windows default to the managed Chats target. Explicit project/worktree drafts retain their target, existing managed chat sessions reopen in their own directory, and the compact header omits project/branch metadata for Chats. Opening a managed draft back in the main window preserves that target.
 - Multiple native windows.
+- Main-window Mica/Acrylic backdrop on Windows (`desktop_set_window_material`, main window only; remote pages cannot drive it). The choice persists as a shell-owned boot hint so cold starts paint it before the renderer loads.
 - Native notifications.
 - User-confirmed local folder selection. The shared UI supplies the requested directory as the picker `defaultPath`; confirmation is required before filesystem access is retried.
 - Theme-file selection uses the local `~/.vscode/extensions` directory when present.

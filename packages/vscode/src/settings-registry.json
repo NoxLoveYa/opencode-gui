@@ -422,6 +422,10 @@
       "scope": "profile",
       "perSurface": true
     },
+    "widgetCorners": {
+      "scope": "profile",
+      "perSurface": true
+    },
     "shortcutOverrides": {
       "scope": "profile"
     },
@@ -579,6 +583,18 @@
       ]
     },
     "desktopWindowControlsStyle": {
+      "scope": "device",
+      "surfaces": [
+        "desktop"
+      ]
+    },
+    "desktopWindowMaterial": {
+      "scope": "device",
+      "surfaces": [
+        "desktop"
+      ]
+    },
+    "desktopWindowMaterialOpacity": {
       "scope": "device",
       "surfaces": [
         "desktop"

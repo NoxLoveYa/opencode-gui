@@ -16,6 +16,7 @@ export interface GhosttyRenderContext extends BoxDrawingContext {
   font: string;
   textBaseline: CanvasTextBaseline;
   fillRect(x: number, y: number, w: number, h: number): void;
+  clearRect(x: number, y: number, w: number, h: number): void;
   strokeRect(x: number, y: number, w: number, h: number): void;
   fillText(text: string, x: number, y: number, maxWidth?: number): void;
   save(): void;
@@ -140,6 +141,13 @@ export function renderGhosttySnapshot(options: {
   readonly hoveredLinkRange?: GhosttyCellRange | null;
   /** Vertical origin of row 0; defaults to the horizontal padding. */
   readonly originY?: number;
+  /**
+   * When true the default terminal background is left transparent so the
+   * window material behind the canvas shows through. Cells with an explicit
+   * non-default background still paint. Matches the main panels, whose
+   * surface tokens turn translucent under Mica/Acrylic.
+   */
+  readonly transparentBackground?: boolean;
 }): void {
   const {
     context,
@@ -156,6 +164,7 @@ export function renderGhosttySnapshot(options: {
   const selectionBackground = options.selectionBackground ?? DEFAULT_SELECTION_BACKGROUND;
   const hoveredLinkRange = options.hoveredLinkRange ?? null;
   const originY = options.originY ?? padding;
+  const transparentBackground = options.transparentBackground ?? false;
   const rowsToDraw = forceFull
     ? Array.from({ length: snapshot.rows }, (_, index) => index)
     : [...snapshot.dirtyRows];
@@ -174,8 +183,12 @@ export function renderGhosttySnapshot(options: {
   if (forceFull) {
     context.save();
     context.resetTransform();
-    context.fillStyle = cssColor(snapshot.background);
-    context.fillRect(0, 0, context.canvas.width, context.canvas.height);
+    if (transparentBackground) {
+      context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+    } else {
+      context.fillStyle = cssColor(snapshot.background);
+      context.fillRect(0, 0, context.canvas.width, context.canvas.height);
+    }
     context.restore();
   }
 
@@ -185,8 +198,12 @@ export function renderGhosttySnapshot(options: {
     if (!row) continue;
     const top = originY + rowIndex * metrics.height;
 
-    context.fillStyle = cssColor(snapshot.background);
-    context.fillRect(padding, top, snapshot.cols * metrics.width, metrics.height);
+    if (transparentBackground) {
+      context.clearRect(padding, top, snapshot.cols * metrics.width, metrics.height);
+    } else {
+      context.fillStyle = cssColor(snapshot.background);
+      context.fillRect(padding, top, snapshot.cols * metrics.width, metrics.height);
+    }
 
     let backgroundStart = 0;
     while (backgroundStart < row.cells.length) {

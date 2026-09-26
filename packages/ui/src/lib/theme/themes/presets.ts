@@ -44,6 +44,34 @@ import mono_dark_Raw from './mono-dark.json';
 import mono_light_Raw from './mono-light.json';
 import vitesse_dark_dark_Raw from './vitesse-dark-dark.json';
 import vitesse_light_light_Raw from './vitesse-light-light.json';
+import opencode_gui_abyss_dark_Raw from './opencode-gui-abyss-dark.json';
+import opencode_gui_abyss_light_Raw from './opencode-gui-abyss-light.json';
+import opencode_gui_aurora_dark_Raw from './opencode-gui-aurora-dark.json';
+import opencode_gui_aurora_light_Raw from './opencode-gui-aurora-light.json';
+import opencode_gui_citrus_dark_Raw from './opencode-gui-citrus-dark.json';
+import opencode_gui_citrus_light_Raw from './opencode-gui-citrus-light.json';
+import opencode_gui_crimson_dark_Raw from './opencode-gui-crimson-dark.json';
+import opencode_gui_crimson_light_Raw from './opencode-gui-crimson-light.json';
+import opencode_gui_cyan_dark_Raw from './opencode-gui-cyan-dark.json';
+import opencode_gui_cyan_light_Raw from './opencode-gui-cyan-light.json';
+import opencode_gui_ember_dark_Raw from './opencode-gui-ember-dark.json';
+import opencode_gui_ember_light_Raw from './opencode-gui-ember-light.json';
+import opencode_gui_graphite_dark_Raw from './opencode-gui-graphite-dark.json';
+import opencode_gui_graphite_light_Raw from './opencode-gui-graphite-light.json';
+import opencode_gui_latte_dark_Raw from './opencode-gui-latte-dark.json';
+import opencode_gui_latte_light_Raw from './opencode-gui-latte-light.json';
+import opencode_gui_matcha_dark_Raw from './opencode-gui-matcha-dark.json';
+import opencode_gui_matcha_light_Raw from './opencode-gui-matcha-light.json';
+import opencode_gui_nebula_dark_Raw from './opencode-gui-nebula-dark.json';
+import opencode_gui_nebula_light_Raw from './opencode-gui-nebula-light.json';
+import opencode_gui_sakura_dark_Raw from './opencode-gui-sakura-dark.json';
+import opencode_gui_sakura_light_Raw from './opencode-gui-sakura-light.json';
+import opencode_gui_strawberry_dark_Raw from './opencode-gui-strawberry-dark.json';
+import opencode_gui_strawberry_light_Raw from './opencode-gui-strawberry-light.json';
+import opencode_gui_tidal_dark_Raw from './opencode-gui-tidal-dark.json';
+import opencode_gui_tidal_light_Raw from './opencode-gui-tidal-light.json';
+import opencode_gui_vaporwave_dark_Raw from './opencode-gui-vaporwave-dark.json';
+import opencode_gui_vaporwave_light_Raw from './opencode-gui-vaporwave-light.json';
 
 export const presetThemes: Theme[] = [
   fields_of_the_shire_dark_Raw,
@@ -88,4 +116,32 @@ export const presetThemes: Theme[] = [
   mono_light_Raw,
   vitesse_dark_dark_Raw,
   vitesse_light_light_Raw,
+  opencode_gui_abyss_dark_Raw,
+  opencode_gui_abyss_light_Raw,
+  opencode_gui_aurora_dark_Raw,
+  opencode_gui_aurora_light_Raw,
+  opencode_gui_citrus_dark_Raw,
+  opencode_gui_citrus_light_Raw,
+  opencode_gui_crimson_dark_Raw,
+  opencode_gui_crimson_light_Raw,
+  opencode_gui_cyan_dark_Raw,
+  opencode_gui_cyan_light_Raw,
+  opencode_gui_ember_dark_Raw,
+  opencode_gui_ember_light_Raw,
+  opencode_gui_graphite_dark_Raw,
+  opencode_gui_graphite_light_Raw,
+  opencode_gui_latte_dark_Raw,
+  opencode_gui_latte_light_Raw,
+  opencode_gui_matcha_dark_Raw,
+  opencode_gui_matcha_light_Raw,
+  opencode_gui_nebula_dark_Raw,
+  opencode_gui_nebula_light_Raw,
+  opencode_gui_sakura_dark_Raw,
+  opencode_gui_sakura_light_Raw,
+  opencode_gui_strawberry_dark_Raw,
+  opencode_gui_strawberry_light_Raw,
+  opencode_gui_tidal_dark_Raw,
+  opencode_gui_tidal_light_Raw,
+  opencode_gui_vaporwave_dark_Raw,
+  opencode_gui_vaporwave_light_Raw,
 ].map((theme) => withPrColors(requireTheme(theme)));

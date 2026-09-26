@@ -33,6 +33,13 @@ export type DesktopWindowControlsSide = 'left' | 'right';
 export type DesktopWindowControlAction = 'close' | 'minimize' | 'maximize';
 // No fixed-width constant: control width depends on the style (classic vs traffic-lights).
 export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
+/** Native backdrop for the main desktop window (Windows 11 Mica/Acrylic). */
+export type DesktopWindowMaterial = 'off' | 'mica' | 'acrylic';
+export const DEFAULT_DESKTOP_WINDOW_MATERIAL: DesktopWindowMaterial = 'off';
+/** Translucency of the material backdrop, 5 (more see-through) to 100 (fully solid). */
+export const DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY = 75;
+export const MIN_DESKTOP_WINDOW_MATERIAL_OPACITY = 5;
+export const MAX_DESKTOP_WINDOW_MATERIAL_OPACITY = 100;
 
 // The settings document is defined once, in the registry, and re-exported here
 // so the many existing importers keep their path.
@@ -73,6 +80,32 @@ const getElectronPlatform = (): string | null => {
   if (typeof window === 'undefined') return null;
   const platform = (window as unknown as { __OPENCHAMBER_PLATFORM__?: string }).__OPENCHAMBER_PLATFORM__;
   return typeof platform === 'string' ? platform : null;
+};
+
+/** Normalize a stored preference; unknown values map to the opaque default. */
+export const normalizeDesktopWindowMaterial = (
+  value: unknown,
+): DesktopWindowMaterial | undefined => {
+  if (value === 'off' || value === 'mica' || value === 'acrylic') {
+    return value;
+  }
+  return undefined;
+};
+
+export const normalizeDesktopWindowMaterialOpacity = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.max(
+    MIN_DESKTOP_WINDOW_MATERIAL_OPACITY,
+    Math.min(MAX_DESKTOP_WINDOW_MATERIAL_OPACITY, Math.round(value)),
+  );
+};
+
+/** True on the Windows desktop shell, the only place Mica/Acrylic exists. */
+export const isWindowsDesktopShell = (): boolean => {
+  if (!isElectronShell()) return false;
+  return getElectronPlatform() === 'win32';
 };
 
 /** Default side for in-app window controls (Windows-style, right). */

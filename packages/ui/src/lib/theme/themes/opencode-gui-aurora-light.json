@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-aurora-light",
+    "name": "Aurora",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Aurora theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "aurora"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#3a8a6a"
+    },
+    "surface": {
+      "background": "#F4FAF7",
+      "foreground": "#2e3e38",
+      "muted": "#E6EDEA",
+      "mutedForeground": "#5a7068",
+      "elevated": "#EFF5F2"
+    },
+    "interactive": {
+      "border": "rgba(46, 62, 56, 0.12)",
+      "borderHover": "rgba(46, 62, 56, 0.2)"
+    },
+    "status": {
+      "error": "#b94f6a",
+      "warning": "#7a4a1a",
+      "success": "#6b5a1a",
+      "info": "#2a6b66"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#6a8a80",
+        "keyword": "#2e7056",
+        "string": "#6b5a1a",
+        "number": "#7a4a1a",
+        "function": "#2e7056",
+        "variable": "#2e3e38",
+        "type": "#2a6b66",
+        "operator": "#5a7068"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

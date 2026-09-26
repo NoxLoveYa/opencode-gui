@@ -4,7 +4,7 @@ import { ThemePicker } from './ThemePicker';
 
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import type { ThemeMode } from '@/types/theme';
-import { useUIStore, type LargeTextPasteBehavior } from '@/stores/useUIStore';
+import { useUIStore, type LargeTextPasteBehavior, type WidgetCorners } from '@/stores/useUIStore';
 import { useMessageQueueStore, type FollowUpBehavior } from '@/stores/messageQueueStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { cn } from '@/lib/utils';
@@ -23,9 +23,13 @@ import {
     isDesktopShell,
     isVSCodeRuntime,
     isWebRuntime,
+    isWindowsDesktopShell,
+    MAX_DESKTOP_WINDOW_MATERIAL_OPACITY,
+    MIN_DESKTOP_WINDOW_MATERIAL_OPACITY,
     usesFramelessElectronChrome,
     type DesktopWindowControlsPosition,
     type DesktopWindowControlsStyle,
+    type DesktopWindowMaterial,
 } from '@/lib/desktop';
 import { useDeviceInfo } from '@/lib/device';
 import { usePwaDetection } from '@/hooks/usePwaDetection';
@@ -262,6 +266,17 @@ const WEEK_START_OPTIONS: Option<'auto' | 'monday' | 'sunday'>[] = [
     },
 ];
 
+const WIDGET_CORNER_OPTIONS: Option<WidgetCorners>[] = [
+    {
+        id: 'round',
+        labelKey: 'settings.openchamber.visual.option.widgetCorners.round',
+    },
+    {
+        id: 'square',
+        labelKey: 'settings.openchamber.visual.option.widgetCorners.square',
+    },
+];
+
 const FOLLOW_UP_BEHAVIOR_OPTIONS: Option<FollowUpBehavior>[] = [
     {
         id: 'steer',
@@ -303,7 +318,7 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
     return mode === 'markdown' ? 'markdown' : 'plain';
 };
 
-type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'scrollbars' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs' | 'animatedActivityIndicators';
+type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'windowMaterial' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'widgetCorners' | 'scrollbars' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs' | 'animatedActivityIndicators';
 
 const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPosition; labelKey: string }> = [
     { id: 'left', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsLeft' },
@@ -313,6 +328,12 @@ const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPositio
 const WINDOW_CONTROLS_STYLE_OPTIONS: Array<{ id: DesktopWindowControlsStyle; labelKey: string }> = [
     { id: 'classic', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsClassic' },
     { id: 'traffic-lights', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsTrafficLights' },
+];
+
+const WINDOW_MATERIAL_OPTIONS: Array<{ id: DesktopWindowMaterial; labelKey: string }> = [
+    { id: 'off', labelKey: 'settings.openchamber.desktopNetwork.option.windowMaterialOff' },
+    { id: 'mica', labelKey: 'settings.openchamber.desktopNetwork.option.windowMaterialMica' },
+    { id: 'acrylic', labelKey: 'settings.openchamber.desktopNetwork.option.windowMaterialAcrylic' },
 ];
 
 interface OpenChamberVisualSettingsProps {
@@ -382,6 +403,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setMonoFont = useUIStore(state => state.setMonoFont);
     const padding = useUIStore(state => state.padding);
     const setPadding = useUIStore(state => state.setPadding);
+    const widgetCorners = useUIStore(state => state.widgetCorners);
+    const setWidgetCorners = useUIStore(state => state.setWidgetCorners);
     const inputBarOffset = useUIStore(state => state.inputBarOffset);
     const setInputBarOffset = useUIStore(state => state.setInputBarOffset);
     const mobileKeyboardMode = useUIStore(state => state.mobileKeyboardMode);
@@ -462,10 +485,15 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const alwaysShowScrollbars = useUIStore(state => state.alwaysShowScrollbars === true);
     const setAlwaysShowScrollbars = useUIStore(state => state.setAlwaysShowScrollbars);
     const showWindowControlsPosition = usesFramelessElectronChrome();
+    const showWindowMaterial = isWindowsDesktopShell();
     const desktopWindowControlsPosition = useUIStore((state) => state.desktopWindowControlsPosition);
     const setDesktopWindowControlsPosition = useUIStore((state) => state.setDesktopWindowControlsPosition);
     const desktopWindowControlsStyle = useUIStore((state) => state.desktopWindowControlsStyle);
     const setDesktopWindowControlsStyle = useUIStore((state) => state.setDesktopWindowControlsStyle);
+    const desktopWindowMaterial = useUIStore((state) => state.desktopWindowMaterial);
+    const setDesktopWindowMaterial = useUIStore((state) => state.setDesktopWindowMaterial);
+    const desktopWindowMaterialOpacity = useUIStore((state) => state.desktopWindowMaterialOpacity);
+    const setDesktopWindowMaterialOpacity = useUIStore((state) => state.setDesktopWindowMaterialOpacity);
     const [chatRenderPreviewTick, setChatRenderPreviewTick] = React.useState(0);
     const reportUsage = useUIStore(state => state.reportUsage);
     const setReportUsage = useUIStore(state => state.setReportUsage);
@@ -485,6 +513,17 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         setDesktopWindowControlsStyle(value);
         void updateDesktopSettings({ desktopWindowControlsStyle: value });
     }, [setDesktopWindowControlsStyle]);
+
+    const handleWindowMaterialChange = React.useCallback((value: DesktopWindowMaterial) => {
+        setDesktopWindowMaterial(value);
+        void updateDesktopSettings({ desktopWindowMaterial: value });
+    }, [setDesktopWindowMaterial]);
+
+    const handleWindowMaterialOpacityChange = React.useCallback((value: number) => {
+        const clamped = Math.max(MIN_DESKTOP_WINDOW_MATERIAL_OPACITY, Math.min(MAX_DESKTOP_WINDOW_MATERIAL_OPACITY, Math.round(value)));
+        setDesktopWindowMaterialOpacity(clamped);
+        void updateDesktopSettings({ desktopWindowMaterialOpacity: clamped });
+    }, [setDesktopWindowMaterialOpacity]);
 
     const shouldAnimateChatPreview = (isSettingsDialogOpen || isMobile || isVSCodeRuntime())
         && (visibleSettings ? visibleSettings.includes('chatRenderMode') : true);
@@ -583,6 +622,10 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ chatRenderMode: mode });
     }, [setChatRenderMode]);
 
+    const handleWidgetCornersChange = React.useCallback((corners: WidgetCorners) => {
+        setWidgetCorners(corners);
+        void updateDesktopSettings({ widgetCorners: corners });
+    }, [setWidgetCorners]);
     const handleMessageStreamTransportChange = React.useCallback((mode: 'auto' | 'ws' | 'sse') => {
         setMessageStreamTransport(mode);
         void updateDesktopSettings({ messageStreamTransport: mode });
@@ -696,11 +739,12 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const isVSCode = isVSCodeRuntime();
     const hasThemeSettings = shouldShow('theme') && !isVSCode;
     const showWindowControlsPositionSetting = shouldShow('windowControlsPosition') && showWindowControlsPosition;
+    const showWindowMaterialSetting = shouldShow('windowMaterial') && showWindowMaterial;
     const hasLocalizationSettings = shouldShow('theme') || shouldShow('timeFormat') || shouldShow('weekStart');
     const hasAppearanceSettings = isVSCode
         ? hasLocalizationSettings
-        : (shouldShow('theme') || showWindowControlsPositionSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
-    const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || (shouldShow('scrollbars') && !hasThemeSettings) || (shouldShow('inputBarOffset') && isMobile);
+        : (shouldShow('theme') || showWindowControlsPositionSetting || showWindowMaterialSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
+    const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || shouldShow('widgetCorners') || (shouldShow('scrollbars') && !hasThemeSettings) || (shouldShow('inputBarOffset') && isMobile);
     const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('autoSaveEnabled') || (shouldShow('sessionTabs') && !isVSCode && !isMobile);
     const hasBehaviorSettings = shouldShow('mermaidRendering')
         || (shouldShow('sessionGoal') && !isVSCode)
@@ -1054,6 +1098,53 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             onChange={handleWindowControlsStyleChange}
                                             aria-label={t('settings.openchamber.desktopNetwork.field.windowControlsStyleAria')}
                                         />
+                                    </SettingsStackedField>
+                                </SettingsTwoColumn>
+                            </SettingsSection>
+                        )}
+
+                        {showWindowMaterialSetting && (
+                            <SettingsSection
+                                title={t('settings.openchamber.desktopNetwork.field.windowMaterial')}
+                                info={t('settings.openchamber.desktopNetwork.field.windowMaterialDescription')}
+                                divider={hasThemeSettings || showWindowControlsPositionSetting}
+                            >
+                                <SettingsTwoColumn>
+                                    <SettingsStackedField
+                                        label={t('settings.openchamber.desktopNetwork.field.windowMaterial')}
+                                        settingsItem="appearance.window-material"
+                                    >
+                                        <SettingsChipGroup
+                                            value={desktopWindowMaterial}
+                                            options={WINDOW_MATERIAL_OPTIONS.map((option) => ({
+                                                value: option.id,
+                                                label: tUnsafe(option.labelKey),
+                                            }))}
+                                            onChange={handleWindowMaterialChange}
+                                            aria-label={t('settings.openchamber.desktopNetwork.field.windowMaterialAria')}
+                                        />
+                                    </SettingsStackedField>
+                                    <SettingsStackedField
+                                        label={t('settings.openchamber.desktopNetwork.field.windowMaterialOpacity')}
+                                        info={t('settings.openchamber.desktopNetwork.field.windowMaterialOpacityDescription')}
+                                        settingsItem="appearance.window-material-opacity"
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <input
+                                                type="range"
+                                                min={MIN_DESKTOP_WINDOW_MATERIAL_OPACITY}
+                                                max={MAX_DESKTOP_WINDOW_MATERIAL_OPACITY}
+                                                step={1}
+                                                value={desktopWindowMaterialOpacity}
+                                                onChange={(event) => handleWindowMaterialOpacityChange(Number(event.target.value))}
+                                                disabled={desktopWindowMaterial === 'off'}
+                                                aria-label={t('settings.openchamber.desktopNetwork.field.windowMaterialOpacityAria')}
+                                                className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--interactive-border)] disabled:cursor-not-allowed disabled:opacity-50 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-[var(--primary-base)] [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--primary-base)]"
+                                            />
+                                            <span className="typography-meta w-11 shrink-0 text-right text-muted-foreground" aria-hidden>
+                                                {desktopWindowMaterialOpacity}%
+                                            </span>
+                                        </div>
                                     </SettingsStackedField>
                                 </SettingsTwoColumn>
                             </SettingsSection>
@@ -1492,6 +1583,26 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         </div>
                                     </SettingsStackedField>
                                 )}
+                            </SettingsTwoColumn>
+                        ) : null}
+                        {shouldShow('widgetCorners') ? (
+                            <SettingsTwoColumn>
+                                <SettingsStackedField
+                                    label={t('settings.openchamber.visual.field.widgetCorners')}
+                                    info={t('settings.openchamber.visual.field.widgetCornersHint')}
+                                    settingsItem="appearance.widget-corners"
+                                    controlClassName="w-full"
+                                >
+                                    <SettingsChipGroup
+                                        value={widgetCorners}
+                                        options={WIDGET_CORNER_OPTIONS.map((option) => ({
+                                            value: option.id,
+                                            label: tUnsafe(option.labelKey),
+                                        }))}
+                                        onChange={handleWidgetCornersChange}
+                                        aria-label={t('settings.openchamber.visual.field.widgetCornersAria')}
+                                    />
+                                </SettingsStackedField>
                             </SettingsTwoColumn>
                         ) : null}
                         {!hasThemeSettings && scrollbarSetting}

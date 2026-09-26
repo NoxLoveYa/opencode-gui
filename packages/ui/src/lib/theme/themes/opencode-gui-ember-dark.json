@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-ember-dark",
+    "name": "Ember",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Ember theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "ember"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#ef8354"
+    },
+    "surface": {
+      "background": "#160F0A",
+      "foreground": "#ead9c8",
+      "muted": "#261C14",
+      "mutedForeground": "#b5a08c",
+      "elevated": "#2E2017"
+    },
+    "interactive": {
+      "border": "rgba(234, 217, 200, 0.1)",
+      "borderHover": "rgba(234, 217, 200, 0.18)"
+    },
+    "status": {
+      "error": "#e06060",
+      "warning": "#d4a76a",
+      "success": "#a9bd70",
+      "info": "#8fc7e0"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#8a7a68",
+        "keyword": "#ef8354",
+        "string": "#a9bd70",
+        "number": "#d4a76a",
+        "function": "#f7a97e",
+        "variable": "#ead9c8",
+        "type": "#8fc7e0",
+        "operator": "#b07a52"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

@@ -12,7 +12,7 @@ export const AppStartupOverlay: React.FC<{ ready: boolean; animated?: boolean }>
 
   return (
     <motion.div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-[var(--splash-background,var(--surface-background))] text-foreground"
+      className="oc-opaque-overlay fixed inset-0 z-[9999] flex items-center justify-center bg-[var(--splash-background,var(--surface-background))] text-foreground"
       initial="loading"
       animate={ready ? 'ready' : 'loading'}
       variants={{ loading: { opacity: 1 }, ready: { opacity: 0 } }}

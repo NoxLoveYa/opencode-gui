@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-crimson-dark",
+    "name": "Crimson",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Crimson theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "crimson"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#e05a5a"
+    },
+    "surface": {
+      "background": "#1C0E10",
+      "foreground": "#f0d6d8",
+      "muted": "#2A1618",
+      "mutedForeground": "#b88a8f",
+      "elevated": "#32181B"
+    },
+    "interactive": {
+      "border": "rgba(240, 214, 216, 0.09)",
+      "borderHover": "rgba(240, 214, 216, 0.17)"
+    },
+    "status": {
+      "error": "#ff6b6b",
+      "warning": "#e8b86d",
+      "success": "#a8c48a",
+      "info": "#d48fa8"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#8a5f65",
+        "keyword": "#e05a5a",
+        "string": "#a8c48a",
+        "number": "#e8b86d",
+        "function": "#ff8a8a",
+        "variable": "#f0d6d8",
+        "type": "#d48fa8",
+        "operator": "#b07a7e"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

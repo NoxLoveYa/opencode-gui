@@ -142,6 +142,18 @@ describe('generateSmallModelText', () => {
     expect(state.requests.filter((entry) => entry.path === '/api/experimental/generate')).toHaveLength(1);
   });
 
+  it('maps the free-tier refusal to 404 so callers can fall back to the session', async () => {
+    state.generateErrors = [{
+      _tag: 'ServiceUnavailableError',
+      message: "Error from provider (Console): OpenCode's free tier can only be used from within OpenCode",
+    }];
+    await expect(generateSmallModelText(options)).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'small-model-unavailable',
+    });
+    expect(state.requests.filter((entry) => entry.path === '/api/experimental/generate')).toHaveLength(1);
+  });
+
   it('cancels without sending the retry', async () => {
     setUnavailableRetryDelaysForTest();
     const controller = new AbortController();
@@ -512,7 +524,7 @@ describe('listAuthenticatedProviders', () => {
 
 
 describe('small model failure response', () => {
-  it('preserves the model-specific reason without advice to change settings', async () => {
+  const registerGenerate = async () => {
     let generate;
     registerSmallModelRoutes({
       get() {},
@@ -520,23 +532,43 @@ describe('small model failure response', () => {
     }, {
       getSmallModelService: async () => ({ generateSmallModelText }),
     });
-    setUnavailableRetryDelaysForTest([1]);
-    state.generateErrors = [
-      { _tag: 'InvalidRequestError', message: 'Model unavailable: zai-coding-plan/glm-5.3-flash' },
-      { _tag: 'InvalidRequestError', message: 'Model unavailable: zai-coding-plan/glm-5.3-flash' },
-    ];
+    return generate;
+  };
+
+  const callGenerate = async (generate, body) => {
     let status;
     let payload;
     const response = {
       status(value) { status = value; return response; },
       json(value) { payload = value; },
     };
-    await generate({ body: { prompt: 'commit', model: 'zai-coding-plan/glm-5.3-flash' } }, response);
+    await generate({ body }, response);
+    return { status, payload };
+  };
+
+  it('preserves the model-specific reason without advice to change settings', async () => {
+    const generate = await registerGenerate();
+    setUnavailableRetryDelaysForTest([1]);
+    state.generateErrors = [
+      { _tag: 'InvalidRequestError', message: 'Model unavailable: zai-coding-plan/glm-5.3-flash' },
+      { _tag: 'InvalidRequestError', message: 'Model unavailable: zai-coding-plan/glm-5.3-flash' },
+    ];
+    const { status, payload } = await callGenerate(generate, { prompt: 'commit', model: 'zai-coding-plan/glm-5.3-flash' });
     expect(status).toBe(503);
     expect(payload).toEqual({
       error: 'Model unavailable: zai-coding-plan/glm-5.3-flash',
       code: 'small-model-unavailable',
     });
     setUnavailableRetryDelaysForTest();
+  });
+
+  it('answers free-tier refusal with 404 so commit generation falls back to the session', async () => {
+    const generate = await registerGenerate();
+    state.generateErrors = [
+      { _tag: 'ServiceUnavailableError', message: "Error from provider (Console): OpenCode's free tier can only be used from within OpenCode" },
+    ];
+    const { status, payload } = await callGenerate(generate, { prompt: 'commit', model: 'zai-coding-plan/glm-5.3-flash' });
+    expect(status).toBe(404);
+    expect(payload.code).toBe('small-model-unavailable');
   });
 });

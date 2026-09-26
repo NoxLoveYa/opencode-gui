@@ -19,7 +19,7 @@ export const ConfigUpdateOverlay: React.FC = () => {
   // No status text — the update message is internal jargon and reads as noise.
   // The animated logo alone signals "working".
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background/90">
+    <div className="oc-opaque-overlay fixed inset-0 z-[9999] flex items-center justify-center bg-background/90">
       <OpenChamberLogo width={80} height={80} isAnimated />
     </div>
   );

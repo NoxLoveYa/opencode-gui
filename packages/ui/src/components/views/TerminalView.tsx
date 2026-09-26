@@ -1248,8 +1248,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory }
             </div>
 
             <div
-                className="relative flex-1 overflow-hidden"
-                style={{ backgroundColor: xtermTheme.background }}
+                className="relative flex-1 overflow-hidden bg-[var(--surface-background)]"
             >
                 <div className="h-full w-full box-border pl-4 pr-1.5 pt-3 pb-4">
                     {shouldRenderViewport ? mountedTabIds.map((tabId) => (

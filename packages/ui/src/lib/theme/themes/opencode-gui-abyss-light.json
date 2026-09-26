@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-abyss-light",
+    "name": "Abyss",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Abyss theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "abyss"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#1a72c4"
+    },
+    "surface": {
+      "background": "#F4FAFC",
+      "foreground": "#243542",
+      "muted": "#E5ECEF",
+      "mutedForeground": "#4f6473",
+      "elevated": "#EFF5F7"
+    },
+    "interactive": {
+      "border": "rgba(20, 50, 75, 0.14)",
+      "borderHover": "rgba(20, 50, 75, 0.22)"
+    },
+    "status": {
+      "error": "#b85050",
+      "warning": "#82591a",
+      "success": "#35702c",
+      "info": "#0f766e"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#5f7382",
+        "keyword": "#135a9e",
+        "string": "#35702c",
+        "number": "#82591a",
+        "function": "#135a9e",
+        "variable": "#243542",
+        "type": "#0f766e",
+        "operator": "#47657a"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

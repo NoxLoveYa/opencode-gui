@@ -60,7 +60,7 @@ const TrafficLightButton: React.FC<TrafficLightButtonProps> = ({ action, isMaxim
       className="app-region-no-drag flex h-8 w-[24px] items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <span
-        className="flex size-3.5 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.28)] transition-[filter] duration-75 active:brightness-90"
+        className="oc-keep-round flex size-3.5 items-center justify-center rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.28)] transition-[filter] duration-75 active:brightness-90"
         style={{ backgroundColor: fill, color: TRAFFIC_LIGHT_GLYPH }}
       >
         <span className="flex items-center justify-center opacity-0 transition-opacity duration-75 group-hover/wctl:opacity-100">

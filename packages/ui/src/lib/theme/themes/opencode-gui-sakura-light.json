@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-sakura-light",
+    "name": "Sakura",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Sakura theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "sakura"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#c14e73"
+    },
+    "surface": {
+      "background": "#FDF4F8",
+      "foreground": "#4d3941",
+      "muted": "#F1E7EB",
+      "mutedForeground": "#7d6470",
+      "elevated": "#F9EFF3"
+    },
+    "interactive": {
+      "border": "rgba(120, 60, 85, 0.14)",
+      "borderHover": "rgba(120, 60, 85, 0.22)"
+    },
+    "status": {
+      "error": "#bf3a3a",
+      "warning": "#8a5c1d",
+      "success": "#4f6a2a",
+      "info": "#33608a"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#90707d",
+        "keyword": "#a63a5c",
+        "string": "#4f6a2a",
+        "number": "#8a5c1d",
+        "function": "#a63a5c",
+        "variable": "#4d3941",
+        "type": "#33608a",
+        "operator": "#805063"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

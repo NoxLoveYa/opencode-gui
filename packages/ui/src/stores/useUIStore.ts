@@ -12,7 +12,7 @@ import type { LinearIssueListAssignee, LinearIssueListPriority, LinearIssueListS
 import type { ProjectRef } from '@/lib/projectContextApi';
 import { directoryMayHaveActiveProjectAction, useTerminalStore } from '@/stores/useTerminalStore';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
-import { isVSCodeRuntime } from '@/lib/desktop';
+import { DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY, isVSCodeRuntime, normalizeDesktopWindowMaterial, normalizeDesktopWindowMaterialOpacity, type DesktopWindowMaterial } from '@/lib/desktop';
 import { isContextPanelMode, type ContextPanelMode } from '@/lib/surfaces/modes';
 import { getRuntimeKey, isTransientRuntimeKey } from '@/lib/runtime-switch';
 import { sanitizeWorkStatusSectionOrder, type WorkStatusPanelSectionId } from '@/components/chat/work-status/sections';
@@ -40,6 +40,8 @@ export type DesktopWindowControlsPosition = 'left' | 'right';
 export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 export type FileEditorKeymap = 'default' | 'vim';
 export type LargeTextPasteBehavior = 'ask' | 'attach' | 'inline';
+
+export type WidgetCorners = 'round' | 'square';
 
 export const DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR: LargeTextPasteBehavior = 'ask';
 
@@ -903,6 +905,7 @@ interface UIStore {
   monoFont: MonoFontOption;
   padding: number;
   cornerRadius: number;
+  widgetCorners: WidgetCorners;
   inputBarOffset: number;
   mobileKeyboardMode: MobileKeyboardMode;
 
@@ -1014,6 +1017,8 @@ interface UIStore {
   weekStartPreference: WeekStartPreference;
   desktopWindowControlsPosition: DesktopWindowControlsPosition;
   desktopWindowControlsStyle: DesktopWindowControlsStyle;
+  desktopWindowMaterial: DesktopWindowMaterial;
+  desktopWindowMaterialOpacity: number;
   mermaidRenderingMode: MermaidRenderingMode;
   userMessageRenderingMode: UserMessageRenderingMode;
   collapsibleUserMessages: boolean;
@@ -1128,10 +1133,12 @@ interface UIStore {
   setMonoFont: (font: MonoFontOption) => void;
   setPadding: (size: number) => void;
   setCornerRadius: (radius: number) => void;
+  setWidgetCorners: (corners: WidgetCorners) => void;
   setInputBarOffset: (offset: number) => void;
   setMobileKeyboardMode: (mode: MobileKeyboardMode) => void;
   applyTypography: () => void;
   applyPadding: () => void;
+  applyWidgetCorners: () => void;
   toggleFavoriteModel: (providerID: string, modelID: string) => void;
   reorderFavoriteModel: (
     activeProviderID: string,
@@ -1215,6 +1222,8 @@ interface UIStore {
   setWeekStartPreference: (value: WeekStartPreference) => void;
   setDesktopWindowControlsPosition: (value: DesktopWindowControlsPosition) => void;
   setDesktopWindowControlsStyle: (value: DesktopWindowControlsStyle) => void;
+  setDesktopWindowMaterial: (value: DesktopWindowMaterial) => void;
+  setDesktopWindowMaterialOpacity: (value: number) => void;
   setMermaidRenderingMode: (value: MermaidRenderingMode) => void;
   setUserMessageRenderingMode: (value: UserMessageRenderingMode) => void;
   setCollapsibleUserMessages: (value: boolean) => void;
@@ -1321,6 +1330,7 @@ export const useUIStore = create<UIStore>()(
         monoFont: DEFAULT_MONO_FONT,
         padding: 100,
         cornerRadius: 18,
+        widgetCorners: 'round',
         inputBarOffset: 0,
         mobileKeyboardMode: getStoredMobileKeyboardMode(),
         favoriteModels: [],
@@ -1399,6 +1409,8 @@ export const useUIStore = create<UIStore>()(
         weekStartPreference: 'auto',
         desktopWindowControlsPosition: 'right',
         desktopWindowControlsStyle: 'classic',
+        desktopWindowMaterial: DEFAULT_DESKTOP_WINDOW_MATERIAL,
+        desktopWindowMaterialOpacity: DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY,
         mermaidRenderingMode: 'svg',
         userMessageRenderingMode: 'markdown',
         collapsibleUserMessages: true,
@@ -2262,6 +2274,11 @@ export const useUIStore = create<UIStore>()(
           set({ cornerRadius: radius });
         },
 
+        setWidgetCorners: (corners) => {
+          set({ widgetCorners: corners });
+          get().applyWidgetCorners();
+        },
+
         applyTypography: () => {
           const { fontSize } = get();
           const root = document.documentElement;
@@ -2316,6 +2333,16 @@ export const useUIStore = create<UIStore>()(
           root.style.setProperty('--line-height-normal', (1.5 * lineHeightScale).toFixed(3));
           root.style.setProperty('--line-height-relaxed', (1.625 * lineHeightScale).toFixed(3));
           root.style.setProperty('--line-height-loose', (2 * lineHeightScale).toFixed(3));
+        },
+
+        applyWidgetCorners: () => {
+          const { widgetCorners } = get();
+          const root = document.documentElement;
+          if (widgetCorners === 'square') {
+            root.setAttribute('data-widget-corners', 'square');
+            return;
+          }
+          root.removeAttribute('data-widget-corners');
         },
 
         setDiffLayoutPreference: (mode) => {
@@ -2808,6 +2835,12 @@ export const useUIStore = create<UIStore>()(
         setDesktopWindowControlsStyle: (value) => {
           set({ desktopWindowControlsStyle: value === 'traffic-lights' ? 'traffic-lights' : 'classic' });
         },
+        setDesktopWindowMaterial: (value) => {
+          set({ desktopWindowMaterial: normalizeDesktopWindowMaterial(value) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL });
+        },
+        setDesktopWindowMaterialOpacity: (value) => {
+          set({ desktopWindowMaterialOpacity: normalizeDesktopWindowMaterialOpacity(value) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY });
+        },
         setMermaidRenderingMode: (value) => {
           set({ mermaidRenderingMode: value });
         },
@@ -2874,12 +2907,22 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createDeferredSafeJSONStorage(),
-        version: 21,
+        version: 22,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
           }
           const state = persistedState as Record<string, unknown>;
+
+          // v21 -> v22: new window-material fields; fill defaults and drop garbage.
+          if (version < 22) {
+            if (normalizeDesktopWindowMaterial(state.desktopWindowMaterial) === undefined) {
+              state.desktopWindowMaterial = DEFAULT_DESKTOP_WINDOW_MATERIAL;
+            }
+            if (normalizeDesktopWindowMaterialOpacity(state.desktopWindowMaterialOpacity) === undefined) {
+              state.desktopWindowMaterialOpacity = DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY;
+            }
+          }
 
           // v20 -> v21: enable telemetry by default; preserve explicit choices.
           if (version < 21 && state.workStatusHiddenSectionsExplicit !== true) {
@@ -3176,6 +3219,7 @@ export const useUIStore = create<UIStore>()(
           monoFont: state.monoFont,
           padding: state.padding,
           cornerRadius: state.cornerRadius,
+          widgetCorners: state.widgetCorners,
           favoriteModels: state.favoriteModels,
           hiddenModels: state.hiddenModels,
           providerOrder: state.providerOrder,
@@ -3233,6 +3277,8 @@ export const useUIStore = create<UIStore>()(
           weekStartPreference: state.weekStartPreference,
           desktopWindowControlsPosition: state.desktopWindowControlsPosition,
           desktopWindowControlsStyle: state.desktopWindowControlsStyle,
+          desktopWindowMaterial: state.desktopWindowMaterial,
+          desktopWindowMaterialOpacity: state.desktopWindowMaterialOpacity,
           inputBarOffset: state.inputBarOffset,
           mermaidRenderingMode: state.mermaidRenderingMode,
           userMessageRenderingMode: state.userMessageRenderingMode,

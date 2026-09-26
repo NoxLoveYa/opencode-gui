@@ -11,11 +11,14 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   const applyTypography = useUIStore((state) => state.applyTypography);
   const padding = useUIStore((state) => state.padding);
   const applyPadding = useUIStore((state) => state.applyPadding);
+  const widgetCorners = useUIStore((state) => state.widgetCorners);
+  const applyWidgetCorners = useUIStore((state) => state.applyWidgetCorners);
 
   React.useLayoutEffect(() => {
     applyTypography();
     applyPadding();
-  }, [fontSize, applyTypography, padding, applyPadding]);
+    applyWidgetCorners();
+  }, [fontSize, applyTypography, padding, applyPadding, widgetCorners, applyWidgetCorners]);
 
   React.useEffect(() => {
     const handleZoom = (event: Event) => {

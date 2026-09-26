@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-graphite-dark",
+    "name": "Graphite",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Graphite theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "graphite"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#8fa1b8"
+    },
+    "surface": {
+      "background": "#0E0F11",
+      "foreground": "#e2e4e8",
+      "muted": "#1C1D1F",
+      "mutedForeground": "#9ea3ad",
+      "elevated": "#222428"
+    },
+    "interactive": {
+      "border": "rgba(226, 228, 232, 0.09)",
+      "borderHover": "rgba(226, 228, 232, 0.16)"
+    },
+    "status": {
+      "error": "#d77a7a",
+      "warning": "#d1a86d",
+      "success": "#a9b88f",
+      "info": "#8fb8c4"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#6d747e",
+        "keyword": "#8fa1b8",
+        "string": "#a9b88f",
+        "number": "#d1a86d",
+        "function": "#b2c2d9",
+        "variable": "#e2e4e8",
+        "type": "#8fb8c4",
+        "operator": "#7c8596"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

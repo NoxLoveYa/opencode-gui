@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-citrus-light",
+    "name": "Citrus",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Citrus theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "citrus"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#96801c"
+    },
+    "surface": {
+      "background": "#FDFCF2",
+      "foreground": "#423e2a",
+      "muted": "#F0EFE4",
+      "mutedForeground": "#6f6a52",
+      "elevated": "#F8F7ED"
+    },
+    "interactive": {
+      "border": "rgba(120, 105, 30, 0.15)",
+      "borderHover": "rgba(120, 105, 30, 0.23)"
+    },
+    "status": {
+      "error": "#b85050",
+      "warning": "#8f5326",
+      "success": "#55662a",
+      "info": "#23716b"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#7c7762",
+        "keyword": "#7d6a12",
+        "string": "#55662a",
+        "number": "#8f5326",
+        "function": "#7d6a12",
+        "variable": "#423e2a",
+        "type": "#23716b",
+        "operator": "#6b6440"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

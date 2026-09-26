@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-matcha-dark",
+    "name": "Matcha",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Matcha theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "matcha"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#7fb069"
+    },
+    "surface": {
+      "background": "#0F150C",
+      "foreground": "#c2d1b6",
+      "muted": "#1A2216",
+      "mutedForeground": "#8fa184",
+      "elevated": "#1E291A"
+    },
+    "interactive": {
+      "border": "rgba(194, 209, 182, 0.1)",
+      "borderHover": "rgba(194, 209, 182, 0.18)"
+    },
+    "status": {
+      "error": "#d97b62",
+      "warning": "#d4a06a",
+      "success": "#d4b57f",
+      "info": "#7fc4bd"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#65755a",
+        "keyword": "#7fb069",
+        "string": "#d4b57f",
+        "number": "#d4a06a",
+        "function": "#a3cc90",
+        "variable": "#c2d1b6",
+        "type": "#7fc4bd",
+        "operator": "#6f9460"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

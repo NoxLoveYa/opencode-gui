@@ -160,6 +160,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['density', 'compact', 'comfortable', 'spacing'],
   },
   {
+    id: 'appearance.widget-corners',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.widgetCorners',
+    descriptionKey: 'settings.openchamber.visual.field.widgetCornersHint',
+    keywords: ['radius', 'rounded', 'square', 'corners', 'shape', 'widgets'],
+  },
+  {
     id: 'appearance.input-bar-offset',
     page: 'appearance',
     titleKey: 'settings.openchamber.visual.field.inputBarOffset',
@@ -508,6 +515,22 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.openchamber.desktopNetwork.field.windowControlsStyle',
     keywords: ['desktop', 'window', 'controls', 'style', 'traffic', 'lights', 'classic', 'macos', 'titlebar'],
     isAvailable: (ctx) => ctx.isDesktop && (ctx.isWindows || !ctx.isMac),
+  },
+  {
+    id: 'appearance.window-material',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.desktopNetwork.field.windowMaterial',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.windowMaterialDescription',
+    keywords: ['desktop', 'window', 'material', 'mica', 'acrylic', 'transparency', 'translucent', 'backdrop', 'blur', 'fluent'],
+    isAvailable: (ctx) => ctx.isDesktop && ctx.isWindows,
+  },
+  {
+    id: 'appearance.window-material-opacity',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.desktopNetwork.field.windowMaterialOpacity',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.windowMaterialOpacityDescription',
+    keywords: ['desktop', 'window', 'material', 'opacity', 'transparency', 'translucent', 'backdrop'],
+    isAvailable: (ctx) => ctx.isDesktop && ctx.isWindows,
   },
   {
     id: 'sessions.desktop-mac-menu-bar',

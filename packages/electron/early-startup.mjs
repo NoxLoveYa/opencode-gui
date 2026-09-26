@@ -387,6 +387,15 @@ export const buildRendererAdditionalArguments = ({
 
 export const usesFramelessChrome = process.platform === 'win32' || process.platform === 'linux';
 
+// Native backdrop behind the main window. Windows-only (Mica/Acrylic); the
+// renderer mirrors the same choice from its own store and tells main over
+// IPC, which persists it here so the next cold start paints it immediately.
+export const resolveWindowMaterial = () => {
+  if (process.platform !== 'win32') return 'none';
+  const raw = readSettingsRoot().desktopWindowMaterial;
+  return raw === 'mica' || raw === 'acrylic' ? raw : 'none';
+};
+
 export const buildMainWindowOptions = ({ bounds, backgroundColor, additionalArguments }) => {
   const usesCustomTitleBar = process.platform === 'darwin' || usesFramelessChrome;
   const options = {
@@ -398,6 +407,7 @@ export const buildMainWindowOptions = ({ bounds, backgroundColor, additionalArgu
     icon: getWindowIconPath(),
     show: false,
     backgroundColor,
+    ...(process.platform === 'win32' ? { backgroundMaterial: resolveWindowMaterial() } : {}),
     frame: usesFramelessChrome ? false : undefined,
     autoHideMenuBar: process.platform !== 'darwin',
     // Electron's hiddenInset adds its own extra inset, which leaves the controls

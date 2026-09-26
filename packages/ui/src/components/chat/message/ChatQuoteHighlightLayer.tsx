@@ -34,6 +34,23 @@ import { ChatQuoteMarkPopover } from './ChatQuoteMarkPopover';
 const MARK_HIGHLIGHT = 'oc-chat-quote';
 const FOCUS_HIGHLIGHT = 'oc-chat-quote-focus';
 const FLASH_DURATION_MS = 1600;
+// The ::highlight() selectors live here instead of a stylesheet: static CSS
+// validators predate the Custom Highlight API and reject them, while these
+// names only mean anything once this layer registers them below.
+const HIGHLIGHT_STYLE_RULE =
+    `::highlight(${MARK_HIGHLIGHT}),::highlight(${FOCUS_HIGHLIGHT}){background-color:var(--oc-text-selection)}`;
+
+const styledDocuments = new WeakSet<Document>();
+
+function ensureHighlightStyles(): void {
+    if (!supportsHighlights()) return;
+    if (styledDocuments.has(document)) return;
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(HIGHLIGHT_STYLE_RULE);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    styledDocuments.add(document);
+}
+
 // Hover must rest on a mark before its popover opens, so reading across the
 // text does not flicker popovers; leaving gets a grace period to reach it.
 const POPOVER_OPEN_DELAY_MS = 400;
@@ -200,6 +217,13 @@ export const ChatQuoteHighlightLayer = React.memo(function ChatQuoteHighlightLay
         store.setRevealHandler(reveal);
         return () => store.setRevealHandler(null);
     }, [reveal, store]);
+
+    // Chat quotes waiting in the composer stay marked in their message,
+    // tinted like a text selection. The hovered or just-revealed one paints
+    // in both layers, so the translucent fills stack into a stronger mark.
+    React.useEffect(() => {
+        ensureHighlightStyles();
+    }, []);
 
     const openMark = popover ? marks.find((mark) => mark.id === popover.markId) ?? null : null;
     const editingRef = React.useRef(editing);

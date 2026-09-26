@@ -78,8 +78,8 @@ export function SessionSidebarRows({
       if (!row) return null;
       return <div
         key={row.key}
-        // Isolated virtual rows cannot collapse neighboring margins: 1px per side preserves the 2px gap.
-        className={`[&_[data-session-row]]:my-px ${sectionSpacingAfter(row, rows[item.index + 1]) ?? ''}`}
+        // Isolated virtual rows cannot collapse neighboring margins: 4px per side preserves the 8px block gap.
+        className={`[&_[data-session-row]]:my-1 ${sectionSpacingAfter(row, rows[item.index + 1]) ?? ''}`}
         data-index={item.index}
         data-sidebar-virtual-start={item.start}
         ref={virtualizer.measureElement}

@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-tidal-light",
+    "name": "Tidal",
+    "variant": "light",
+    "description": "Ported from Opencode-GUI Tidal theme (light variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "light",
+      "opencode-gui",
+      "ported",
+      "tidal"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#0e7a71"
+    },
+    "surface": {
+      "background": "#F4FAF9",
+      "foreground": "#233a39",
+      "muted": "#E5EDEC",
+      "mutedForeground": "#4a6a68",
+      "elevated": "#EFF5F4"
+    },
+    "interactive": {
+      "border": "rgba(35, 58, 57, 0.12)",
+      "borderHover": "rgba(35, 58, 57, 0.2)"
+    },
+    "status": {
+      "error": "#b94f4f",
+      "warning": "#7a4a10",
+      "success": "#6a4d1a",
+      "info": "#2a6b66"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#6a8a88",
+        "keyword": "#0a5e57",
+        "string": "#6a4d1a",
+        "number": "#7a4a10",
+        "function": "#0a5e57",
+        "variable": "#233a39",
+        "type": "#2a6b66",
+        "operator": "#4a6a68"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

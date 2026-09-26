@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-citrus-dark",
+    "name": "Citrus",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Citrus theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "citrus"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#e3c84b"
+    },
+    "surface": {
+      "background": "#14120B",
+      "foreground": "#ede8d3",
+      "muted": "#242115",
+      "mutedForeground": "#b3ad92",
+      "elevated": "#2C2919"
+    },
+    "interactive": {
+      "border": "rgba(237, 232, 211, 0.1)",
+      "borderHover": "rgba(237, 232, 211, 0.18)"
+    },
+    "status": {
+      "error": "#e08f8f",
+      "warning": "#e8a05c",
+      "success": "#a9c47f",
+      "info": "#8fc7e0"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#827d67",
+        "keyword": "#e3c84b",
+        "string": "#a9c47f",
+        "number": "#e8a05c",
+        "function": "#f2dc74",
+        "variable": "#ede8d3",
+        "type": "#8fc7e0",
+        "operator": "#ada254"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

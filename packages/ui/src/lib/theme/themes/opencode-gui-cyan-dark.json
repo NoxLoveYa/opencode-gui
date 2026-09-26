@@ -1,0 +1,57 @@
+{
+  "metadata": {
+    "id": "opencode-gui-cyan-dark",
+    "name": "Cyan",
+    "variant": "dark",
+    "description": "Ported from Opencode-GUI Cyan theme (dark variant)",
+    "version": "1.0.0",
+    "author": "Brainrot-Corp Opencode-GUI",
+    "tags": [
+      "dark",
+      "opencode-gui",
+      "ported",
+      "cyan"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#7fd4d4"
+    },
+    "surface": {
+      "background": "#090C10",
+      "foreground": "#d7e0e6",
+      "muted": "#141C23",
+      "mutedForeground": "#8fa1ac",
+      "elevated": "#1C262F"
+    },
+    "interactive": {
+      "border": "rgba(255, 255, 255, 0.07)",
+      "borderHover": "rgba(255, 255, 255, 0.12)"
+    },
+    "status": {
+      "error": "#e08f8f",
+      "warning": "#d4b57f",
+      "success": "#9fce8f",
+      "info": "#8fc7e0"
+    },
+    "syntax": {
+      "base": {
+        "comment": "#55707c",
+        "keyword": "#7fd4d4",
+        "string": "#9fce8f",
+        "number": "#d4b57f",
+        "function": "#a8e6e4",
+        "variable": "#d7e0e6",
+        "type": "#8fc7e0",
+        "operator": "#74a0ab"
+      }
+    }
+  },
+  "config": {
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}
