@@ -115,7 +115,7 @@ export type SessionSidebarRowModelArgs = {
 };
 
 const EMPTY_FOLDERS: readonly SessionFolder[] = [];
-const SESSION_ESTIMATE = 32;
+const SESSION_ESTIMATE = 52;
 const TIMELINE_SESSION_ESTIMATE = 64;
 const TIMELINE_CHATS_INITIAL_LIMIT = 3;
 const TIMELINE_CHATS_INCREMENT = 7;

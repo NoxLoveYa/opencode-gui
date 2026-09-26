@@ -564,6 +564,13 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     },
   });
   const isSessionMenuOpen = isMenuOpen || isContextMenuOpen;
+  // Line 1 and the meta line share the action-clearance padding so neither
+  // slides under the hover-revealed buttons.
+  const contentPaddingClass = isTimelineRow
+    ? undefined
+    : alwaysShowActions
+      ? (isVSCode ? revealPaddingClass : alwaysActionPaddingClass)
+      : (isSessionMenuOpen ? menuActionPaddingClass : revealPaddingClass);
   const isMultiRunLikeSession = React.useMemo(() => getMultiRunIdentity(resolvedSession) !== null, [resolvedSession]);
   const [fusionDialogOpen, setFusionDialogOpen] = React.useState(false);
 
@@ -777,9 +784,12 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
           key={session.id}
           style={{ paddingLeft: ROW_GUTTER_LEFT_PX + 4 }}
           className={cn(
-            'group relative my-0.5 flex items-center rounded-md pr-2.5',
+            'group relative my-1 flex items-center rounded-sm border pr-2.5',
+            'shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]',
             isTimelineChatRow ? 'py-1' : 'py-1.5',
-            isActive && 'bg-interactive-selection/70 text-interactive-selection-foreground',
+            isActive
+              ? 'border-border bg-interactive-selection/70 text-interactive-selection-foreground'
+              : 'border-border/60 bg-surface-muted/40',
           )}
         >
           <SessionTimelineRowBody
@@ -810,9 +820,9 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       <div
         key={session.id}
         style={{ paddingLeft: ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
-        // my-0.5 matches the normal row box so entering rename mode does not
+        // my-1 matches the normal row box so entering rename mode does not
         // shift the row vertically.
-        className="group relative my-0.5 flex items-center rounded-sm py-1 pr-1.5"
+        className="group relative my-1 flex items-center rounded-sm border border-border/60 bg-surface-muted/40 py-1 pr-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
       >
         <div className="flex min-w-0 flex-1 flex-col gap-0">
           {renameForm}
@@ -1587,10 +1597,12 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                 // on the right (their left edge is the status/chevron gutter).
                 style={{ paddingLeft: isTimelineRow ? ROW_GUTTER_LEFT_PX + 4 : ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
                 className={cn(
-                  'group relative my-0.5 flex cursor-pointer items-center rounded-md pr-2.5',
+                  'group relative my-1 flex cursor-pointer items-center rounded-sm border pr-2.5',
+                  'shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]',
                   isTimelineRow && !isTimelineChatRow ? 'py-1.5' : 'py-1',
-                  isTimelineRow && !(isActive || isRowSelected) && 'hover:bg-interactive-hover/60',
-                  (isActive || isRowSelected) && 'bg-interactive-selection/70 text-interactive-selection-foreground',
+                  (isActive || isRowSelected)
+                    ? 'border-border bg-interactive-selection/70 text-interactive-selection-foreground'
+                    : 'border-border/60 bg-surface-muted/40 hover:bg-interactive-hover/60',
                   isRowSelected && 'ring-1 ring-inset ring-border',
                 )}
               />
@@ -1620,15 +1632,12 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                       // Timeline actions overlay the first line's meta
                       // cluster, which fades instead, so the body keeps its
                       // width on hover.
-                      isTimelineRow
-                        ? undefined
-                        : alwaysShowActions
-                          ? (isVSCode ? revealPaddingClass : alwaysActionPaddingClass)
-                          : (isSessionMenuOpen ? menuActionPaddingClass : revealPaddingClass),
+                      contentPaddingClass,
                     )}
                   >
                     {isTimelineRow ? timelineRowBody : (
-                    <div className="flex w-full items-center min-w-0 flex-1 gap-1 overflow-hidden">
+                    <div className="flex w-full min-w-0 flex-1 flex-col gap-px overflow-hidden">
+                    <div className="flex w-full min-w-0 flex-1 items-center gap-1 overflow-hidden">
                       {/* Unread emphasis is color-only: a font-weight change
                           would reflow the truncated title and cause a micro
                           horizontal shift when the status flips. */}
@@ -1643,6 +1652,22 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                               : 'group-hover:mr-1 group-has-[:focus-visible]:mr-1'}
                         />
                       ) : null}
+                      {nextStepBadge(badgeVisibilityClass)}
+                      {pendingPermissionCount > 0 ? (
+                        <span className={cn('inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0', badgeVisibilityClass)} title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
+                          <Icon name="shield" className="h-3 w-3" />
+                          <span className="leading-none">{pendingPermissionCount}</span>
+                        </span>
+                      ) : null}
+                      {pendingFormCount > 0 ? (
+                        <span className={cn('inline-flex items-center gap-1 rounded bg-status-info/10 px-1 py-0.5 text-[0.7rem] text-status-info flex-shrink-0', badgeVisibilityClass)} title={pendingFormLabel} aria-label={pendingFormLabel}>
+                          <Icon name="question" className="h-3 w-3" />
+                          <span className="leading-none">{pendingFormCount}</span>
+                        </span>
+                      ) : null}
+                    </div>
+                    {(alwaysShowActions || showActivityDuration || sessionGoalGlyph || showInlineBranchMarker || renderContext === 'recent') ? (
+                    <div className={cn('flex h-4 w-full min-w-0 items-center gap-1 overflow-hidden typography-micro transition-[padding]', contentPaddingClass)}>
                       {/* While a turn runs (and until its result is read) the
                           elapsed counter takes over this slot from the usual
                           goal/branch/date metadata, which stays one hover or
@@ -1650,7 +1675,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                       {alwaysShowActions ? (
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.
-                        <span className="ml-2 inline-flex flex-shrink-0 items-center gap-1 typography-micro text-muted-foreground/75">
+                        <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground/75">
                           {showActivityDuration ? (
                             <SessionActivityDuration sessionId={session.id} running={isStreaming} />
                           ) : (
@@ -1667,14 +1692,14 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                             </>
                           )}
                         </span>
-                      ) : (showActivityDuration || sessionGoalGlyph || showInlineBranchMarker || renderContext === 'recent') ? (
+                      ) : (
                         <div className={cn(
-                            'relative ml-1 flex h-4 flex-shrink-0 items-center justify-end',
+                            'flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap',
                             isSessionMenuOpen
-                              ? 'hidden'
+                              ? 'invisible'
                               : isVSCode
-                                ? 'group-hover:hidden'
-                                : 'group-hover:hidden group-has-[:focus-visible]:hidden',
+                                ? 'group-hover:invisible'
+                                : 'group-hover:invisible group-has-[:focus-visible]:invisible',
                           )}>
                           <span className="inline-flex items-center gap-1 whitespace-nowrap text-right">
                             {showActivityDuration ? (
@@ -1697,8 +1722,8 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                                     timestamp inline (touch runtimes already get
                                     it through the alwaysShowActions branch);
                                     it shares the slot with the goal/branch
-                                    metadata and hides on hover exactly like
-                                    them, so the revealed row actions never
+                                    metadata and stays invisible on hover exactly
+                                    like them, so the revealed row actions never
                                     overlap it. */}
                                 {renderContext === 'recent' ? (
                                   <span className="flex-shrink-0 typography-micro leading-none text-muted-foreground/75 tabular-nums">
@@ -1709,20 +1734,9 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                             )}
                           </span>
                         </div>
-                      ) : null}
-                      {nextStepBadge(badgeVisibilityClass)}
-                      {pendingPermissionCount > 0 ? (
-                        <span className={cn('inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0', badgeVisibilityClass)} title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
-                          <Icon name="shield" className="h-3 w-3" />
-                          <span className="leading-none">{pendingPermissionCount}</span>
-                        </span>
-                      ) : null}
-                      {pendingFormCount > 0 ? (
-                        <span className={cn('inline-flex items-center gap-1 rounded bg-status-info/10 px-1 py-0.5 text-[0.7rem] text-status-info flex-shrink-0', badgeVisibilityClass)} title={pendingFormLabel} aria-label={pendingFormLabel}>
-                          <Icon name="question" className="h-3 w-3" />
-                          <span className="leading-none">{pendingFormCount}</span>
-                        </span>
-                      ) : null}
+                      )}
+                    </div>
+                    ) : null}
                     </div>
                     )}
                   </button>
