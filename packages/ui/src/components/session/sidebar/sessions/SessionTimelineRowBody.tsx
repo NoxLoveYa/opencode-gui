@@ -51,8 +51,8 @@ const TimelineProjectIcon: React.FC<{ project: TimelineRowProject | null }> = ({
   const iconName = project?.icon ? PROJECT_ICON_MAP[project.icon] : null;
   const iconColor = project?.color ? (PROJECT_COLOR_MAP[project.color] ?? null) : null;
   const glyph = iconName
-    ? <Icon name={iconName} className={cn('h-3.5 w-3.5', !iconColor && 'text-muted-foreground/75')} style={iconColor ? { color: iconColor } : undefined} />
-    : <Icon name="folder" className="h-3.5 w-3.5 text-muted-foreground/75" style={iconColor ? { color: iconColor } : undefined} />;
+    ? <Icon name={iconName} className={cn('h-3.5 w-3.5', !iconColor && 'text-muted-foreground')} style={iconColor ? { color: iconColor } : undefined} />
+    : <Icon name="folder" className="h-3.5 w-3.5 text-muted-foreground" style={iconColor ? { color: iconColor } : undefined} />;
   if (!project?.iconImage) {
     return <span className="inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">{glyph}</span>;
   }
@@ -93,11 +93,11 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
     {directoryIndicator}
     {pinnedMarker}
     {statusDot}
-    <span className="typography-micro leading-none text-muted-foreground/50 tabular-nums">{timeSlot}</span>
+    <span className="typography-micro leading-none text-muted-foreground tabular-nums">{timeSlot}</span>
   </span>;
   if (compact) {
     return <div className="relative flex w-full min-w-0 items-center gap-1">
-      <div className={cn('min-w-0 flex-1 truncate typography-ui-label font-normal', titleClassName)}>{title}</div>
+      <div className={cn('min-w-0 flex-1 truncate typography-ui-label font-medium', titleClassName)}>{title}</div>
       {meta}
     </div>;
   }
@@ -107,17 +107,17 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
     <div className="relative flex h-5 w-full min-w-0 items-center gap-1">
       <TimelineProjectIcon project={project} />
       {projectLabel ? (
-        <span className="min-w-0 truncate typography-micro text-muted-foreground/85">{projectLabel}</span>
+        <span className="min-w-0 truncate typography-micro text-muted-foreground">{projectLabel}</span>
       ) : null}
       {meta}
     </div>
-    <div className={cn('w-full min-w-0 truncate typography-ui-label font-normal', titleClassName)}>{title}</div>
+    <div className={cn('w-full min-w-0 truncate typography-ui-label font-medium', titleClassName)}>{title}</div>
     {hasThirdLine ? (
       <div className="flex w-full min-w-0 items-center gap-1">
         {branchLabel ? (
           <>
-            <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground/40" />
-            <span className="min-w-0 truncate typography-micro text-muted-foreground/50">{branchLabel}</span>
+            <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate typography-micro text-muted-foreground">{branchLabel}</span>
           </>
         ) : null}
         <span className="ml-auto flex flex-shrink-0 items-center gap-1">

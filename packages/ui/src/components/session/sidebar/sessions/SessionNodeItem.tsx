@@ -38,7 +38,7 @@ import { getSyncSessionMaterializationStatus } from '@/sync/sync-refs';
 import { useViewportStore, viewportSessionKey } from '@/sync/viewport-store';
 import { DraggableSessionRow } from '../folders/sessionFolderDnd';
 import { useSessionRowOrderRegistry } from './sessionRowOrder';
-import { canShowSessionWorktreeMenu, getSessionWorktreeMenuDisabled, nodeContainsSessionId, nodeHasPinnedMembershipChange, resolveSessionPrLookupKey, resolveTooltipBranchLabel, selectFormBadgeSessionScopes, selectRowBadgeVisibilityClass } from './sessionNodeItemUtils';
+import { canShowSessionWorktreeMenu, getSessionWorktreeMenuDisabled, nodeContainsSessionId, nodeHasPinnedMembershipChange, resolveSessionPrLookupKey, resolveTooltipBranchLabel, selectFormBadgeSessionScopes } from './sessionNodeItemUtils';
 import { useSessionRowMenuState } from './useSessionRowMenuState';
 import type { SessionNode } from '../types';
 import type { SessionSidebarRenderContext } from '../sessionSidebarRowModel';
@@ -336,9 +336,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const revealOnHoverClass = isVSCode
     ? 'group-hover:opacity-100 group-hover:pointer-events-auto'
     : 'group-hover:opacity-100 group-hover:pointer-events-auto group-has-[:focus-visible]:opacity-100 group-has-[:focus-visible]:pointer-events-auto';
-  const hideOnHoverClass = isVSCode
-    ? 'group-hover:opacity-0'
-    : 'group-hover:opacity-0 group-has-[:focus-visible]:opacity-0';
   const showOpenInEditorAction = isVSCode;
   const showQuickArchiveAction = !archivedBucket && !mobileVariant;
   const revealPaddingClass = isVSCode
@@ -784,12 +781,11 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
           key={session.id}
           style={{ paddingLeft: ROW_GUTTER_LEFT_PX + 4 }}
           className={cn(
-            'group relative my-1 flex items-center rounded-sm border pr-2.5',
-            'shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]',
+            'group relative my-1 flex items-center rounded-md border pr-2.5',
             isTimelineChatRow ? 'py-1' : 'py-1.5',
             isActive
-              ? 'border-border bg-interactive-selection/70 text-interactive-selection-foreground'
-              : 'border-border/60 bg-surface-muted/40',
+              ? 'border-border bg-interactive-selection text-interactive-selection-foreground'
+              : 'border-transparent hover:border-border/40 hover:bg-interactive-hover',
           )}
         >
           <SessionTimelineRowBody
@@ -822,7 +818,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
         style={{ paddingLeft: ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
         // my-1 matches the normal row box so entering rename mode does not
         // shift the row vertically.
-        className="group relative my-1 flex items-center rounded-sm border border-border/60 bg-surface-muted/40 py-1 pr-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+        className="group relative my-1 flex items-center rounded-md border border-border/40 bg-transparent py-1 pr-1.5"
       >
         <div className="flex min-w-0 flex-1 flex-col gap-0">
           {renameForm}
@@ -835,14 +831,8 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const pendingFormLabel = pendingFormCount === 1
     ? t('sessions.sidebar.session.status.questionPendingSingle')
     : t('sessions.sidebar.session.status.questionPendingMany', { count: pendingFormCount });
-  // Actions are permanently visible (with matching permanent padding) only in
-  // the non-VSCode alwaysShowActions layout; every other layout hover-reveals
-  // them over the row's right edge, where the badges live (#2284).
-  const badgeVisibilityClass = selectRowBadgeVisibilityClass({
-    actionsAlwaysVisible: alwaysShowActions && !isVSCode,
-    menuOpen: isSessionMenuOpen,
-    hideOnHoverClass,
-  });
+  // Row badges stay visible: the hover actions reserve padding in the title
+  // instead of painting over the badges, so nothing disappears on hover.
   const showUnreadStatus = !isSessionActionPending && !isStreaming && needsAttention && !isActive;
   const showStatusMarker = isStreaming || showUnreadStatus;
   // Running indicators are static by default; the local appearance preference
@@ -859,7 +849,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   // The settled duration lives exactly as long as the unread marker does, so a
   // session read (or watched) while it finishes never keeps a stale total.
   const showActivityDuration = (isStreaming || showUnreadStatus) && hasActivityDuration;
-  const hideLeadingIndicatorOnHover = !alwaysShowActions && hasChildren && (isSessionActionPending || showStatusMarker || isPinnedSession);
   const showPinnedMarker = isPinnedSession && !isSessionActionPending && !showStatusMarker;
   const pinnedMarkerContent = (
     <Icon
@@ -868,24 +857,16 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       aria-label={t('sessions.sidebar.session.status.pinned')}
     />
   );
-  const leadingIndicators = isSessionActionPending || showStatusMarker || showPinnedMarker ? (
-    <span
-      style={{ left: ROW_GUTTER_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
-      className={cn(
-        'pointer-events-none absolute top-1/2 inline-flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center transition-opacity',
-        hideLeadingIndicatorOnHover ? 'opacity-100 group-hover:opacity-0 group-has-[:focus-visible]:opacity-0' : '',
-      )}
-    >
-      {isSessionActionPending ? (
-        <Icon
-          name="loader-4"
-          className="h-3 w-3 animate-spin text-primary"
-          aria-label={isAiRenaming ? t('sessions.aiRename.generating') : t('sessions.sidebar.session.status.movingToWorktree')}
-        />
-      ) : showStatusMarker ? statusMarkerContent : showPinnedMarker ? pinnedMarkerContent : null}
-    </span>
-  ) : null;
-  const hideChevronUntilHover = hasChildren && !alwaysShowActions && (isSessionActionPending || showStatusMarker || isPinnedSession);
+  // Inline status sits in the title flow before the text, in its own fixed
+  // slot. The chevron keeps the gutter slot to itself, so the two never
+  // overlap or swap on hover.
+  const inlineStatusContent = isSessionActionPending ? (
+    <Icon
+      name="loader-4"
+      className="h-3 w-3 animate-spin text-primary"
+      aria-label={isAiRenaming ? t('sessions.aiRename.generating') : t('sessions.sidebar.session.status.movingToWorktree')}
+    />
+  ) : showStatusMarker ? statusMarkerContent : showPinnedMarker ? pinnedMarkerContent : null;
   const subsessionChevron = hasChildren ? (
     <span
       role="button"
@@ -905,12 +886,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
         }
       }}
       style={{ minWidth: 14, minHeight: 14, left: ROW_GUTTER_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
-      className={cn(
-        'absolute top-1/2 inline-flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-opacity',
-        hideChevronUntilHover
-          ? 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-has-[:focus-visible]:opacity-100 group-has-[:focus-visible]:pointer-events-auto'
-          : '',
-      )}
+      className="absolute top-1/2 inline-flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       aria-label={isExpanded
         ? t('sessions.sidebar.session.subsessions.collapse')
         : t('sessions.sidebar.session.subsessions.expand')}
@@ -1432,13 +1408,13 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     <>
       {nextStepBadge()}
       {pendingPermissionCount > 0 ? (
-        <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
+        <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-[var(--status-error-background)] px-1 py-0.5 text-[0.7rem] text-[var(--status-error-text)]" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
           <Icon name="shield" className="h-3 w-3" />
           <span className="leading-none">{pendingPermissionCount}</span>
         </span>
       ) : null}
       {pendingFormCount > 0 ? (
-        <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-status-info/10 px-1 py-0.5 text-[0.7rem] text-status-info" title={pendingFormLabel} aria-label={pendingFormLabel}>
+        <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-[var(--status-info-background)] px-1 py-0.5 text-[0.7rem] text-[var(--status-info-text)]" title={pendingFormLabel} aria-label={pendingFormLabel}>
           <Icon name="question" className="h-3 w-3" />
           <span className="leading-none">{pendingFormCount}</span>
         </span>
@@ -1484,7 +1460,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       title={renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}
       titleClassName={isActive || isRowSelected
         ? 'text-interactive-selection-foreground'
-        : needsAttention ? 'text-foreground' : 'text-foreground/80'}
+        : 'text-foreground'}
       branchLabel={tooltipBranchLabel}
       statusDot={showStatusMarker ? statusMarkerContent : null}
       pinnedMarker={isPinnedSession && !isSessionActionPending ? pinnedMarkerContent : null}
@@ -1498,9 +1474,9 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       metaPaddingClass={alwaysShowActions
         ? (showQuickArchiveAction ? 'pr-19' : 'pr-13')
         : undefined}
-      // An open row menu (dropdown or right-click) keeps the actions shown,
-      // so the meta they overlay must give way too, hover or not.
-      hideMetaOnHoverClass={alwaysShowActions && !isVSCode ? '' : cn(hideOnHoverClass, isSessionMenuOpen && 'opacity-0')}
+      // Meta stays visible under hover/menu: the title reserves padding for
+      // the actions instead, so nothing disappears while pointing.
+      hideMetaOnHoverClass=""
     />
   ) : null;
 
@@ -1589,26 +1565,26 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                 aria-current={isActive ? 'page' : undefined}
                 onClick={handleRowBackgroundClick}
                 // Row geometry mirrors the zone-header band: full container
-                // width, px-1.5 inner edge, a 14px icon-wide gutter (status
-                // marker / chevron) plus a 6px gap, so the title starts at the
-                // same x as the header text. Children indent one gutter step.
+                // width, px-1.5 inner edge, a 14px icon-wide gutter (chevron)
+                // plus a 6px gap, so the title starts at the same x as the
+                // header text. Children indent one gutter step. Status, pin
+                // and spinner live inline before the title, never in the
+                // gutter, so they cannot overlap the chevron.
                 // Content sits 4px further from the row's inner edges than the
                 // gutter itself: timeline rows on both sides, project rows only
-                // on the right (their left edge is the status/chevron gutter).
+                // on the right (their left edge is the chevron gutter).
                 style={{ paddingLeft: isTimelineRow ? ROW_GUTTER_LEFT_PX + 4 : ROW_TEXT_LEFT_PX + depth * ROW_DEPTH_STEP_PX }}
                 className={cn(
-                  'group relative my-1 flex cursor-pointer items-center rounded-sm border pr-2.5',
-                  'shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]',
+                  'group relative my-1 flex cursor-pointer items-center rounded-md border pr-2.5',
                   isTimelineRow && !isTimelineChatRow ? 'py-1.5' : 'py-1',
                   (isActive || isRowSelected)
-                    ? 'border-border bg-interactive-selection/70 text-interactive-selection-foreground'
-                    : 'border-border/60 bg-surface-muted/40 hover:bg-interactive-hover/60',
-                  isRowSelected && 'ring-1 ring-inset ring-border',
+                    ? 'border-border bg-interactive-selection text-interactive-selection-foreground'
+                    : 'border-transparent hover:border-border/40 hover:bg-interactive-hover',
+                  isRowSelected && !isActive && 'ring-1 ring-inset ring-border',
                 )}
               />
             }
           >
-          {isTimelineRow ? null : leadingIndicators}
           {isTimelineRow ? null : subsessionChevron}
           <div className="flex min-w-0 flex-1 items-center">
             {(
@@ -1637,106 +1613,58 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                   >
                     {isTimelineRow ? timelineRowBody : (
                     <div className="flex w-full min-w-0 flex-1 flex-col gap-px overflow-hidden">
-                    <div className="flex w-full min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                    <div className="flex w-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                      {inlineStatusContent ? (
+                        <span className="inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">{inlineStatusContent}</span>
+                      ) : null}
                       {/* Unread emphasis is color-only: a font-weight change
                           would reflow the truncated title and cause a micro
                           horizontal shift when the status flips. */}
-                      <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-normal', isActive || isRowSelected ? 'text-interactive-selection-foreground' : needsAttention ? 'text-foreground' : 'text-foreground/80')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
+                      <div className={cn('block min-w-0 flex-1 truncate typography-ui-label font-medium', isActive || isRowSelected ? 'text-interactive-selection-foreground' : 'text-foreground')}>{renderHighlightedText(sessionTitle, normalizedSessionSearchQuery)}</div>
                       {!archivedBucket && sessionDirectory && renderContext === 'recent' ? (
                         <DirectoryActionIndicator
                           directory={sessionDirectory}
-                          className={alwaysShowActions ? undefined : isSessionMenuOpen
-                            ? 'mr-1'
-                            : isVSCode
-                              ? 'group-hover:mr-1'
-                              : 'group-hover:mr-1 group-has-[:focus-visible]:mr-1'}
                         />
                       ) : null}
-                      {nextStepBadge(badgeVisibilityClass)}
+                      {nextStepBadge()}
                       {pendingPermissionCount > 0 ? (
-                        <span className={cn('inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0', badgeVisibilityClass)} title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
+                        <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-[var(--status-error-background)] px-1 py-0.5 text-[0.7rem] text-[var(--status-error-text)]" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
                           <Icon name="shield" className="h-3 w-3" />
                           <span className="leading-none">{pendingPermissionCount}</span>
                         </span>
                       ) : null}
                       {pendingFormCount > 0 ? (
-                        <span className={cn('inline-flex items-center gap-1 rounded bg-status-info/10 px-1 py-0.5 text-[0.7rem] text-status-info flex-shrink-0', badgeVisibilityClass)} title={pendingFormLabel} aria-label={pendingFormLabel}>
+                        <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-[var(--status-info-background)] px-1 py-0.5 text-[0.7rem] text-[var(--status-info-text)]" title={pendingFormLabel} aria-label={pendingFormLabel}>
                           <Icon name="question" className="h-3 w-3" />
                           <span className="leading-none">{pendingFormCount}</span>
                         </span>
                       ) : null}
                     </div>
-                    {(alwaysShowActions || showActivityDuration || sessionGoalGlyph || showInlineBranchMarker || renderContext === 'recent') ? (
+                    {/* Stable second line: always rendered at the same height so
+                        rows scan evenly. While a turn runs (and until its
+                        result is read) the elapsed counter takes over this
+                        slot from the goal/branch/date metadata. It stays
+                        visible on hover and with the menu open; the title
+                        reserves padding for the actions instead. */}
                     <div className={cn('flex h-4 w-full min-w-0 items-center gap-1 overflow-hidden typography-micro transition-[padding]', contentPaddingClass)}>
-                      {/* While a turn runs (and until its result is read) the
-                          elapsed counter takes over this slot from the usual
-                          goal/branch/date metadata, which stays one hover or
-                          one read away. */}
-                      {alwaysShowActions ? (
-                        // Touch runtimes have no hover tooltip, so the compact
-                        // date stays inline there.
-                        <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground/75">
-                          {showActivityDuration ? (
-                            <SessionActivityDuration sessionId={session.id} running={isStreaming} />
-                          ) : (
-                            <>
-                              {sessionGoalGlyph}
-                              {showInlineBranchMarker ? (
-                                <Icon
-                                  name="git-branch"
-                                  className={cn('h-3 w-3', !prIconColor && 'text-muted-foreground/60')}
-                                  style={prIconColor ? { color: prIconColor } : undefined}
-                                />
-                              ) : null}
-                              {sessionCompactUpdatedLabel}
-                            </>
-                          )}
-                        </span>
+                      {showActivityDuration ? (
+                        <SessionActivityDuration sessionId={session.id} running={isStreaming} className="typography-micro text-muted-foreground" />
                       ) : (
-                        <div className={cn(
-                            'flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap',
-                            isSessionMenuOpen
-                              ? 'invisible'
-                              : isVSCode
-                                ? 'group-hover:invisible'
-                                : 'group-hover:invisible group-has-[:focus-visible]:invisible',
-                          )}>
-                          <span className="inline-flex items-center gap-1 whitespace-nowrap text-right">
-                            {showActivityDuration ? (
-                              <SessionActivityDuration
-                                sessionId={session.id}
-                                running={isStreaming}
-                                className="typography-micro"
-                              />
-                            ) : (
-                              <>
-                                {sessionGoalGlyph}
-                                {showInlineBranchMarker ? (
-                                  <Icon
-                                    name="git-branch"
-                                    className={cn('h-3 w-3', !prIconColor && 'text-muted-foreground/60')}
-                                    style={prIconColor ? { color: prIconColor } : undefined}
-                                  />
-                                ) : null}
-                                {/* The recent activity list shows its compact
-                                    timestamp inline (touch runtimes already get
-                                    it through the alwaysShowActions branch);
-                                    it shares the slot with the goal/branch
-                                    metadata and stays invisible on hover exactly
-                                    like them, so the revealed row actions never
-                                    overlap it. */}
-                                {renderContext === 'recent' ? (
-                                  <span className="flex-shrink-0 typography-micro leading-none text-muted-foreground/75 tabular-nums">
-                                    {sessionCompactUpdatedLabel}
-                                  </span>
-                                ) : null}
-                              </>
-                            )}
+                        <span className="inline-flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
+                          {sessionGoalGlyph}
+                          {showInlineBranchMarker ? (
+                            <Icon
+                              name="git-branch"
+                              className="h-3 w-3 text-muted-foreground"
+                              style={prIconColor ? { color: prIconColor } : undefined}
+                            />
+                          ) : null}
+                          <span className="truncate tabular-nums">
+                            {sessionCompactUpdatedLabel}
                           </span>
-                        </div>
+                        </span>
                       )}
                     </div>
-                    ) : null}
                     </div>
                     )}
                   </button>

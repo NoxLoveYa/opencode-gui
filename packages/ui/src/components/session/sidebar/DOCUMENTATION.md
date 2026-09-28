@@ -281,7 +281,16 @@ matching and ordering. Search does not fetch sessions or broaden list membership
 - List loading and workspace initialization have separate states. The spinner follows only the list queue; config, MCP, LSP, and live-state recovery cannot keep a successful empty list spinning. A core initialization failure has a separate localized notice and reuses the retry/native-access actions without clearing loaded sessions.
 - Directory permission failures remain visible even when stale sessions are retained. Flat groups inspect every represented root/worktree directory; local Desktop may open the native picker for the exact failed directory, while other runtimes keep the ordinary Retry action.
 - Pins and folder assignments are not pruned from the first startup snapshot or from optimistic mutations. Confirmed local deletion and routed external deletion clean immediately; a later authoritative omission after an established baseline covers missed external delete events.
-- Pending-permission/question row badges fade with the same hover/menu-open rule as the date label, except on non-VS Code always-visible-actions rows, which reserve permanent padding and keep the badges shown. VS Code hover-reveals its actions over the row's right edge even under `alwaysShowActions`, so its badges keep fading (`selectRowBadgeVisibilityClass` in `sessions/sessionNodeItemUtils.ts`).
+- Session rows are flat list rows, not cards: inactive rows are transparent and
+  hover with `interactive.hover`; only the active row uses
+  `interactive.selection`. Titles render at full `text-foreground` weight and
+  every project/recent row keeps a stable second meta line (goal, branch
+  marker, compact date, or the running-turn elapsed counter), so rows scan at
+  an even height. Status, pin, and spinner markers sit inline before the title;
+  the subsession chevron keeps the gutter slot, so the two never overlap or
+  swap on hover. Badges, dates, and meta stay visible on hover and while the
+  row menu is open; the title reserves padding for the hover-revealed actions
+  instead of sliding underneath them.
 
 
 ## Project action indicators
