@@ -264,6 +264,13 @@ describe('the journey: start, stop, remove', () => {
     expect((await place.list()).map((space) => space.state).sort()).toEqual(['exited', 'exited', 'running']);
   });
 
+  it('turns off without the list when the place cannot give one, and says it does not know what runs', async () => {
+    const { journey, place } = await ready();
+    place.list = async () => { throw new SpaceError('docker_command_failed', 'docker ps exited 1'); };
+    expect(await journey.stopAllSpaces()).toEqual({ stopped: [], stillRunning: [], unknown: { code: 'docker_command_failed', message: 'docker ps exited 1', details: null } });
+    await expect(journey.createSpace(REQUEST)).rejects.toMatchObject({ code: 'isolated_spaces_off' });
+  });
+
   it('does not turn the switch off while a space is being made', async () => {
     const { journey, events, releaseCodeIn } = journeyWith({ holdCodeIn: true });
     const { id } = await journey.createSpace(REQUEST);
@@ -304,6 +311,65 @@ describe('the journey: start, stop, remove', () => {
     expect(await journey.removeSpace(id)).toMatchObject({ id, removed: true });
     expect(await place.list()).toEqual([]);
     expect(await journey.listSpaces()).toEqual([]);
+  });
+});
+
+describe('the journey: opening a domain', () => {
+  const ready = async (options = {}, request = REQUEST) => {
+    const made = journeyWith(options);
+    const { id } = await made.journey.createSpace(request);
+    await until(() => steps(made.events, id).includes('ready'));
+    made.calls.splice(0);
+    return { ...made, id };
+  };
+
+  it('tells the gatekeeper the allowlist with the domain, then remembers it for the next start', async () => {
+    const { journey, records, calls, id } = await ready();
+    expect(await journey.openDomain(id, { domain: ' Registry.NPMJS.org ' })).toEqual({ network: { mode: 'allowlist', domains: ['api.anthropic.com', 'registry.npmjs.org'] } });
+    expect(calls).toEqual([['setNetwork', id, { mode: 'allowlist', domains: ['api.anthropic.com', 'registry.npmjs.org'] }]]);
+    expect(records.read(id).record.network.domains).toEqual(['api.anthropic.com', 'registry.npmjs.org']);
+
+    // A domain already on the list changes nothing.
+    calls.splice(0);
+    expect(await journey.openDomain(id, { domain: 'registry.npmjs.org' })).toEqual({ network: { mode: 'allowlist', domains: ['api.anthropic.com', 'registry.npmjs.org'] } });
+    expect(calls).toEqual([]);
+
+    // The next start says the list with the opened domain again.
+    await journey.stopSpace(id);
+    calls.splice(0);
+    await journey.startSpace(id);
+    expect(calls.find(([name]) => name === 'setNetwork')).toEqual(['setNetwork', id, { mode: 'allowlist', domains: ['api.anthropic.com', 'registry.npmjs.org'] }]);
+  });
+
+  it('refuses what is not a name, a stopped space, an open network, and a record it cannot read, telling the gatekeeper nothing', async () => {
+    const { journey, records, calls, id } = await ready();
+    for (const domain of ['', 'localhost', '10.0.0.1', '1746020849', 'a_b.example.com', 'example.com/path', 'https://example.com', '*.example.com']) {
+      await expect(journey.openDomain(id, { domain }), domain).rejects.toMatchObject({ code: 'invalid_domain' });
+    }
+    await expect(journey.openDomain(id, { domain: 'example.com', extra: 1 })).rejects.toMatchObject({ code: 'invalid_domain' });
+    await expect(journey.openDomain(id, null)).rejects.toMatchObject({ code: 'invalid_domain' });
+    records.update(id, { network: { mode: 'open', domains: [] } });
+    await expect(journey.openDomain(id, { domain: 'example.com' })).rejects.toMatchObject({ code: 'network_is_open' });
+    records.remove(id);
+    await expect(journey.openDomain(id, { domain: 'example.com' })).rejects.toMatchObject({ code: 'space_record_unreadable' });
+    await journey.stopSpace(id);
+    await expect(journey.openDomain(id, { domain: 'example.com' })).rejects.toMatchObject({ code: 'space_not_running' });
+    expect(calls.filter(([name]) => name === 'setNetwork')).toEqual([]);
+  });
+
+  it('does not remember a domain the gatekeeper did not take', async () => {
+    const { records, place, dataDir, id } = await ready();
+    // A second journey over the same place and records, whose gatekeeper refuses the change.
+    const failing = journeyWith({ place, dataDir, failAt: 'setNetwork' });
+    await expect(failing.journey.openDomain(id, { domain: 'example.com' })).rejects.toMatchObject({ code: 'setNetwork_failed' });
+    expect(records.read(id).record.network.domains).toEqual(['api.anthropic.com']);
+  });
+
+  it('refuses a domain past the size of a list', async () => {
+    const { journey, records, calls, id } = await ready();
+    records.update(id, { network: { mode: 'allowlist', domains: Array.from({ length: 200 }, (_, index) => `d${index}.example.com`) } });
+    await expect(journey.openDomain(id, { domain: 'one-more.example.com' })).rejects.toMatchObject({ code: 'too_many_domains' });
+    expect(calls).toEqual([]);
   });
 });
 

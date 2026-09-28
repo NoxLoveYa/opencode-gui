@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { SpaceError } from './errors.js';
 import { createSpaceId, hashProjectDirectory } from './labels.js';
 import { spaceProjectPath, spaceWindowUrl } from './layout.js';
-import { grantSchema, networkSchema, secretSourceSchema } from './space-records.js';
+import { domainSchema, grantSchema, networkSchema, secretSourceSchema } from './space-records.js';
 
 // The four choices of the create dialog, parsed at the boundary. Each field refuses with a code
 // of its own, so the dialog can point at the field.
@@ -63,6 +63,12 @@ const HEADER_BY_PROVIDER = new Map([
   ['google', 'x-goog-api-key'],
   ...['openai', 'openrouter', 'groq', 'mistral', 'deepseek', 'xai'].map((provider) => [provider, 'authorization']),
 ]);
+
+// A domain the user opens for a running space, from the grant dialog or from a blocked attempt
+// in the journal: the allowlist's own rule for a name, read in any case.
+const openDomainRequestSchema = z.object({
+  domain: z.string().trim().toLowerCase().pipe(domainSchema),
+}).strict();
 
 const applyRequestSchema = z.discriminatedUnion('as', [
   z.object({ as: z.literal('branch'), branch: z.string(), removeAfterwards: z.boolean().default(false) }),
@@ -446,6 +452,34 @@ export function createSpaceJourney({
     return { grant: describeGrant(grant) };
   });
 
+  /**
+   * Adds a domain to a running space's allowlist, live: the gatekeeper is told first, then the
+   * record, so the next start says it again. A record that cannot be written after the gatekeeper
+   * took the domain leaves it open until the next start, which closes it: the safe direction.
+   * The name may come from the journal, which the agent wrote; what makes it a decision is the
+   * user reading it and pressing "Open", and the name rule refuses anything that is not a name.
+   */
+  const openDomain = (spaceId, request) => exclusive(spaceId, async () => {
+    requireNotPending(spaceId);
+    const parsed = openDomainRequestSchema.safeParse(request ?? {});
+    if (!parsed.success) throw new SpaceError('invalid_domain', 'A domain is a name such as registry.npmjs.org: letters, digits and hyphens, with a dot.');
+    const { domain } = parsed.data;
+    const space = await requireListed(spaceId);
+    if (space.state !== 'running') throw new SpaceError('space_not_running', 'A domain is opened by the gatekeeper of a running space. Start the space, then open it.');
+    const current = records.read(spaceId);
+    if (current.status !== 'ok') throw new SpaceError('space_record_unreadable', 'The host\'s record of this space cannot be read, so an opened domain could not be remembered. Remove the space and create it again.');
+    const { network } = current.record;
+    if (network.mode === 'open') throw new SpaceError('network_is_open', 'The network of this space is open, so there is no list to add a domain to.');
+    if (network.domains.includes(domain)) return { network };
+    const next = networkSchema.safeParse({ mode: network.mode, domains: [...network.domains, domain] });
+    if (!next.success) throw new SpaceError('too_many_domains', 'This space already has as many opened domains as a list holds.');
+    await gatekeeper.setNetwork(spaceId, next.data);
+    if (records.update(spaceId, { network: next.data }).status !== 'ok') {
+      throw new SpaceError('space_record_unreadable', 'The domain is open now and could not be remembered, so it closes at the next start. Remove the space and create it again.');
+    }
+    return { network: next.data };
+  });
+
   const stopSpace = (spaceId) => exclusive(spaceId, async () => {
     requireNotPending(spaceId);
     await manager.stopSpace({ placeId: place.id, spaceId });
@@ -479,13 +513,22 @@ export function createSpaceJourney({
 
   /**
    * Stops every running space, for the switch being turned off. Each space is tried on its own:
-   * one that could not be stopped is reported as still running, never counted as stopped.
+   * one that could not be stopped is reported as still running, never counted as stopped. When
+   * the place cannot even list them, Docker being down among the reasons, the turn-off still goes
+   * through and says so in `unknown`: the switch must stay reachable, and what runs cannot be
+   * stopped from here either way (decision 18).
    */
   const stopAllSpaces = async () => {
     const preparing = Array.from(pending.values()).filter((entry) => entry.state === 'preparing');
     if (preparing.length > 0) throw new SpaceError('space_preparing', `${preparing.length === 1 ? 'A space is' : `${preparing.length} spaces are`} still being made. Wait for that to finish first.`, { spaces: preparing.map((entry) => entry.id) });
     closing = true;
-    const spaces = await manager.listSpaces({ placeId: place.id });
+    let spaces;
+    try {
+      spaces = await manager.listSpaces({ placeId: place.id });
+    } catch (error) {
+      logger.warn?.(`[spaces] turning off without knowing which spaces run: ${error?.code ?? error?.message ?? error}`);
+      return { stopped: [], stillRunning: [], unknown: failureOf(error) };
+    }
     const stopped = [];
     const stillRunning = [];
     for (const space of spaces) {
@@ -548,5 +591,5 @@ export function createSpaceJourney({
     return { brought, applied, removal };
   });
 
-  return { createSpace, listSpaces, startSpace, stopSpace, removeSpace, stopAllSpaces, reopen, grantAccess, readJournal, previewApply, applySpace };
+  return { createSpace, listSpaces, startSpace, stopSpace, removeSpace, stopAllSpaces, reopen, grantAccess, openDomain, readJournal, previewApply, applySpace };
 }

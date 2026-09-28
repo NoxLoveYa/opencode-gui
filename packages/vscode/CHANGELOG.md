@@ -1,3 +1,29 @@
+## [2.0.3] - 2026-09-28
+
+### New
+
+- **Permissions: every session has a mode: ask, safety net or accept all.** The shield in the composer switches it.
+- Settings/Providers: providers are a card grid, and one provider can hold several accounts.
+- Settings: MCP servers and plugins are cards that show their status at a glance.
+
+### Improvements
+
+- **Run on several models replaces the Agent Manager.** The composer runs one prompt on several models, each run is one row in the sessions list, and its overview compares the answers.
+
+### Fixes
+
+- The extension no longer hangs at startup on Windows when the PowerShell profile sits in a OneDrive folder (thanks to @thewerthon).
+- Settings/Providers: custom providers with an API key save again.
+- OpenCode: the extension connects when you set your own `OPENCODE_PASSWORD`.
+- Models: the model picker scrolls through providers with 40 or more models to the last one.
+- Chat: commands that run as a subagent show a running card and then their result.
+- Chat: subagent answers show formatted text.
+- Chat: a message with only a linked GitHub issue can be sent (thanks to @hiro-nikaitou).
+- Sessions: a session deleted outside the extension closes, and messages no longer fail with "Session not found" (thanks to @hiro-nikaitou).
+- Worktrees: removing a worktree on Windows finishes, even when a session was still using its folder (thanks to @bashrusakh).
+- Settings/Plugins: plugins from a private npm registry no longer show as not found (thanks to @Ex0ry).
+- Usage: the Zhipu Coding Plan card shows its limits again (thanks to @CMBill).
+
 ## [2.0.2] - 2026-09-26
 
 ### Fixes

@@ -20,9 +20,12 @@ const NETWORK_MODES = Object.freeze(['allowlist', 'open']);
 const DOMAIN_PATTERN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 const MAX_DOMAINS = 200;
 
+/** One name of an allowlist. */
+export const domainSchema = z.string().regex(DOMAIN_PATTERN);
+
 export const networkSchema = z.object({
   mode: z.enum(NETWORK_MODES),
-  domains: z.array(z.string().regex(DOMAIN_PATTERN)).max(MAX_DOMAINS).default([]),
+  domains: z.array(domainSchema).max(MAX_DOMAINS).default([]),
 });
 
 const historySchema = z.enum(['pending', 'sent', 'already_complete', 'host_shallow', 'failed']);
