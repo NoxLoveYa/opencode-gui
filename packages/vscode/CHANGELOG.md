@@ -1,3 +1,23 @@
+## [2.0.4] - 2026-09-28
+
+### New
+
+- **Dutch interface:** OpenChamber can be used in Dutch (thanks to @herbkk).
+- Enterprise mode: when an administrator turns it on with the policy file on the machine, connecting providers is off and update checks don't report usage.
+
+### Improvements
+
+- Settings opens right away the first time.
+
+### Fixes
+
+- Chat: comments you add in the message box stay on the message they were sent with. The last comment could drop off the message, also after a reload.
+- Chat: Arabic, Hebrew and Persian text reads right to left in messages and in the message box, with punctuation, lists and quotes on the right side (thanks to @yulia-ivashko).
+- Chat: an error in one session stays in that session and no longer appears in every other session you open (thanks to @internetisalie and @yulia-ivashko).
+- Chat: a collapsed long message has a visible expand button that also works from the keyboard (thanks to @bashrusakh).
+- Settings/Agents: OpenCode's own agents appear under Built-in Agents, without rename and delete (thanks to @DeryFerd).
+- Worktrees: a long error in the New Worktree dialog wraps, so you can read the whole path (thanks to @yulia-ivashko).
+
 ## [2.0.3] - 2026-09-28
 
 ### New

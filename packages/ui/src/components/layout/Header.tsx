@@ -51,6 +51,7 @@ import { DesktopHostSwitcherDialog } from '@/components/desktop/DesktopHostSwitc
 import { OpenInAppButton } from '@/components/desktop/OpenInAppButton';
 import { ProjectActionsButton } from '@/components/layout/ProjectActionsButton';
 import { SpaceAccessButton } from '@/components/session/spaces/SpaceAccessButton';
+import { SpaceApplyButton } from '@/components/session/spaces/SpaceApplyButton';
 import { useProjectActionsContext } from '@/hooks/useProjectActionsContext';
 import { SessionSwitcherDropdown } from '@/components/session/SessionSwitcherDropdown';
 import { SessionTabsStrip, type SessionTabMenuArgs } from './SessionTabsStrip';
@@ -1251,6 +1252,7 @@ export const Header: React.FC = () => {
           className="mr-2"
         />
       ) : null}
+      <SpaceApplyButton directory={openDirectory} className={cn(DESKTOP_HEADER_ICON_BUTTON_CLASS, 'mr-1 text-muted-foreground hover:text-foreground')} iconClassName="h-[18px] w-[18px]" />
       <SpaceAccessButton directory={openDirectory} className={cn(DESKTOP_HEADER_ICON_BUTTON_CLASS, 'mr-1 text-muted-foreground hover:text-foreground')} iconClassName="h-[18px] w-[18px]" />
       <OpenInAppButton directory={actionDirectory} className="mr-1" />
       {/* Instances only exist in the desktop app. On web the menu was left
