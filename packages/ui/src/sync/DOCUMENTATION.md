@@ -101,7 +101,9 @@ MCP servers and plugins by itself, announcing each rebuilt slice
 (`config.updated`, `agent.updated`, `command.updated`, `skill.updated`,
 `plugin.updated`, `credential.*`). `events.ts` translates all of them into one
 `catalog.updated` sync event carrying a `kind`, and `reloadCatalog` re-reads
-that slice. Nothing in the UI asks the user to apply or restart anything: the
+that slice. The event carries the location OpenCode rebuilt, so for the project
+being worked in it arrives through that directory's reducer (`onCatalogUpdated`)
+rather than the global branch; both schedule the same reload. Nothing in the UI asks the user to apply or restart anything: the
 only setting OpenCode cannot pick up on its own is which binary runs, and
 Settings → OpenChamber → OpenCode CLI owns that restart.
 

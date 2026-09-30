@@ -99,9 +99,13 @@ describe('the journal and opened domains', () => {
   test('reads the setup commands\' run, none from a host that does not know them, and runs them again with a POST', async () => {
     answer(200, JSON.stringify({ spaces: [entry] }));
     expect((await listSpaces())[0]?.setup).toBeNull();
-    const failed = { state: 'failed', index: 1, total: 2, command: 'npm ci', exitCode: 1, timedOut: false };
+    const failed = { state: 'failed', index: 1, total: 2, command: 'npm ci', exitCode: 1, timedOut: false, startedAt: '2026-09-28T10:00:00.000Z', finishedAt: '2026-09-28T10:01:00.000Z' };
     answer(200, JSON.stringify({ spaces: [{ ...entry, setup: failed }] }));
     expect((await listSpaces())[0]?.setup).toEqual(failed);
+    // A host from before the run's span was kept answers none.
+    const older = { state: 'failed', index: 1, total: 2, command: 'npm ci', exitCode: 1, timedOut: false };
+    answer(200, JSON.stringify({ spaces: [{ ...entry, setup: older }] }));
+    expect((await listSpaces())[0]?.setup).toEqual({ ...older, startedAt: null, finishedAt: null });
     answer(200, JSON.stringify({ spaces: [{ ...entry, setup: { state: 'paused' } }] }));
     expect(await listSpaces().catch((error: Error) => error)).toMatchObject({ code: 'space_answer_malformed' });
 

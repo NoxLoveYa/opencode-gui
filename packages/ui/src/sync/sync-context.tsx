@@ -1977,7 +1977,11 @@ export function handleEvent(
   }
 
   countSyncPerformance("reducerEvents")
-  const reducerResult = applyDirectoryEvent(draft, payload)
+  // A catalog event names the location it was rebuilt in; for an open
+  // directory it lands here rather than in the global branch above.
+  const reducerResult = applyDirectoryEvent(draft, payload, {
+    onCatalogUpdated: (kind) => scheduleCatalogReload(kind, childStores),
+  })
   const reducerChanged = typeof reducerResult === "boolean" ? reducerResult : reducerResult.changed
   const materializationResult = typeof reducerResult === "boolean" ? undefined : reducerResult.materialization
   // Retire old reads even if a local send already removed the reverted range.

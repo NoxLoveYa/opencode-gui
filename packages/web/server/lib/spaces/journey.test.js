@@ -925,7 +925,7 @@ describe('the journey: setup commands', () => {
     const mine = events.filter((event) => event.spaceId === id);
     expect(mine.findIndex((event) => event.step === 'ready')).toBeLessThan(mine.findIndex((event) => event.step === undefined));
     const listed = (await journey.listSpaces()).find((space) => space.id === id);
-    expect(listed.setup).toEqual({ state: 'failed', index: 1, total: 3, command: 'npm ci', exitCode: 1, timedOut: false });
+    expect(listed.setup).toEqual({ state: 'failed', index: 1, total: 3, command: 'npm ci', exitCode: 1, timedOut: false, startedAt: '2026-09-26T10:00:00.000Z', finishedAt: '2026-09-26T10:00:00.000Z' });
     expect(await journey.readSetup(id)).toEqual({ setup: listed.setup, output: 'npm ERR! 403 Forbidden' });
     expect(setupEvents(events, id).length).toBeGreaterThanOrEqual(2);
   });

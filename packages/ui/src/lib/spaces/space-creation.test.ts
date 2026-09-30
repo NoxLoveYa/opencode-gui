@@ -187,7 +187,7 @@ describe('startSpaceCreation', () => {
     useSpacesStore.getState().applyJourney([running], useSpacesStore.getState().progressRevision);
     await new Promise((resolve) => { setTimeout(resolve, 20); });
     expect(settled).toBe(false);
-    useSpacesStore.getState().applyJourney([{ ...running, setup: { state: 'failed', index: 0, total: 1, command: 'npm ci', exitCode: 1, timedOut: false } }], useSpacesStore.getState().progressRevision);
+    useSpacesStore.getState().applyJourney([{ ...running, setup: { state: 'failed', index: 0, total: 1, command: 'npm ci', exitCode: 1, timedOut: false, startedAt: null, finishedAt: null } }], useSpacesStore.getState().progressRevision);
     expect(await outcome).toEqual({ directory: DIRECTORY });
     expect(isSpaceCreationRequest(requestId)).toBe(true);
   });

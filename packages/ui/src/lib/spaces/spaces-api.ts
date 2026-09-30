@@ -112,12 +112,13 @@ export const spaceCreationStepSchema = z.enum(SPACE_CREATION_STEPS);
 
 // The project's setup commands in the space (5d-4): queued until the code arrived, the command
 // running now, how the last run ended, or a run the host did not live to see end. `command` is the
-// project's text, to show only.
+// project's text, to show only. A failed run says when it began and ended, so the output window can
+// read the gatekeeper's refusals within; null from a host or a record from before that.
 const setupSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('queued'), total: z.number().int().min(1) }),
   z.object({ state: z.literal('running'), index: z.number().int().min(0), total: z.number().int().min(1), command: z.string() }),
   z.object({ state: z.literal('done'), total: z.number().int().min(1) }),
-  z.object({ state: z.literal('failed'), index: z.number().int().min(0), total: z.number().int().min(1), command: z.string(), exitCode: z.number().int().nullable(), timedOut: z.boolean() }),
+  z.object({ state: z.literal('failed'), index: z.number().int().min(0), total: z.number().int().min(1), command: z.string(), exitCode: z.number().int().nullable(), timedOut: z.boolean(), startedAt: z.string().nullable().default(null), finishedAt: z.string().nullable().default(null) }),
   z.object({ state: z.literal('interrupted'), total: z.number().int().min(1) }),
 ]);
 

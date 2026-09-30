@@ -90,7 +90,7 @@ describe('the actions of a space', () => {
   test('offers the setup commands again only while they do not run', () => {
     expect(isSpaceActionUnavailable(entry({ setup: { state: 'running', index: 0, total: 2, command: 'npm ci' } }), 'setup')).toBe(true);
     expect(isSpaceActionUnavailable(entry({ setup: { state: 'running', index: 0, total: 2, command: 'npm ci' } }), 'restart')).toBe(false);
-    expect(isSpaceActionUnavailable(entry({ setup: { state: 'failed', index: 0, total: 2, command: 'npm ci', exitCode: 1, timedOut: false } }), 'setup')).toBe(false);
+    expect(isSpaceActionUnavailable(entry({ setup: { state: 'failed', index: 0, total: 2, command: 'npm ci', exitCode: 1, timedOut: false, startedAt: null, finishedAt: null } }), 'setup')).toBe(false);
     expect(isSpaceActionUnavailable(entry(), 'setup')).toBe(false);
   });
 

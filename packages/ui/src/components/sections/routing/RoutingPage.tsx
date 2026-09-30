@@ -30,6 +30,7 @@ import { getRuntimeKey } from '@/lib/runtime-switch';
 import type { RoutingCategory, RoutingConfig } from '@/lib/routing/routingApi';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import { modelVariantNames } from '@/lib/modelVariants';
 import { isAutoModel } from '@/lib/routing/autoModel';
 import { useRoutingStore } from '@/stores/useRoutingStore';
 import { JevAccessNote } from '@/components/sections/classification/JevAccessNote';
@@ -47,7 +48,7 @@ const useModelVariants = (providerID: string | null | undefined, modelID: string
     if (!providerID || !modelID) return [];
     const provider = providers.find((entry) => entry.id === providerID);
     const model = provider?.models.find((entry) => entry.id === modelID);
-    return model?.variants ? Object.keys(model.variants) : [];
+    return modelVariantNames(model);
   }, [modelID, providerID, providers]);
 };
 

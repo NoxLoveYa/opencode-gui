@@ -14,6 +14,7 @@ import type { PermissionMode } from './utils/permissionAutoAccept';
 import { directoryMayHaveActiveProjectAction, useTerminalStore } from '@/stores/useTerminalStore';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY, isVSCodeRuntime, normalizeDesktopWindowMaterial, normalizeDesktopWindowMaterialOpacity, type DesktopWindowMaterial } from '@/lib/desktop';
+import { noteBrowserTabOpenedWithAddress, requestBrowserTabLoad } from '@/lib/browser/devServerWait';
 import { isContextPanelMode, type ContextPanelMode } from '@/lib/surfaces/modes';
 import { getRuntimeKey, isTransientRuntimeKey } from '@/lib/runtime-switch';
 import { sanitizeWorkStatusSectionOrder, type WorkStatusPanelSectionId } from '@/components/chat/work-status/sections';
@@ -539,6 +540,26 @@ const touchContextPanelState = (prev?: ContextPanelDirectoryState): ContextPanel
     widthFractionByMode: {},
     touchedAt: Date.now(),
   };
+};
+
+/**
+ * Someone asked for this address now, so its load may wait for a dev server
+ * that is still starting. A new tab is marked before it mounts; a tab that
+ * already exists is asked to load the address again, since focusing it alone
+ * would leave an earlier failure on screen.
+ */
+const noteBrowserTabAddressRequested = (
+  byDirectory: Record<string, ContextPanelDirectoryState>,
+  directory: string,
+  dedupeKey: string,
+  url: string,
+): void => {
+  const tabID = buildContextPanelTabID('browser', dedupeKey);
+  if (byDirectory[directory]?.tabs.some((tab) => tab.id === tabID)) {
+    requestBrowserTabLoad(directory, tabID, url);
+    return;
+  }
+  noteBrowserTabOpenedWithAddress(directory, tabID);
 };
 
 const upsertContextPanelTab = (
@@ -1672,6 +1693,7 @@ export const useUIStore = create<UIStore>()(
             return;
           }
 
+          noteBrowserTabAddressRequested(get().contextPanelByDirectory, normalizedDirectory, normalizedUrl, normalizedUrl);
           // No stored label: a browser tab is named after wherever it has
           // navigated to, which the panel derives from targetPath.
           get().openContextPanelTab(normalizedDirectory, {
@@ -1689,6 +1711,7 @@ export const useUIStore = create<UIStore>()(
           if (!normalizedDirectory || isVSCodeRuntime()) return null;
           browserTabSequence += 1;
           const dedupeKey = `browser:agent:${Date.now()}-${browserTabSequence}`;
+          if (url.trim()) noteBrowserTabAddressRequested(get().contextPanelByDirectory, normalizedDirectory, dedupeKey, url.trim());
           get().openContextPanelTab(normalizedDirectory, {
             mode: 'browser',
             targetPath: url.trim(),
@@ -1714,6 +1737,7 @@ export const useUIStore = create<UIStore>()(
           const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
           if (!normalizedDirectory || isVSCodeRuntime()) return;
           const targetUrl = typeof url === 'string' && url.trim().length > 0 ? url.trim() : '';
+          if (targetUrl) noteBrowserTabAddressRequested(get().contextPanelByDirectory, normalizedDirectory, targetUrl, targetUrl);
           get().openContextPanelTab(normalizedDirectory, {
             mode: 'browser',
             targetPath: targetUrl,
