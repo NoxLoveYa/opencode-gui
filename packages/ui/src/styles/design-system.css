@@ -224,8 +224,10 @@
     --surface-elevated: color-mix(in srgb, var(--surface-elevated-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --accent: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --surface-subtle: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
-    --sidebar-base: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
-    --sidebar: color-mix(in srgb, var(--surface-muted-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    /* Sidebar tracks the main-panel base in material mode so the sessions
+       list, sidebar toolbar, and main panels render as one glass surface. */
+    --sidebar-base: color-mix(in srgb, var(--surface-background-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    --sidebar: color-mix(in srgb, var(--surface-background-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --sidebar-accent-base: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --sidebar-accent: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
   }
