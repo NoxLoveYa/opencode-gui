@@ -20,6 +20,10 @@ The desktop app can connect to OpenChamber running on another machine over SSH �
 
 OpenChamber walks through the steps — checking the connection, setting up the remote, starting the server, and forwarding the port — and shows where it is at each stage. When it reaches **ready**, the remote UI loads locally.
 
+## Requirements
+
+The remote machine needs Node.js 22+ reachable over SSH (an nvm install counts, even when it is not on the login PATH). Managed setup checks this before installing anything and fails with the cause otherwise.
+
 ## Credentials
 
 You decide whether to save the SSH and UI passwords or enter them each time. If the connection drops, OpenChamber reports which step failed so you can fix it — see [Remote access](/troubleshooting/remote-access/).

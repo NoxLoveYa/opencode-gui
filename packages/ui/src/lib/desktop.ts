@@ -159,7 +159,11 @@ export const canUseElectronDesktopIPC = (): boolean => isElectronShell() && hasD
 export const createDesktopThemeFileAPI = (): RuntimeAPIs['themeFiles'] => {
   // Preload exposes this capability only to trusted local UI pages. Unlike the
   // active API endpoint, that page identity stays local during remote connections.
-  if (!getDesktopBridge()?.pickThemeFile) return undefined;
+  // The bridge object itself exists in every desktop webContents (including a
+  // remote runtime), so re-check the origin here: on a remote page there is no
+  // native picker and the caller falls back to a file input instead of hitting
+  // the main-process gate ("IPC not available for this origin").
+  if (!getDesktopBridge()?.pickThemeFile || !isDesktopLocalOriginActive()) return undefined;
   return {
     async pick() {
       const pick = getDesktopBridge()?.pickThemeFile;

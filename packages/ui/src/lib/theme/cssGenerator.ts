@@ -291,9 +291,13 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
   }
 
   private generateComponentColors(colors: Theme['colors'], theme: Theme): string[] {
+    const userMessageBackground = colors.chat?.userMessageBackground ?? colors.surface.elevated;
     return [
       ...this.generateMarkdownColors(colors.markdown ?? {}, theme),
-      `  --chat-user-message-bg: ${colors.chat?.userMessageBackground ?? colors.surface.elevated};`,
+      `  --chat-user-message-bg: ${userMessageBackground};`,
+      // Opaque snapshot for window-material translucency (see the surface
+      // solids above and the material remix in design-system.css).
+      `  --chat-user-message-bg-solid: ${userMessageBackground};`,
       `  --chat-divider: ${colors.chat?.divider ?? colors.interactive.border};`,
       ...this.generateToolColors(colors.tools, theme),
     ];

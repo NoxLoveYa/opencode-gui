@@ -2446,7 +2446,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   }
 
   return (
-    <div className={cn('flex h-full flex-col overflow-hidden')}>
+    <div className={cn('flex h-full flex-col overflow-hidden bg-background')}>
            <GitHeader
         directory={gitDirectory ?? ''}
         status={status}

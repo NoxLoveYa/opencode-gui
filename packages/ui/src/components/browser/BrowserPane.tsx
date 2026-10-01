@@ -866,7 +866,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
       <div
         ref={stageRef}
         className={cn(
-          'relative min-h-0 flex-1 bg-background',
+          'relative min-h-0 flex-1',
           // A sized viewport sits on a backdrop so its edges are visible; at
           // fill there is nothing to frame.
           layout && 'flex items-center justify-center overflow-hidden bg-[var(--surface-muted)]',
@@ -1011,7 +1011,7 @@ const IframeBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabI
         canGoForward={historyIndex >= 0 && historyIndex < history.length - 1}
         isLoading={false}
       />
-      <div className="relative min-h-0 flex-1 bg-background">
+      <div className="relative min-h-0 flex-1 bg-transparent">
         {loadedUrl ? (
           <iframe
             key={`${loadedUrl}|${reloadNonce}`}

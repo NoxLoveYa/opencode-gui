@@ -922,13 +922,17 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   // Inline status sits in the title flow before the text, in its own fixed
   // slot. The chevron keeps the gutter slot to itself, so the two never
   // overlap or swap on hover.
-  const inlineStatusContent = isSessionActionPending ? (
+  // Shared with the timeline row body below, which renders the same pending
+  // spinner in its status slot.
+  const sessionActionSpinner = (
     <Icon
       name="loader-4"
       className="h-3 w-3 animate-spin text-primary"
       aria-label={isAiRenaming ? t('sessions.aiRename.generating') : t('sessions.sidebar.session.status.movingToWorktree')}
     />
-  ) : showStatusMarker ? statusMarkerContent : showPinnedMarker ? pinnedMarkerContent : null;
+  );
+  const inlineStatusContent = isSessionActionPending ? sessionActionSpinner
+  : showStatusMarker ? statusMarkerContent : showPinnedMarker ? pinnedMarkerContent : null;
   const subsessionChevron = hasChildren ? (
     <span
       role="button"
@@ -1794,7 +1798,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                             <Icon
                               name="git-branch"
                               className="h-3 w-3 text-muted-foreground"
-                              style={prIconColor ? { color: prIconColor } : undefined}
+                              style={branchPrIconColor ? { color: branchPrIconColor } : undefined}
                             />
                           ) : null}
                           <span className="truncate tabular-nums">

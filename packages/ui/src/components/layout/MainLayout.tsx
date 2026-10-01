@@ -131,17 +131,22 @@ export const MainLayout: React.FC = () => {
                     >
                         <SessionSidebar isVisible={isSidebarOpen} />
                     </Sidebar>
-                    <div className="relative flex flex-1 min-w-0 flex-col overflow-hidden bg-background" data-page-scroll-lock="true">
+                    {/* Layout wrappers stay transparent: the app canvas above
+                        paints the shared fill, and each region (sidebar,
+                        header, chat, panels) paints exactly one of its own.
+                        Stacking translucent fills here would compound them
+                        toward opaque, so sibling regions could never match. */}
+                    <div className="relative flex flex-1 min-w-0 flex-col overflow-hidden bg-transparent" data-page-scroll-lock="true">
                         <Header />
-                        <div className="relative flex flex-1 min-h-0 overflow-hidden bg-background" data-page-scroll-lock="true">
-                            <div className="relative flex flex-1 min-w-0 flex-col overflow-hidden border-t border-border bg-background" data-page-scroll-lock="true">
+                        <div className="relative flex flex-1 min-h-0 overflow-hidden bg-transparent" data-page-scroll-lock="true">
+                            <div className="relative flex flex-1 min-w-0 flex-col overflow-hidden border-t border-border bg-transparent" data-page-scroll-lock="true">
                                 <div className="flex flex-1 min-h-0 overflow-hidden" data-page-scroll-lock="true">
                                     {/* Holds the chat and the context panel together, so its
                                         width does not move when the context panel opens. The
                                         work-status panel measures this rather than the chat,
                                         which the context panel animates. */}
                                     <div className="relative flex flex-1 min-h-0 min-w-0 overflow-hidden" data-page-scroll-lock="true" data-chat-area="true">
-                                        <main className="flex-1 overflow-hidden bg-background relative" data-page-scroll-lock="true">
+                                        <main className="flex-1 overflow-hidden bg-transparent relative" data-page-scroll-lock="true">
                                             <div className={cn('absolute inset-0', isSurfacePageOpen && 'invisible')}>
                                                 <ErrorBoundary><ChatView active={!isSettingsDialogOpen && !isSurfacePageOpen} /></ErrorBoundary>
                                             </div>

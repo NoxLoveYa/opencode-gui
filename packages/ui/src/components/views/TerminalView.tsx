@@ -1323,7 +1323,10 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
             </div>
 
             <div
-                className="relative flex-1 overflow-hidden bg-[var(--surface-background)]"
+                // Transparent like the chat column: the view root above
+                // paints the single fill, so the canvas shows the same
+                // backdrop as every other region.
+                className="relative flex-1 overflow-hidden"
             >
                 <div className="h-full w-full box-border pl-4 pr-1.5 pt-3 pb-4">
                     {shouldRenderViewport ? mountedTabIds.map((tabId) => (

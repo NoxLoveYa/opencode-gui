@@ -199,13 +199,6 @@
       background-color: var(--background) !important;
       background-image: none !important;
     }
-    :root[data-window-material='mica'] #root aside.bg-sidebar,
-    :root[data-window-material='acrylic'] #root aside.bg-sidebar,
-    :root[data-window-material='mica'] #root .header-safe-area.bg-background,
-    :root[data-window-material='acrylic'] #root .header-safe-area.bg-background {
-      -webkit-backdrop-filter: none !important;
-      backdrop-filter: none !important;
-    }
   }
 
   /* Window material: main-view panels follow the Backdrop opacity slider.
@@ -224,6 +217,9 @@
     --surface-elevated: color-mix(in srgb, var(--surface-elevated-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --accent: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     --surface-subtle: color-mix(in srgb, var(--surface-subtle-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
+    /* User message bubbles follow the same slider so the transcript reads
+       as one glass surface instead of solid cards over it. */
+    --chat-user-message-bg: color-mix(in srgb, var(--chat-user-message-bg-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
     /* Sidebar tracks the main-panel base in material mode so the sessions
        list, sidebar toolbar, and main panels render as one glass surface. */
     --sidebar-base: color-mix(in srgb, var(--surface-background-solid) calc(var(--oc-window-material-opacity, 0.75) * 100%), transparent) !important;
@@ -238,17 +234,13 @@
     --surface-elevated: var(--surface-elevated-solid) !important;
   }
 
-  /* Window-material chrome: the sidebar and chat header blur the backdrop
-     behind them so they read as glass over the desktop. Scoped to static
-     chrome only — never the scrolling transcript, which would re-rasterize
-     every scroll frame and flicker. */
-  :root[data-window-material='mica'] #root aside.bg-sidebar,
-  :root[data-window-material='acrylic'] #root aside.bg-sidebar,
-  :root[data-window-material='mica'] #root .header-safe-area.bg-background,
-  :root[data-window-material='acrylic'] #root .header-safe-area.bg-background {
-    -webkit-backdrop-filter: blur(14px) saturate(1.2) !important;
-    backdrop-filter: blur(14px) saturate(1.2) !important;
-  }
+  /* Window-material regions share one clear fill each over the app
+     canvas — no backdrop blur on regions. Blur (frosted glass) reads
+     darker and more solid than the same fill without it, so blurring only
+     the sidebar and header could never match the transcript, terminal, or
+     rail. Blur stays on floating glass (composer, popovers, tooltips),
+     where frosting marks elevation. The scrolling transcript stays
+     blur-free: blurring it would re-rasterize every scroll frame. */
 
   /* Window-material composer: the floating input box tracks the Backdrop
      slider instead of compounding it. Its glass color resolves from the
@@ -278,6 +270,7 @@
     --surface-elevated: var(--surface-elevated-solid) !important;
     --accent: var(--surface-subtle-solid) !important;
     --surface-subtle: var(--surface-subtle-solid) !important;
+    --chat-user-message-bg: var(--chat-user-message-bg-solid) !important;
     --sidebar-base: var(--surface-muted-solid) !important;
     --sidebar: var(--surface-muted-solid) !important;
     --sidebar-accent-base: var(--surface-subtle-solid) !important;

@@ -36,6 +36,9 @@ const REMOTE_BIN_CANDIDATES = [
   '"${BUN_INSTALL:-$HOME/.bun}/bin/openchamber"',
   '"${XDG_CACHE_HOME:-$HOME/.cache}/.bun/bin/openchamber"',
 ];
+// The managed CLI needs Node 22+ on the remote host (@clack/core uses
+// node:util styleText). The local installer enforces the same floor.
+const REMOTE_MIN_NODE_MAJOR = 22;
 const DEFAULT_CONTROL_PERSIST_SEC = 300;
 const DEFAULT_READY_TIMEOUT_SEC = 30;
 const DEFAULT_RECONNECT_MAX_ATTEMPTS = 5;
@@ -1039,6 +1042,36 @@ export class ElectronSshManager {
     }
   }
 
+  // The managed CLI resolves `node` from the same augmented PATH the serve
+  // step runs with, and @clack/core needs Node 22+ (node:util styleText). An
+  // old or missing Node otherwise surfaces as a CLI SyntaxError — or a probe
+  // that never reports a version, which reads as "installed but no binary".
+  // Probe that exact resolution first and fail with the cause instead.
+  async remoteNodeVersion(parsed, controlPath) {
+    let output = '';
+    try {
+      output = await this.runRemoteCommand(parsed, controlPath, `PATH="${REMOTE_PATH_PREFIX}:$PATH" node --version`);
+    } catch {
+      return null;
+    }
+    // Login-shell profile output precedes the command's own stdout, so the
+    // version reads from the last line — a motd like "Ubuntu 22.04" must
+    // never pass as the Node version.
+    const lines = output.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return parseVersionToken(lines[lines.length - 1] || '');
+  }
+
+  async assertRemoteNodeVersion(parsed, controlPath) {
+    const version = await this.remoteNodeVersion(parsed, controlPath);
+    const major = version ? Number.parseInt(version.split('.')[0], 10) : NaN;
+    if (!Number.isFinite(major) || major < REMOTE_MIN_NODE_MAJOR) {
+      if (!version) {
+        throw new Error(`Node.js was not found on the remote host. OpenChamber requires Node.js ${REMOTE_MIN_NODE_MAJOR}+ there. Install or activate it, then connect again`);
+      }
+      throw new Error(`Remote host runs Node.js v${version}, but OpenChamber requires Node.js ${REMOTE_MIN_NODE_MAJOR}+ on the remote host. Install or activate Node.js ${REMOTE_MIN_NODE_MAJOR}+ there, then connect again`);
+    }
+  }
+
   // Every place OpenChamber may live on the remote host, with the version each
   // one reports. Installs land in the user prefix while an older copy can still
   // sit on PATH, so the caller picks by version instead of trusting PATH order.
@@ -1334,6 +1367,9 @@ export class ElectronSshManager {
       await this.probeRemoteSystemInfo(parsed, controlPath, port, this.configuredOpenChamberPassword(instance));
       return { remotePort: port, startedByUs: false, ownsRemoteServer: false, remoteBinPath: null };
     }
+
+    this.setStatus(instance.id, 'remote_probe', 'Checking remote Node.js version');
+    await this.assertRemoteNodeVersion(parsed, controlPath);
 
     this.setStatus(instance.id, 'remote_probe', 'Checking remote OpenChamber installation');
     const installed = await this.remoteOpenChamberCandidates(parsed, controlPath);

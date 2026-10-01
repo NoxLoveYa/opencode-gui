@@ -8,8 +8,9 @@ import React, {
 import { flushSync } from 'react-dom';
 import { z } from 'zod';
 import type { Theme, ThemeMode } from '@/types/theme';
-import { isDesktopLocalOriginActive, isDesktopShell as detectDesktopShell, isVSCodeRuntime } from '@/lib/desktop';
+import { isDesktopLocalOriginActive, isDesktopShell as detectDesktopShell, isVSCodeRuntime, normalizeDesktopWindowMaterial, normalizeDesktopWindowMaterialOpacity, DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY } from '@/lib/desktop';
 import { setDesktopWindowTheme } from '@/lib/desktopNative';
+import { applyEmbeddedWindowMaterial } from '@/lib/windowMaterial';
 import { CSSVariableGenerator } from '@/lib/theme/cssGenerator';
 import { type SettingsSyncedDetail, updateDesktopSettings } from '@/lib/persistence';
 import {
@@ -52,6 +53,8 @@ type ThemeSyncPayload = {
   lightThemeId?: unknown;
   darkThemeId?: unknown;
   currentTheme?: unknown;
+  windowMaterial?: unknown;
+  windowMaterialOpacity?: unknown;
 };
 
 const DEFAULT_LIGHT_ID = DEFAULT_LIGHT_THEME_ID;
@@ -496,6 +499,15 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
   }, [receivesParentThemeSync]);
 
   const applyIncomingThemeSync = useCallback((payload: ThemeSyncPayload) => {
+    // Subtask viewer iframes tint with the main window: parsed at this
+    // message boundary, applied DOM-only so the shared persisted store is
+    // never written from inside the frame.
+    if (receivesParentThemeSync && (payload.windowMaterial !== undefined || payload.windowMaterialOpacity !== undefined)) {
+      applyEmbeddedWindowMaterial(
+        normalizeDesktopWindowMaterial(payload.windowMaterial) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL,
+        normalizeDesktopWindowMaterialOpacity(payload.windowMaterialOpacity) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY,
+      );
+    }
     const mode = payload.themeMode;
     const light = payload.lightThemeId;
     const dark = payload.darkThemeId;

@@ -7,6 +7,22 @@ import { MIN_QUERY_TERM_LENGTH } from '@/lib/messageSearch';
 const SEARCH_HIGHLIGHT = 'oc-chat-search';
 const SEARCH_CURRENT_HIGHLIGHT = 'oc-chat-search-current';
 
+// The ::highlight() selectors live in runtime-injected stylesheets, not static
+// CSS: static CSS validators predate the Custom Highlight API and reject them,
+// while these names only mean anything once highlights are painted below.
+const SEARCH_HIGHLIGHT_STYLE_RULE =
+  `::highlight(${SEARCH_HIGHLIGHT}){background-color:color-mix(in srgb, var(--primary) 30%, transparent)}::highlight(${SEARCH_CURRENT_HIGHLIGHT}){background-color:var(--primary);color:var(--primary-foreground)}`;
+
+const styledDocuments = new WeakSet<Document>();
+
+function ensureSearchHighlightStyles(): void {
+  if (styledDocuments.has(document)) return;
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(SEARCH_HIGHLIGHT_STYLE_RULE);
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  styledDocuments.add(document);
+}
+
 // What the index holds: the user's bubble and the agent's text replies.
 const SEARCHABLE_TEXT_SELECTOR = '[data-user-message-bubble], [data-markdown-content]';
 
@@ -50,6 +66,7 @@ export const findTermRanges = (messageRoot: Element, terms: readonly string[]): 
 
 export const paintSearchHighlights = (all: Range[], current: Range[]): void => {
   if (!supportsSearchHighlights()) return;
+  ensureSearchHighlightStyles();
   if (all.length > 0) CSS.highlights.set(SEARCH_HIGHLIGHT, new Highlight(...all));
   else CSS.highlights.delete(SEARCH_HIGHLIGHT);
   if (current.length > 0) {

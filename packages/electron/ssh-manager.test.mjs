@@ -76,6 +76,7 @@ printf '4321\\n'`);
       executable(path.join(home, '.openchamber', 'npm-global', 'bin', 'openchamber'), 'printf "0.9.0\\n"');
       const tools = path.join(home, 'tools');
       executable(path.join(tools, 'npm'), 'exit 88');
+      executable(path.join(tools, 'node'), 'printf "v22.14.0\\n"');
       const env = { HOME: home, PATH: `${tools}:/usr/bin:/bin` };
       if (scenario !== 'unset XDG') env.XDG_CACHE_HOME = xdg;
       const manager = new ElectronSshManager({
@@ -448,6 +449,7 @@ printf '4321\\n'`);
     // opencode only under nvm's node, and no nvm entry on PATH: exactly what a
     // non-interactive SSH login shell sees after `npm install -g` with nvm.
     const nvmBin = path.join(home, '.nvm', 'versions', 'node', 'v24.18.0', 'bin');
+    executable(path.join(nvmBin, 'node'), 'printf "v24.18.0\\n"');
     executable(path.join(nvmBin, 'opencode'), 'exit 0');
     executable(path.join(home, '.openchamber', 'npm-global', 'bin', 'openchamber'), `
 if [ "$1" = "--version" ]; then printf '1.2.3\\n'; exit 0; fi
@@ -511,6 +513,64 @@ printf '4321\\n'`);
       { binPath: '/home/pi/.openchamber/npm-global/bin/openchamber', version: '1.2.3' },
       { binPath: '/usr/bin/openchamber', version: '0.9.0' },
     ]);
+  });
+
+  test('refuses a remote Node.js older than the managed CLI needs', async () => {
+    const probed = [];
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '1.2.3',
+      emit: () => undefined,
+    });
+    manager.runRemoteCommand = async (_parsed, _controlPath, script) => {
+      probed.push(script);
+      return 'v18.19.1\n';
+    };
+
+    await expect(manager.assertRemoteNodeVersion({ destination: 'user@example.test', args: [] }, '/tmp/control.sock'))
+      .rejects.toThrow(/runs Node\.js v18\.19\.1.*requires Node\.js 22\+ on the remote host/);
+    // The serve step resolves `node` from this PATH, so the probe must too.
+    expect(probed).toHaveLength(1);
+    expect(probed[0]).toContain('node --version');
+    expect(probed[0]).toContain('$HOME/.openchamber/npm-global/bin');
+  });
+
+  test('passes a remote Node.js 22+ without running anything else', async () => {
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '1.2.3',
+      emit: () => undefined,
+    });
+    manager.runRemoteCommand = async () => 'v22.14.0\n';
+
+    await expect(manager.assertRemoteNodeVersion({ destination: 'user@example.test', args: [] }, '/tmp/control.sock'))
+      .resolves.toBeUndefined();
+  });
+
+  test('says Node.js is missing when the remote probe command fails', async () => {
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '1.2.3',
+      emit: () => undefined,
+    });
+    manager.runRemoteCommand = async () => {
+      throw new Error('node: command not found');
+    };
+
+    await expect(manager.assertRemoteNodeVersion({ destination: 'user@example.test', args: [] }, '/tmp/control.sock'))
+      .rejects.toThrow(/was not found on the remote host/);
+  });
+
+  test('reads the Node.js version past shell profile output', async () => {
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '1.2.3',
+      emit: () => undefined,
+    });
+    manager.runRemoteCommand = async () => 'Welcome to Ubuntu 22.04.5 LTS\nv18.19.1\n';
+
+    await expect(manager.assertRemoteNodeVersion({ destination: 'user@example.test', args: [] }, '/tmp/control.sock'))
+      .rejects.toThrow(/runs Node\.js v18\.19\.1/);
   });
 
   test('starts the resolved OpenChamber binary rather than whatever PATH exposes', async () => {
@@ -638,9 +698,10 @@ printf '4321\\n'`);
     });
 
     // A remote host reduced to what the manager asks of it: the CLI registry,
-    // the servers answering on their ports, and the serve/stop commands.
+    // the servers answering on their ports, the serve/stop commands, and the
+    // Node.js version the managed CLI would run under.
     const createRemoteHost = (servers = []) => {
-      const host = { servers: [...servers], started: [], stopped: [], statusFails: false, stopFails: false, statusNoise: '' };
+      const host = { servers: [...servers], started: [], stopped: [], statusFails: false, stopFails: false, statusNoise: '', nodeVersion: 'v22.14.0' };
       const manager = new ElectronSshManager({
         settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
         appVersion: '1.2.3',
@@ -649,6 +710,9 @@ printf '4321\\n'`);
       manager.resolveRemoteTool = async () => '/home/pi/.opencode/bin/opencode';
       manager.remoteOpenChamberCandidates = async () => [{ binPath: '/home/pi/.bun/bin/openchamber', version: '1.2.3' }];
       manager.runRemoteCommand = async (_parsed, _controlPath, script) => {
+        if (script.includes('node --version')) {
+          return `${host.nodeVersion}\n`;
+        }
         const probedPort = script.match(/127\.0\.0\.1:(\d+)\/api\/system\/info/);
         if (probedPort) {
           const server = host.servers.find((entry) => entry.port === Number(probedPort[1]));
@@ -687,6 +751,21 @@ printf '4321\\n'`);
       };
       return { host, manager };
     };
+
+    test('refuses an old remote Node.js before installing or starting anything', async () => {
+      const { host, manager } = createRemoteHost();
+      host.nodeVersion = 'v18.19.1';
+      manager.remoteOpenChamberCandidates = async () => [];
+      let installed = false;
+      manager.installOpenChamberManaged = async () => {
+        installed = true;
+      };
+
+      await expect(manager.ensureRemoteServer(managed(), parsed, '/unused.sock'))
+        .rejects.toThrow(/requires Node\.js 22\+ on the remote host/);
+      expect(installed).toBe(false);
+      expect(host.started).toEqual([]);
+    });
 
     test('reconnecting reuses the server the previous connect left running', async () => {
       const { host, manager } = createRemoteHost();

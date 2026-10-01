@@ -1619,7 +1619,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     )}
                     aria-hidden={isDesktopExpandedInput}
                 >
-                    <div className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-background pt-6" style={CHAT_SCROLL_STYLE}>
+                    <div className="absolute inset-0 overflow-y-auto overflow-x-hidden pt-6" style={CHAT_SCROLL_STYLE}>
                         <div className="space-y-4">
                             {HYDRATING_SKELETON_ITEMS.map((item) => (
                                 <div key={item.id} className="group w-full">
@@ -1719,7 +1719,11 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 			// transcript fades out above the composer (index.css). Once the
 			// reader leaves the end, the rows slide under its glass again.
 			data-live-tail={sessionStatusForCurrent.type === 'busy' && isFollowingProgrammatically ? 'true' : undefined}
-			className="relative flex min-w-0 flex-1 flex-col h-full bg-background"
+			// Transparent on purpose: the outer row above paints the chat's
+			// single fill, like every other region over the app canvas.
+			// A fill here would stack a second translucent layer and
+			// compound toward opaque.
+			className="relative flex min-w-0 flex-1 flex-col h-full"
 		>
 			{returnToParentButton}
 			{sessionSurface}
@@ -1743,11 +1747,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     floatingComposer
                         ? 'absolute inset-x-0 bottom-0'
                         : 'relative',
+                    // No fill here either: transparent over the outer row's
+                    // single fill (see the column above).
                     isDesktopExpandedInput
-                        ? 'flex-1 min-h-0 bg-background'
+                        ? 'flex-1 min-h-0'
                         : draftLayoutVisible && !useCompactDraftLayout
-                            ? 'flex-1 items-center justify-center bg-background pb-[6vh]'
-                        : !floatingComposer && 'bg-background'
+                            ? 'flex-1 items-center justify-center pb-[6vh]'
+                            : null,
                 )}
             >
                 {!draftLayoutVisible && !isDesktopExpandedInput && sessionMessages.length > 0 && (

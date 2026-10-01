@@ -574,6 +574,8 @@ export const ContextPanel: React.FC = () => {
   const openNewContextBrowserTab = useUIStore((state) => state.openNewContextBrowserTab);
   const faviconByOrigin = useBrowserFaviconStore((state) => state.byOrigin);
   const allowPromptingSubagentSessions = useUIStore((state) => state.allowPromptingSubagentSessions);
+  const desktopWindowMaterial = useUIStore((state) => state.desktopWindowMaterial);
+  const desktopWindowMaterialOpacity = useUIStore((state) => state.desktopWindowMaterialOpacity);
   const { themeMode, setThemeMode, lightThemeId, darkThemeId, currentTheme } = useThemeSystem();
 
   const tabs = React.useMemo(() => panelState?.tabs ?? [], [panelState?.tabs]);
@@ -929,6 +931,10 @@ export const ContextPanel: React.FC = () => {
       lightThemeId,
       darkThemeId,
       currentTheme,
+      // Subtask viewer iframes tint with the main window (material tokens
+      // only resolve inside the frame once it knows these).
+      windowMaterial: desktopWindowMaterial,
+      windowMaterialOpacity: desktopWindowMaterialOpacity,
     };
 
     for (const frame of chatFrameRefs.current.values()) {
@@ -945,7 +951,7 @@ export const ContextPanel: React.FC = () => {
         window.location.origin,
       );
     }
-  }, [currentTheme, darkThemeId, lightThemeId, themeMode]);
+  }, [currentTheme, darkThemeId, desktopWindowMaterial, desktopWindowMaterialOpacity, lightThemeId, themeMode]);
 
   const postChatSettingsSyncToEmbeddedChat = React.useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -1061,7 +1067,7 @@ export const ContextPanel: React.FC = () => {
     postThemeSyncToEmbeddedChat();
     postChatSettingsSyncToEmbeddedChat();
     postEmbeddedVisibilityToChats();
-  }, [darkThemeId, lightThemeId, postChatSettingsSyncToEmbeddedChat, postEmbeddedVisibilityToChats, postThemeSyncToEmbeddedChat, tabs, themeMode]);
+  }, [darkThemeId, desktopWindowMaterial, desktopWindowMaterialOpacity, lightThemeId, postChatSettingsSyncToEmbeddedChat, postEmbeddedVisibilityToChats, postThemeSyncToEmbeddedChat, tabs, themeMode]);
 
   // The rail switches between surfaces (modes); the in-panel strip only lists
   // instances of the active multi-instance surface (open files, split chats,
@@ -1214,7 +1220,9 @@ export const ContextPanel: React.FC = () => {
   );
 
   const header = (
-    <header className="flex h-10 items-stretch border-b border-border">
+    // The panel's single fill, like the main header: the aside stays
+    // transparent so docked views paint their own.
+    <header className="flex h-10 items-stretch border-b border-border bg-background">
       {isMultiInstanceMode ? (
         <SortableTabsStrip
           items={tabItems}
@@ -1356,7 +1364,10 @@ export const ContextPanel: React.FC = () => {
       tabIndex={-1}
       inert={!isOpen || undefined}
       className={cn(
-        'flex min-h-0 flex-col overflow-hidden bg-background',
+        // Transparent like the main layout wrappers: every docked tab
+        // (terminal, diff, browser, editor, chat frame) paints its own
+        // single fill, so a fill here would only compound over them.
+        'flex min-h-0 flex-col overflow-hidden bg-transparent',
         // Right-anchored while expanded: `inset-0` would teleport the left
         // edge instantly (position does not transition), so only the width
         // animates and the panel grows leftwards from its docked position.
