@@ -67,4 +67,11 @@ describe('SessionSidebarRows section spacing', () => {
     const rows = buildSessionSidebarRowModel(input(false)).rows;
     expect(spacingBefore(rows, 'project-header')).toBe('pb-6');
   });
+
+  test('a header-only zone keeps the regular gap above the projects', () => {
+    const rows = buildSessionSidebarRowModel(input(false)).rows;
+    const header = rows.find((row) => row.kind === 'activity-header');
+    const project = rows.find((row) => row.kind === 'project-header');
+    expect(sectionSpacingAfter(header!, project)).toBe('pb-2');
+  });
 });

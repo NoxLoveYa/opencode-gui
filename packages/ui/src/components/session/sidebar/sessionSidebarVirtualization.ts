@@ -25,8 +25,10 @@ export const findFirstVisibleSessionSidebarRowIndex = (
 
 export const sectionSpacingAfter = (row: SessionSidebarRow, nextRow: SessionSidebarRow | undefined): string | undefined => {
   // The zones above the projects (Chats, In work, Recent) end with a wider
-  // gap, whichever of them happens to be the last one shown.
-  const endsZones = row.key.startsWith('activity:') && nextRow !== undefined && !nextRow.key.startsWith('activity:');
+  // gap, whichever of them happens to be the last one shown. A zone that is
+  // only its header (empty or collapsed) has nothing to set apart, so it
+  // keeps the regular section gap instead of leaving dead space.
+  const endsZones = row.kind !== 'activity-header' && row.key.startsWith('activity:') && nextRow !== undefined && !nextRow.key.startsWith('activity:');
   if (endsZones && (nextRow.kind === 'project-header' || nextRow.kind === 'group-header')) {
     return 'pb-6';
   }
