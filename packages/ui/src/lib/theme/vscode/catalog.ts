@@ -40,3 +40,35 @@ export async function readThemePackage(extension: ThemeExtension, signal: AbortS
     }
   });
 }
+
+export type ThemeVariants = Awaited<ReturnType<typeof readThemePackage>>;
+
+// Each package is a full VSIX download, so reads are shared per extension and capped.
+export function createThemePackageLoader(signal: AbortSignal, concurrency = 3) {
+  const cache = new Map<string, Promise<ThemeVariants>>();
+  const waiting: Array<() => void> = [];
+  let active = 0;
+
+  const acquire = async () => {
+    if (active < concurrency) { active++; return; }
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  };
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next(); else active--;
+  };
+
+  return (extension: ThemeExtension) => {
+    const key = `${extension.namespace}/${extension.name}/${extension.version}`;
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = (async () => {
+        await acquire();
+        try { return await readThemePackage(extension, signal); } finally { release(); }
+      })();
+      cache.set(key, pending);
+      pending.catch(() => cache.delete(key));
+    }
+    return pending;
+  };
+}

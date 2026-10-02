@@ -7,17 +7,54 @@ import { Input } from '@/components/ui/input';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
-import { searchThemeCatalog, readThemePackage, type ThemeExtension } from '@/lib/theme/vscode/catalog';
+import { searchThemeCatalog, createThemePackageLoader, type ThemeExtension, type ThemeVariants } from '@/lib/theme/vscode/catalog';
+import type { Theme } from '@/types/theme';
 import { SettingsCheckboxRow } from '../shared/SettingsSection';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useDeviceInfo } from '@/lib/device';
 import { useUIStore } from '@/stores/useUIStore';
 
-type Variants = Awaited<ReturnType<typeof readThemePackage>>;
+type PackageLoader = ReturnType<typeof createThemePackageLoader>;
 type CatalogState =
   | { step: 'search'; status: 'idle' | 'loading' | 'ready' | 'error'; results: ThemeExtension[] }
   | { step: 'package'; status: 'loading' | 'error'; extension: ThemeExtension }
-  | { step: 'variants'; extension: ThemeExtension; variants: Variants };
+  | { step: 'variants'; extension: ThemeExtension; variants: ThemeVariants };
+
+const MAX_ROW_PALETTES = 4;
+
+function ThemePalette({ theme, name }: { theme: Theme; name: string }) {
+  const { surface, primary, status, syntax } = theme.colors;
+  const swatches = [primary.base, syntax.base.keyword, syntax.base.string, syntax.base.number, syntax.base.function, syntax.base.type, status.error, status.warning, status.success];
+  return <span aria-hidden="true" title={name} className="inline-flex items-center gap-2 rounded-md border border-[var(--interactive-border)] px-2 py-1.5" style={{ backgroundColor: surface.background, color: surface.foreground }}>
+    <span className="typography-meta font-medium normal-case leading-none">Aa</span>
+    <span className="flex gap-1">{swatches.map((color, index) => <span key={index} className="size-3 rounded-full" style={{ backgroundColor: color }} />)}</span>
+  </span>;
+}
+
+function ExtensionPalettes({ extension, load }: { extension: ThemeExtension; load: PackageLoader | null }) {
+  const [variants, setVariants] = React.useState<ThemeVariants | null>(null);
+  const container = React.useRef<HTMLSpanElement>(null);
+  React.useEffect(() => {
+    const node = container.current;
+    if (!node || !load) return;
+    let current = true;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      observer.disconnect();
+      load(extension).then((loaded) => { if (current) setVariants(loaded); }, () => { if (current) setVariants([]); });
+    });
+    observer.observe(node);
+    return () => { current = false; observer.disconnect(); };
+  }, [extension, load]);
+
+  const ready = (variants ?? []).filter((variant) => variant.status === 'ready').slice(0, MAX_ROW_PALETTES);
+  const empty = variants !== null && !ready.length;
+  return <span ref={container} aria-hidden="true" className={empty ? 'hidden' : 'mt-1.5 flex min-h-7 flex-wrap gap-1.5'}>
+    {variants === null
+      ? <span className="h-7 w-40 animate-pulse rounded-md bg-[var(--surface-subtle)]" />
+      : ready.map((variant) => <ThemePalette key={variant.key} theme={variant.theme} name={variant.name} />)}
+  </span>;
+}
 
 function ExtensionIcon({ extension }: { extension: ThemeExtension }) {
   const [failed, setFailed] = React.useState(false);
@@ -38,10 +75,12 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
   const [saved, setSaved] = React.useState<Set<string>>(new Set());
   const [saving, setSaving] = React.useState(false);
   const [result, setResult] = React.useState<'partial' | null>(null);
+  const [loadPackage, setLoadPackage] = React.useState<PackageLoader | null>(null);
   const lifetime = React.useRef<AbortController | null>(null);
   React.useEffect(() => {
     const controller = new AbortController();
     lifetime.current = controller;
+    setLoadPackage(() => createThemePackageLoader(controller.signal));
     const unsubscribe = subscribeRuntimeEndpointChanged(() => controller.abort());
     return () => { unsubscribe(); controller.abort(); };
   }, []);
@@ -65,13 +104,13 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
 
   const load = async (extension: ThemeExtension) => {
     const signal = lifetime.current?.signal;
-    if (!signal) return;
+    if (!signal || !loadPackage) return;
     setState({ step: 'package', status: 'loading', extension });
     setSaved(new Set());
     setResult(null);
     setSelected(new Set());
     try {
-      const variants = await readThemePackage(extension, signal);
+      const variants = await loadPackage(extension);
       if (!signal.aborted) setState({ step: 'variants', extension, variants });
     } catch {
       if (!signal.aborted) setState({ step: 'package', status: 'error', extension });
@@ -120,9 +159,9 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
           {state.status === 'loading' && <p className="text-muted-foreground">{t('common.loading')}</p>}
           {state.status === 'error' && <p role="alert" className="text-[var(--status-error-text)]">{t('settings.themeImport.catalogError')}</p>}
           {state.status === 'ready' && !state.results.length && <p className="text-muted-foreground">{t('settings.themeImport.empty')}</p>}
-          {state.results.map((extension) => <Button key={`${extension.namespace}.${extension.name}`} variant="ghost" className="h-auto w-full justify-start py-2 text-left" onClick={() => void load(extension)}>
+          {state.results.map((extension) => <Button key={`${extension.namespace}.${extension.name}`} variant="ghost" className="h-auto w-full items-start justify-start py-2 text-left" onClick={() => void load(extension)}>
             <ExtensionIcon extension={extension} />
-            <span className="min-w-0"><span className="block truncate">{extension.label}</span><span className="block truncate typography-meta text-muted-foreground">{extension.namespace}</span></span>
+            <span className="min-w-0"><span className="block truncate">{extension.label}</span><span className="block truncate typography-meta text-muted-foreground">{extension.namespace}</span><ExtensionPalettes extension={extension} load={loadPackage} /></span>
           </Button>)}
         </div>
       </> : <>
@@ -140,16 +179,14 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
               {t(allSelected ? 'settings.themeImport.deselectAll' : 'settings.themeImport.selectAll')}
             </Button>}
             <div className={isMobile ? 'space-y-2' : 'max-h-[45dvh] overflow-y-auto space-y-2'}>
-              {state.variants.map((variant) => <div key={variant.key} className="flex items-center gap-3">
-                {variant.status === 'ready' && <div aria-hidden="true" className="flex w-20 shrink-0 items-center gap-2 rounded px-2 py-3" style={{ backgroundColor: variant.theme.colors.surface.background, color: variant.theme.colors.surface.foreground }}>
-                  <span>Aa</span><span className="space-y-1">{[variant.theme.colors.syntax.base.keyword, variant.theme.colors.syntax.base.string, variant.theme.colors.syntax.base.function].map((color, index) => <span key={index} className="block h-1 w-5 rounded" style={{ backgroundColor: color }} />)}</span>
-                </div>}
-                <div className="min-w-0 flex-1">
+              {state.variants.map((variant) => <div key={variant.key}>
+                <div className="min-w-0">
                   {saved.has(variant.key)
                     ? <div className="flex items-center gap-2 py-1"><Icon name="check" className="size-4 shrink-0 text-[var(--status-success-text)]" /><span className="typography-ui-label">{variant.name}</span></div>
                     : <SettingsCheckboxRow checked={selected.has(variant.key)} disabled={variant.status !== 'ready' || saving || fileBusy} label={variant.name}
                       onChange={(checked) => setSelected((current) => { const next = new Set(current); if (checked) next.add(variant.key); else next.delete(variant.key); return next; })} />}
                   <p className={saved.has(variant.key) ? 'typography-meta font-medium text-[var(--status-success-text)]' : 'typography-meta text-muted-foreground'}>{variant.status !== 'ready' ? t('settings.themeImport.error.invalid') : saved.has(variant.key) ? t('settings.themeImport.installed') : t(variant.theme.metadata.variant === 'dark' ? 'settings.openchamber.visual.option.themeMode.dark' : 'settings.openchamber.visual.option.themeMode.light')}</p>
+                  {variant.status === 'ready' && <div className="mt-1.5"><ThemePalette theme={variant.theme} name={variant.name} /></div>}
                 </div>
               </div>)}
             </div>
