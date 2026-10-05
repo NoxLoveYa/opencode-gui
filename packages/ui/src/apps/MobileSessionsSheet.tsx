@@ -440,8 +440,9 @@ const SessionRow: React.FC<{
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex items-center gap-2.5">
             <span
+              dir="auto"
               className={cn(
-                'block min-w-0 flex-1 truncate typography-ui-label',
+                'block min-w-0 flex-1 truncate text-left typography-ui-label',
                 active ? 'text-primary' : 'text-foreground',
               )}
             >
@@ -569,7 +570,7 @@ const MobileRunRow: React.FC<{ run: MultiRunSummary; laneNodes: readonly Session
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <ArrowsMerge className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <span className={cn('block min-w-0 flex-1 truncate typography-ui-label', active ? 'text-primary' : 'text-foreground')}>
+          <span dir="auto" className={cn('block min-w-0 flex-1 truncate text-left typography-ui-label', active ? 'text-primary' : 'text-foreground')}>
             {run.title}
           </span>
         </span>
@@ -2426,14 +2427,16 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             setNewWorktreeDialogOpen(value);
             if (!value) setWorktreeDialogProjectId(null);
           }}
-          onWorktreeCreated={(worktreePath, options) => {
-            if (options?.sessionId) void setCurrentSession(options.sessionId, worktreePath);
-            else
-              openNewSessionDraft({
-                selectedProjectId: worktreeDialogProjectId,
-                directoryOverride: worktreePath,
-                preserveDirectoryOverride: true,
-              });
+          project={(() => {
+            const project = projectsMeta.find((entry) => entry.id === worktreeDialogProjectId);
+            return project ? { id: project.id, path: project.path } : undefined;
+          })()}
+          onWorktreeCreated={(worktreePath) => {
+            openNewSessionDraft({
+              selectedProjectId: worktreeDialogProjectId,
+              directoryOverride: worktreePath,
+              preserveDirectoryOverride: true,
+            });
             onOpenChange(false);
           }}
         />

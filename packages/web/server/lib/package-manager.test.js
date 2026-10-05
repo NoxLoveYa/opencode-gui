@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 
 // Mock child_process to prevent real spawnSync calls that would hang in tests
 vi.mock('node:child_process', () => ({
@@ -11,6 +12,7 @@ const {
   detectPackageManager,
   executeUpdate,
   getCurrentVersion,
+  getUpdateCommand,
 } = await import('./package-manager.js');
 
 /** Helper: create a fetch mock that routes by URL pattern */
@@ -79,6 +81,82 @@ describe('checkForUpdates', () => {
     expect(result.available).toBe(true);
     expect(result.version).toBe('1.10.0');
     expect(result.currentVersion).toBe('1.9.10');
+  });
+
+  // --- Scenario: cross-verification uses the configured npm registry ---
+
+  it('cross-verifies against the configured npm registry, not registry.npmjs.org', async () => {
+    const previousLower = process.env.npm_config_registry;
+    const previous = process.env.NPM_CONFIG_REGISTRY;
+    process.env.npm_config_registry = '';
+    process.env.NPM_CONFIG_REGISTRY = 'https://mirror.example.com/npm';
+    // Only the mirror is mocked. A stray call to registry.npmjs.org would reject,
+    // drop npm cross-verification, and flip available to false.
+    fetchMock
+      .when('api.openchamber.dev', {
+        ok: true,
+        json: async () => ({
+          latestVersion: '1.10.0',
+          updateAvailable: true,
+          releaseNotes: '## [1.10.0]\n\n- New',
+        }),
+      })
+      .when('mirror.example.com/npm/@openchamber%2Fweb', {
+        ok: true,
+        json: async () => ({
+          'dist-tags': { latest: '1.10.0' },
+        }),
+      })
+      .when('raw.githubusercontent.com', {
+        ok: true,
+        text: async () => '## [1.10.0]\n\n- New',
+      });
+
+    try {
+      const result = await checkForUpdates({ currentVersion: '1.9.10' });
+
+      expect(result.available).toBe(true);
+      expect(result.version).toBe('1.10.0');
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url) === 'https://mirror.example.com/npm/@openchamber%2Fweb'),
+      ).toBe(true);
+    } finally {
+      if (previousLower === undefined) delete process.env.npm_config_registry;
+      else process.env.npm_config_registry = previousLower;
+      if (previous === undefined) delete process.env.NPM_CONFIG_REGISTRY;
+      else process.env.NPM_CONFIG_REGISTRY = previous;
+    }
+  });
+
+  it('cross-verifies scoped metadata without exposing registry credentials', async () => {
+    const previousLower = process.env.npm_config_registry;
+    const previous = process.env.NPM_CONFIG_REGISTRY;
+    process.env.npm_config_registry = '';
+    process.env.NPM_CONFIG_REGISTRY = 'https://test-user:test-password@mirror.example.com/npm/';
+    fetchMock
+      .when('api.openchamber.dev', {
+        ok: true,
+        json: async () => ({ latestVersion: '1.10.0', updateAvailable: true }),
+      })
+      .when('mirror.example.com/npm/@openchamber%2Fweb', {
+        ok: true,
+        json: async () => ({ 'dist-tags': { latest: '1.10.0' } }),
+      });
+
+    try {
+      const result = await checkForUpdates({ currentVersion: '1.9.10' });
+      const npmCall = fetchMock.mock.calls.find(([url]) => String(url).includes('mirror.example.com'));
+
+      expect(result.available).toBe(true);
+      expect(npmCall[0]).toBe('https://mirror.example.com/npm/@openchamber%2Fweb');
+      expect(npmCall[0]).not.toContain('test-password');
+      expect(npmCall[1].headers.Authorization).toBe(`Basic ${Buffer.from('test-user:test-password').toString('base64')}`);
+    } finally {
+      if (previousLower === undefined) delete process.env.npm_config_registry;
+      else process.env.npm_config_registry = previousLower;
+      if (previous === undefined) delete process.env.NPM_CONFIG_REGISTRY;
+      else process.env.NPM_CONFIG_REGISTRY = previous;
+    }
   });
 
   // --- Scenario (THE FIX): API says update available, npm does NOT have it ---
@@ -346,6 +424,80 @@ describe('getCurrentVersion', () => {
   it('is exported for the CLI update command', () => {
     expect(typeof getCurrentVersion).toBe('function');
     expect(getCurrentVersion()).toMatch(/^\d+\.\d+\.\d+|unknown$/);
+  });
+});
+
+describe('getUpdateCommand', () => {
+  it('pins the exact target version instead of re-resolving the latest dist-tag', () => {
+    expect(getUpdateCommand('npm', { targetVersion: '1.24.1' })).toBe('npm install -g @openchamber/web@1.24.1');
+    expect(getUpdateCommand('pnpm', { targetVersion: 'v1.24.1' })).toBe('pnpm add -g @openchamber/web@1.24.1');
+    expect(getUpdateCommand('yarn', { targetVersion: '1.24.1' })).toBe('yarn global add @openchamber/web@1.24.1');
+    expect(getUpdateCommand('bun', { targetVersion: '1.25.0-beta.1' })).toContain('add -g @openchamber/web@1.25.0-beta.1');
+  });
+
+  it('falls back to the latest dist-tag when no target version is given', () => {
+    expect(getUpdateCommand('npm')).toBe('npm install -g @openchamber/web@latest');
+  });
+
+  it('rejects a target version that is not a concrete version', () => {
+    expect(() => getUpdateCommand('npm', { targetVersion: 'latest; rm -rf /' })).toThrow(/Invalid target version/);
+  });
+});
+
+describe('executeUpdate', () => {
+  function stubSpawnSync({ installStatus = 0, listingStdout = '', listingStatus = 0 } = {}) {
+    spawnSync.mockImplementation((command, args) => {
+      if (!Array.isArray(args)) {
+        return { status: installStatus, stdout: '', stderr: '' };
+      }
+      if (args.includes('--version')) {
+        return { status: 0, stdout: '10.0.0', stderr: '' };
+      }
+      if (args[0] === 'list' || args[0] === 'pm' || args[0] === 'global') {
+        return { status: listingStatus, stdout: listingStdout, stderr: '' };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    });
+  }
+
+  afterEach(() => {
+    spawnSync.mockReset();
+  });
+
+  it('reports success when the installed version matches the target', () => {
+    stubSpawnSync({ listingStdout: '└── @openchamber/web@1.24.1' });
+    const result = executeUpdate('npm', { targetVersion: '1.24.1' });
+    expect(result.success).toBe(true);
+    expect(result.installedVersion).toBe('1.24.1');
+  });
+
+  it('fails when the package manager exits non-zero', () => {
+    stubSpawnSync({ installStatus: 1 });
+    const result = executeUpdate('npm', { targetVersion: '1.24.1' });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('exited with code 1');
+  });
+
+  it('fails when the package manager exits successfully but installed the wrong version', () => {
+    stubSpawnSync({ listingStdout: '└── @openchamber/web@1.19.0' });
+    const result = executeUpdate('npm', { targetVersion: '1.24.1' });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('1.19.0');
+    expect(result.error).toContain('1.24.1');
+  });
+
+  it('fails loudly when the installed version cannot be verified', () => {
+    stubSpawnSync({ listingStdout: '', listingStatus: 1 });
+    const result = executeUpdate('npm', { targetVersion: '1.24.1' });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not determine');
+  });
+
+  it('keeps the previous behavior when no target version is given', () => {
+    stubSpawnSync();
+    const result = executeUpdate('npm');
+    expect(result.success).toBe(true);
+    expect(result.installedVersion).toBeNull();
   });
 });
 

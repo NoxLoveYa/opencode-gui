@@ -42,9 +42,14 @@ type Props = {
   doneHint?: React.ReactNode;
   /** Provider of the session's model; its logo closes the third line. */
   providerId?: string | null;
-  /** Reserves room for the action buttons that share the first line. */
+  /** Reserves room for permanently shown action buttons on the first line. */
   metaPaddingClass?: string;
   hideMetaOnHoverClass: string;
+  /** Sets how far hover-revealed actions reach into the first line
+      (`--oc-actions-reserve`). */
+  actionsReserveClass?: string;
+  /** Fades the first line's text away under hover-revealed actions. */
+  actionsMaskClass?: string;
 };
 
 // Only rows whose project carries a custom image pay for the theme
@@ -63,8 +68,8 @@ const TimelineProjectIcon: React.FC<{ project: TimelineRowProject | null }> = ({
   const iconName = project?.icon ? PROJECT_ICON_MAP[project.icon] : null;
   const iconColor = project?.color ? (PROJECT_COLOR_MAP[project.color] ?? null) : null;
   const glyph = iconName
-    ? <Icon name={iconName} className={cn('h-3.5 w-3.5', !iconColor && 'text-muted-foreground')} style={iconColor ? { color: iconColor } : undefined} />
-    : <Icon name="folder" className="h-3.5 w-3.5 text-muted-foreground" style={iconColor ? { color: iconColor } : undefined} />;
+    ? <Icon name={iconName} className={cn('h-3.5 w-3.5', !iconColor && 'text-muted-foreground/75')} style={iconColor ? { color: iconColor } : undefined} />
+    : <Icon name="folder" className="h-3.5 w-3.5 text-muted-foreground/75" style={iconColor ? { color: iconColor } : undefined} />;
   if (!project?.iconImage) {
     return <span className="inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">{glyph}</span>;
   }
@@ -99,6 +104,8 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
   providerId,
   metaPaddingClass,
   hideMetaOnHoverClass,
+  actionsReserveClass,
+  actionsMaskClass,
 }) => {
   const hasThirdLine = !compact && (Boolean(branchLabel) || Boolean(thirdLineLead) || Boolean(prBadge) || Boolean(zombieIndicator) || Boolean(goal) || Boolean(badges) || Boolean(providerId));
   // Compact rows have no third line, so their badges ride in the meta
@@ -111,31 +118,32 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
     {pinnedMarker}
     {doneHint}
     {statusDot}
-    <span className="typography-micro leading-none text-muted-foreground tabular-nums">{timeSlot}</span>
+    <span className="typography-micro leading-none text-muted-foreground/50 tabular-nums">{timeSlot}</span>
   </span>;
   if (compact) {
-    return <div className="relative flex w-full min-w-0 items-center gap-1">
-      <div className={cn('min-w-0 flex-1 truncate typography-ui-label font-medium', titleClassName)}>{title}</div>
+    return <div className={cn('@container relative flex w-full min-w-0 items-center gap-1', actionsReserveClass)}>
+      <div dir="auto" className={cn('min-w-0 flex-1 truncate typography-ui-label font-normal', actionsMaskClass, titleClassName)}>{title}</div>
       {meta}
     </div>;
   }
   return <div className="flex w-full min-w-0 flex-col gap-px">
     {/* Fixed 20px first line: the hover actions are positioned against the
         row from outside and rely on this height to sit exactly on it. */}
-    <div className="relative flex h-5 w-full min-w-0 items-center gap-1">
+    <div className={cn('@container relative flex h-5 w-full min-w-0 items-center gap-1', actionsReserveClass)}>
       <TimelineProjectIcon project={project} />
       {projectLabel ? (
-        <span className="min-w-0 truncate typography-micro text-muted-foreground">{projectLabel}</span>
+        // Starts past the 14px project icon and the 4px gap.
+        <span className={cn('min-w-0 truncate typography-micro text-muted-foreground/85 [--oc-actions-inset:18px]', actionsMaskClass)}>{projectLabel}</span>
       ) : null}
       {meta}
     </div>
-    <div className={cn('w-full min-w-0 truncate typography-ui-label font-medium', titleClassName)}>{title}</div>
+    <div dir="auto" className={cn('w-full min-w-0 truncate typography-ui-label font-normal', titleClassName)}>{title}</div>
     {hasThirdLine ? (
       <div className="flex w-full min-w-0 items-center gap-1">
         {thirdLineLead ?? (branchLabel ? (
           <>
-            <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
-            <span className="min-w-0 truncate typography-micro text-muted-foreground">{branchLabel}</span>
+            <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground/40" />
+            <span className="min-w-0 truncate typography-micro text-muted-foreground/50">{branchLabel}</span>
           </>
         ) : null)}
         <span className="ml-auto flex flex-shrink-0 items-center gap-1">
