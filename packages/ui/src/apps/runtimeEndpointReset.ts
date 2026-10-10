@@ -22,11 +22,13 @@ import { useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
 import { repositoryBindingOwner } from '@/lib/source-control/repository-binding';
 import { useChangeRequestContextStore } from '@/stores/useChangeRequestContextStore';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
+import { sessionEvents } from '@/lib/sessionEvents';
 import { useLinearAuthStore } from '@/stores/useLinearAuthStore';
 import { useQuotaStore } from '@/stores/useQuotaStore';
 import { useMcpStore } from '@/stores/useMcpStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
+import { useAgentsStore } from '@/stores/useAgentsStore';
 import { useAgentMemoryStore } from '@/stores/useAgentMemoryStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
@@ -87,6 +89,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   useMultiRunStore.getState().resetForRuntimeSwitch();
   useSessionMultiSelectStore.getState().disable();
   useCommandsStore.getState().resetForRuntimeSwitch();
+  useAgentsStore.getState().resetForRuntimeSwitch();
   replaceGlobalSessionStatusById(new Map());
   resetGlobalBlockingRequests();
   resetBackgroundShells();
@@ -98,6 +101,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   useMessageQueueStore.getState().resetForRuntimeSwitch(detail.previousRuntimeKey);
   useFileSearchStore.getState().resetForRuntimeSwitch();
   useGitStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
+  sessionEvents.cancelPendingGitRefreshes();
   useGitIdentitiesStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
   useSourceControlAuthStore.getState().resetForRuntimeSwitch();
   repositoryBindingOwner.reset();
@@ -125,10 +129,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   useMcpStore.getState().resetForRuntimeSwitch();
   useSkillsStore.getState().resetForRuntimeSwitch();
   useAgentMemoryStore.getState().reset();
-  // The Linear team filter names a team in one workspace. Carried across, it
-  // filters the new instance's issue list down to nothing.
-  useUIStore.getState().applyLinearIssueListFiltersForRuntime();
-  useSessionUIStore.getState().restoreForRuntimeSwitch(detail.runtimeKey);
+  useSessionUIStore.getState().restoreForRuntimeSwitch(detail.runtimeKey, detail.previousRuntimeKey);
   useSessionUIStore.setState({ worktreeDiscoveryByProject: new Map() });
   useUIStore.getState().setOpenGuestPage(null);
   resetStreamingState();

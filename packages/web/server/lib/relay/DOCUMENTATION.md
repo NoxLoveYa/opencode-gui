@@ -21,8 +21,9 @@ Traffic is modeled as three stacked layers. The relay understands only Layer 1; 
 Host side (`packages/web/server/lib/relay/`):
 - `service.js` — thin entrypoint: relay config (enabled flag + relay URL), the management routes (`GET/POST /api/openchamber/relay/{status,enable,disable}`), a `getPairingCandidate()` accessor (the relay transport candidate folded into pairing-v2 links when enabled, consumed by the pairing-session route in `core-routes.js`), and lifecycle wiring. Started from `packages/web/server/index.js` only when the user has explicitly enabled the relay. The relay endpoint defaults to the OpenChamber-hosted relay but can be pinned to a self-hosted relay (`pinnedRelayUrl`: `relayUrl` in the machine policy file, else the `OPENCHAMBER_RELAY_URL` env var; see `../enterprise-mode.js`; must be `ws://`/`wss://`, an invalid value pins nothing); when set it overrides the stored setting for the host connection, the pairing candidate, and status, so paired clients inherit the endpoint automatically. In enterprise mode (`../enterprise-mode.js`) the relay runs only with that pin (`relayBlockedByEnterprise`): `start()` refuses otherwise (every path in passes through it), `enable` answers 403, `getPairingCandidate()` is null, `ensureEnabledForPairing()` throws (the pairing route drops the candidate and direct pairing still works), status carries `blockedByEnterprise`, and `resolvePairingTransports` in `index.js` reports `relayAvailable: false`.
 - `identity.js` — the host's stable identity: the long-lived signing keypair (shared with the push relay, defines the routing id) plus a long-lived encryption keypair (the E2EE trust anchor). Reused across restarts; never rotated implicitly.
-- `signing-key.js` — storage/derivation of the signing keypair and the routing id, shared with the notifications runtime.
-- `host-client.js` — the long-lived connection manager: one outbound control connection to the relay, a per-client data connection for each connected device, reconnect/backoff, and the E2EE responder handshake per connection.
+- `signing-key.js` — the signing keypair and the routing id derivation, shared with the notifications runtime.
+- `key-store.js` — where both keypairs live: `<data-dir>/relay-identity.json` (`0600`), never `settings.json`, so the private keys do not travel with every copy of the settings file. Installs that kept them in `settings.json` (`relaySigningKey` / `relayEncryptionKey`) have them moved on first load, unchanged so `serverId` and the trust anchor survive, then stripped from settings; an older build sharing the data dir then mints its own identity. A key is minted only when neither file holds it, and both are read strictly so a corrupt or unreadable file fails instead of reading as first run. `index.js` builds one store for the push relay and the private relay, so their concurrent first loads mint one key.
+- `host-client.js` — the long-lived connection manager: one outbound control connection to the relay, a per-client data connection for each connected device, reconnect/backoff, and the E2EE responder handshake per connection. A data connection dial that never opens (refused, or no answer within 5 s, doubling to 15 s per failure) is retried after 1 s, doubling to 8 s, for as long as the relay still reports that client and the control connection is up. The relay sends no second `connected` for a waiting client, so without the retry the device waits for the relay's 15 s stuck-control reset or its own 30 s handshake timeout. A data connection that opened and then closed is not retried: the relay closes the client with it, and the client's reconnect arrives as a new `connected`.
 - `host-lock.js` — the per-machine host claim. Every local instance sharing the data dir shares the relay identity (same serverId), so concurrent relay hosts evict each other at the relay worker (`4001: Control replaced`) and paired devices land on whichever local process won last. The claim file (`<data-dir>/relay-host.lock`, `{ pid }`) makes this deterministic: `service.js` only starts the host when no LIVE process holds the claim (stale claims from dead pids are ignored), goes to `standby` otherwise, and a 30s watcher both takes over when the claimant dies and stands down when another process claims. A standby watcher waits a 2-minute grace after the claim frees before taking over, so a cleanly restarting host (app update/relaunch) — which reclaims at boot with no wait — always wins the restart window over a bystander instance. Explicit user intent — creating a pairing link or hitting `/relay/enable` — force-claims; the previous holder's watcher sees the takeover and backs off instead of fighting. Instances created with `allowPassiveHost: false` (dev servers via `OPENCHAMBER_RELAY_HOST=off`, the Electron dev shell via `OPENCHAMBER_ELECTRON_DEV`; `OPENCHAMBER_RELAY_HOST=on` overrides) never start the host passively at all — boot, demand reconcile, and watcher takeover leave them in `standby`; only explicit enable/pairing hosts there. The claim is cooperative (the relay worker still enforces the single host slot); it only decides which process keeps retrying.
 - `tunnel-host.js` — the per-connection dispatcher: decrypts tunnel frames and forwards HTTP/SSE/WS to the local server over loopback, then streams responses back. Enforces a path allowlist and never injects credentials.
 - `downstream-scheduler.js` owns end-client delivery credit and round-robin transmission across response streams. It selects plaintext frames before encryption.
@@ -164,7 +165,20 @@ occur transiently in the field (a same-identity dial taking the leg, relay state
 left by a host restart), so the client keeps its wake listeners armed and the
 next `online` event or return to the foreground clears the error and makes one
 fresh attempt. There is still no background loop. Transient failures use the
-existing reconnect/backoff path.
+existing reconnect/backoff path. The client status marks such a parked error
+with `terminal: true`, so callers can tell it apart from a pending reconnect.
+
+Mobile connect flows (`packages/ui/src/apps/mobileConnections.ts`, helpers in
+`mobileRelayFetch.ts`) log the relay failure reason (close message or
+`timeout`) in the connect trail. Idempotent probes (`/health`,
+`/auth/session`) wait for the tunnel's own reconnect after a dropped socket and
+ask again within their budget; pairing redeem and password login are sent once.
+Pairing, logging in again, and the session probes of auto-connect and connect
+ride the connected runtime tunnel when the phone is already on that server
+through the relay, and do not open a second tunnel to the same server: the
+relay keeps one client leg per device and server, so a second dial drops the
+live session. A probe dials its own tunnel only when the live one gives no
+answer.
 
 Relay mode plugs into the existing client transport layer rather than a parallel path: `runtime-switch` activates the tunnel singleton, `runtime-fetch` routes runtime requests through it, `runtime-url`/`runtime-socket` yield tunnel-backed URLs and sockets, and `runtime-auth` mints the URL-scoped token through the tunnel. Direct-URL connections and the Electron realtime-proxy path are unaffected.
 
@@ -172,6 +186,7 @@ Relay mode plugs into the existing client transport layer rather than a parallel
 
 - The relay never sees plaintext application traffic; it sees only routing metadata (routing id, connection identifiers, timestamps, coarse counts).
 - Pairing secrets travel in URL fragments only, never in query strings, never logged.
+- Host dial URLs carry the signed relay auth in their query string, and Bun's WebSocket copies the whole URL into its error messages. Relay errors reach logs and the relay status only through `describeRelayError` in `host-client.js`, which strips query strings and userinfo from every URL in the text.
 - The host dispatcher never injects credentials; the server authenticates each tunneled request.
 - The tunnel is transparent to the app: adding relay support to a feature should not require the feature to know the relay exists — it goes through the shared runtime transport helpers.
 - The two implementations stay byte-compatible and the wire format is versioned/negotiated so mixed client/host app versions degrade gracefully rather than break.

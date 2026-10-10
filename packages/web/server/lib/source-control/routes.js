@@ -4,8 +4,9 @@ import { registerGitHubRoutes } from '../github/routes.js';
 import { registerGitLabRoutes } from '../gitlab/routes.js';
 import { createBindingService } from './binding-service.js';
 import { createBindingStore } from './binding-storage.js';
+import { createChangeRequestWorktreeSource } from './change-request-worktree.js';
 import { createGitIdentityProvisioning } from '../git/identity-provisioning.js';
-import * as gitIdentityStore from '../git/identity-storage.js';
+import { createProfile, getProfiles, updateProfile } from '../git/identity-storage.js';
 import { resolveRepositoryIdentity } from './repository-identity.js';
 import { redactSensitiveText } from './url-redaction.js';
 import { createOAuthFlowRegistry } from './oauth-flow-registry.js';
@@ -73,7 +74,7 @@ export function registerSourceControlRoutes(app, dependencies = {}) {
   // Connecting an account is the moment every part of an identity is known, so
   // the identity is made there instead of being asked for again later.
   const identityProvisioning = dependencies.identityProvisioning ?? createGitIdentityProvisioning({
-    store: gitIdentityStore,
+    store: { createProfile, getProfiles, updateProfile },
   });
   const listGitHubAccounts = dependencies.listGitHubAccounts ?? getGitHubAuthAccounts;
   const oauthFlowRegistry = dependencies.oauthFlowRegistry ?? createOAuthFlowRegistry();
@@ -291,5 +292,16 @@ export function registerSourceControlRoutes(app, dependencies = {}) {
         code: 'INVALID_SOURCE_CONTROL_READ_CONTEXT', status: 400,
       });
     },
+    // A worktree from a pull or merge request given by number (session.create).
+    resolveChangeRequestWorktreeSource: createChangeRequestWorktreeSource({
+      readBinding: bindingService.get,
+      listGitLabInstances: gitlab.listInstances,
+      readCurrentAccountId: ({ provider, instance }) => (provider === 'github'
+        ? github.readCurrentAccountId()
+        : gitlab.readCurrentAccountId(instance)),
+      readChangeRequestHead: (input) => (input.context.provider === 'github'
+        ? github.readChangeRequestHead(input)
+        : gitlab.readChangeRequestHead(input)),
+    }),
   });
 }

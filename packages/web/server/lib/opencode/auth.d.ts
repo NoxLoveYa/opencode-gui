@@ -2,7 +2,7 @@ import type { CredentialEntry, IntegrationInfo, JsonValue } from '@opencode/clie
 
 export type LegacyAuthEntry =
   | { type: 'api'; key: string; metadata?: { [key: string]: JsonValue } }
-  | { type: 'oauth'; access: string; refresh: string; expires: number; accountId?: string; enterpriseUrl?: string };
+  | { type: 'oauth'; access: string; refresh: string; expires: number; accountId?: string; enterpriseUrl?: string; server?: string; orgID?: string };
 export type LegacyAuthFile = Record<string, LegacyAuthEntry>;
 
 /** Where credentials come from: the running OpenCode in production, a fixture in tests. */
@@ -22,3 +22,12 @@ export function projectEnvironmentKeys(integrations: IntegrationInfo[], environm
 export function projectCredentialEntries(entries: CredentialEntry[]): LegacyAuthFile;
 export function readOpenCodeCredentials(): Promise<LegacyAuthFile>;
 export function getProviderAuth(providerId: string): Promise<LegacyAuthEntry | null>;
+
+/** A browser login as OpenCode stores it, read for an isolated space's gatekeeper. */
+export type StoredLogin = {
+  methodID: string;
+  access: string;
+  expires: number;
+  metadata: { [key: string]: JsonValue };
+};
+export function getStoredLogin(integrationID: string): Promise<StoredLogin | null>;

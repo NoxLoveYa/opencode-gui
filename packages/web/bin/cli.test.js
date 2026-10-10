@@ -8,11 +8,12 @@ import { spawn } from 'child_process';
 import { pathToFileURL } from 'url';
 
 import { isModuleCliExecution, normalizeCliEntryPath } from './cli-entry.js';
+import { INJECTED_ENV_KEY, assignInjectedEnv } from '../server/lib/injected-env.js';
 import { requestJson } from './lib/cli-http.js';
 import { requestControlAction } from './lib/cli-control.js';
 import { inspectTunnelAttachability } from './lib/cli-lifecycle.js';
 import { startupCommand } from './lib/commands-startup.js';
-import { formatGoal } from './lib/commands-schedule.js';
+import { formatGoal, scheduleCommand } from './lib/commands-schedule.js';
 import {
   buildSessionCreatePayload,
   buildSessionPromptPayload,
@@ -770,6 +771,22 @@ describe('serve host resolution', () => {
     }
   });
 
+  it('ignores an OPENCHAMBER_HOST that OpenChamber put into the shell', () => {
+    const previous = { OPENCHAMBER_HOST: process.env.OPENCHAMBER_HOST, [INJECTED_ENV_KEY]: process.env[INJECTED_ENV_KEY] };
+    delete process.env[INJECTED_ENV_KEY];
+    delete process.env.OPENCHAMBER_HOST;
+    assignInjectedEnv(process.env, { OPENCHAMBER_HOST: '0.0.0.0' });
+    try {
+      expect(resolveServeHost(undefined)).toBe('127.0.0.1');
+      expect(resolveServeHost('192.0.2.21')).toBe('192.0.2.21');
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('prefers explicit --host over OPENCHAMBER_HOST', () => {
     const previous = process.env.OPENCHAMBER_HOST;
     process.env.OPENCHAMBER_HOST = '192.0.2.20';
@@ -848,6 +865,22 @@ describe('CLI HTTP helpers', () => {
         sessionId: 'ses_1',
         directory: '/repo',
       })).resolves.toEqual({ status: 'ok', sessionStatus: { type: 'idle' } });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('reports the enabled state the server saved and fails when it did not change', async () => {
+    const originalFetch = globalThis.fetch;
+    let saved = { task: { id: 'loop:user:mine', name: 'mine', enabled: true }, enabled: true };
+    globalThis.fetch = async () => createMockJsonResponse(saved);
+    const options = { port: 45680, explicitPort: true, directory: '/repo', task: 'loop:user:mine', json: true };
+    try {
+      const output = await captureStdout(() => scheduleCommand(options, 'enable'));
+      expect(JSON.parse(output)).toMatchObject(saved);
+
+      saved = { task: { id: 'loop:user:mine', name: 'mine', enabled: false }, enabled: false };
+      await expect(scheduleCommand(options, 'enable')).rejects.toThrow('mine is still disabled.');
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -459,9 +459,17 @@ export const registerOpenCodeProxy = (app, deps) => {
 
   const replayParsedBody = (proxyReq, req) => {
     const body = serializeParsedBody(req, proxyReq);
-    if (!body) return;
-    // http-proxy copies the incoming headers, so a chunked request would reach
-    // OpenCode with both framing headers and be rejected as ambiguous.
+    if (!body) {
+      // DO NOT remove transfer-encoding from a stream without content-length:
+      // Node then sends tunneled prompt bodies without framing, and OpenCode
+      // reads an empty payload (#4576).
+      if (proxyReq.getHeader('content-length') !== undefined) {
+        proxyReq.removeHeader('transfer-encoding');
+      }
+      return;
+    }
+    // DO NOT keep the copied transfer-encoding alongside the replayed body's
+    // content-length: OpenCode rejects requests with both headers (#4280).
     proxyReq.removeHeader('transfer-encoding');
     proxyReq.setHeader('content-length', String(body.length));
     proxyReq.write(body);
@@ -599,7 +607,9 @@ export const registerOpenCodeProxy = (app, deps) => {
       }
 
       res.setHeader('Content-Type', contentType);
-      res.setHeader('Cache-Control', 'no-cache');
+      // `no-transform` keeps proxies and tunnels (Cloudflare among them) from
+      // compressing or buffering the stream, as the other SSE routes do.
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
       if (typeof res.flushHeaders === 'function') {

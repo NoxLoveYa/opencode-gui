@@ -93,8 +93,16 @@ const projectCredentialValue = (value) => {
   const entry = { type: 'oauth', access: value.access, refresh: value.refresh, expires: value.expires };
   const accountId = metadataString.safeParse(value.metadata?.accountID).data;
   const enterpriseUrl = metadataString.safeParse(value.metadata?.enterpriseUrl).data;
+  // OpenCode Console signs in through the `opencode` integration and records the
+  // Console server and selected organization on the credential. Only these two
+  // travel on: the rest of the metadata (email, account name) is not needed by
+  // any consumer, and account identifiers stay out of the read path.
+  const server = metadataString.safeParse(value.metadata?.server).data;
+  const orgID = metadataString.safeParse(value.metadata?.orgID).data;
   if (accountId !== undefined) entry.accountId = accountId;
   if (enterpriseUrl !== undefined) entry.enterpriseUrl = enterpriseUrl;
+  if (server !== undefined) entry.server = server;
+  if (orgID !== undefined) entry.orgID = orgID;
   return entry;
 };
 
@@ -135,6 +143,21 @@ const coalesce = () => {
 
 const sharedRead = coalesce();
 const sharedStoredRead = coalesce();
+const sharedLoginRead = coalesce();
+
+/**
+ * Each integration's selected browser login, as OpenCode stores it: the method, the short access
+ * token, when it ends, and the login's metadata. The refresh token stays with OpenCode.
+ */
+const readLogins = async (current) => {
+  const result = {};
+  for (const entry of await current.list()) {
+    if (!entry.active || entry.value.type !== 'oauth') continue;
+    const { methodID, access, expires, metadata } = entry.value;
+    result[entry.integrationID] = { methodID, access, expires, metadata: metadata ?? {} };
+  }
+  return result;
+};
 
 /**
  * The keys the running OpenCode uses, keyed by provider id: stored
@@ -152,4 +175,15 @@ export function readOpenCodeCredentials() {
 export async function getProviderAuth(providerId) {
   const credentials = await sharedStoredRead(readStored);
   return credentials[providerId] || null;
+}
+
+/**
+ * The browser login OpenCode has selected for one integration, with the method
+ * it was made by (`chatgpt-token-sharing`, `chatgpt-browser`, ...), or null
+ * when the selected credential is a key or there is none. An isolated space
+ * is given such a login through its gatekeeper; the space never sees it.
+ */
+export async function getStoredLogin(integrationID) {
+  const logins = await sharedLoginRead(readLogins);
+  return logins[integrationID] || null;
 }

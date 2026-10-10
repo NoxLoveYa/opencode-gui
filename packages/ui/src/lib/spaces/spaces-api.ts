@@ -131,6 +131,8 @@ export type SpaceSetup = z.infer<typeof setupSchema>;
 const spaceEntrySchema = z.object({
   id: spaceIdSchema,
   name: z.string(),
+  // The place the space lives on, as the host names it; the browser panel's container mark says it.
+  placeId: z.string(),
   projectDirectory: z.string().nullable(),
   directory: z.string().nullable(),
   // The folder the space was made for, on the host, which a space whose project is no longer
@@ -140,7 +142,9 @@ const spaceEntrySchema = z.object({
   state: z.enum(['preparing', 'running', 'exited', 'missing', 'failed']),
   // A stopped space that stopped itself after the idle hours, rather than by a hand or a crash.
   stoppedIdle: z.boolean().default(false),
-  step: spaceCreationStepSchema.nullable(),
+  // The step a creation is at, or `failed` for a creation that failed, in this process or in one
+  // that did not live to finish it; `failure` then says why. Null for a space that is made.
+  step: z.union([spaceCreationStepSchema, z.literal('failed')]).nullable(),
   failure: failureSchema.nullable(),
   // Null when the host could not read what the user chose: unknown, never "open".
   network: networkSchema.nullable(),
@@ -216,6 +220,9 @@ export const listSpacePlaces = async (signal?: AbortSignal): Promise<SpacePlace[
 // the spaces' own volumes, and what a clean-up would free now, the image among it or not.
 const spaceDiskSchema = z.object({
   imageBytes: z.number().min(0).nullable(),
+  // A download of the image under way on the host, and how the last one ended while the image is absent.
+  imagePulling: z.boolean().default(false),
+  imageFailure: failureSchema.nullable().default(null),
   toolsBytes: z.number().min(0),
   spacesBytes: z.number().min(0),
   freeBytes: z.number().min(0),
@@ -239,6 +246,10 @@ export const readSpaceDisk = (placeId: string, signal?: AbortSignal): Promise<Sp
 /** Removes what OpenChamber can make again on the place; Docker keeps whatever is in use. */
 export const cleanUpSpaceDisk = (placeId: string): Promise<SpaceCleanUp> =>
   request(`${SPACES_ROUTE}/places/${encodeURIComponent(placeId)}/clean-up`, spaceCleanUpSchema, { method: 'POST' });
+
+/** Starts the download of the image ahead of the first space; answers the disk with `imagePulling` set. */
+export const pullSpaceImage = (placeId: string): Promise<SpaceDisk> =>
+  request(`${SPACES_ROUTE}/places/${encodeURIComponent(placeId)}/image`, spaceDiskSchema, { method: 'POST' });
 
 export const listSpaces = async (signal?: AbortSignal): Promise<SpaceEntry[]> =>
   (await request(SPACES_ROUTE, z.object({ spaces: z.array(spaceEntrySchema) }), { signal })).spaces;

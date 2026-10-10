@@ -21,12 +21,13 @@ import React from 'react';
 import { useI18n } from '@/lib/i18n';
 import type { PairingConnectionPayload, PairingEndpointCandidate } from '@/lib/connectionPayload';
 import { isCapacitorApp } from '@/lib/platform';
-import { adoptRelayTunnel, isRelayModeActive } from '@/lib/relay/runtime-tunnel';
+import { adoptRelayTunnel, getActiveRelayDescriptor, getActiveRelayTunnel, isRelayModeActive } from '@/lib/relay/runtime-tunnel';
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { addRuntimeProxyHeaders, runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeApiBaseUrl, getRuntimeKey, switchRuntimeEndpoint } from '@/lib/runtime-switch';
 
 import { recordMobileConnectDebug } from './mobileConnectionDebug';
+import { fetchThroughRelayOnce, fetchThroughRelayWithRetry } from './mobileRelayFetch';
 
 const MOBILE_CONNECTIONS_STORAGE_KEY = 'openchamber.mobile.connections.v1';
 const MOBILE_SECURE_STORAGE_PREFIX = 'openchamber.mobile.';
@@ -88,8 +89,6 @@ export const createMobilePasswordOperationTracker = () => {
   };
 };
 
-export type MobileConnectionMode = 'direct' | 'relay';
-
 // Persisted relay transport config. This is connection metadata, not a secret
 // (the host public key is public by construction) — but never log it raw; mask
 // the key coordinates in any debug output.
@@ -104,11 +103,11 @@ export type MobileRelayConfig = {
 // first — LAN preferred, relay fallback) plus a single client token, and the app
 // re-probes them on every connect/reconnect so the same device works at home
 // (direct) and away (relay) without re-pairing.
-export type MobileTransportCandidate =
+type MobileTransportCandidate =
   | { kind: 'direct'; url: string }
   | { kind: 'relay'; relay: MobileRelayConfig };
 
-export type MobileSavedConnection = {
+type MobileSavedConnection = {
   id: string;
   label: string;
   candidates: MobileTransportCandidate[];
@@ -119,7 +118,7 @@ export type MobileSavedConnection = {
   clientToken?: string;
 };
 
-export type MobilePendingConnection = {
+type MobilePendingConnection = {
   id: string;
   label: string;
   candidates: MobileTransportCandidate[];
@@ -130,7 +129,7 @@ export type MobilePendingConnection = {
 
 // Input to `connect`. Either a raw URL/candidates for a NEW connection, or an
 // existing saved connection's `id` + candidates for reconnect.
-export type MobileConnectInput = {
+type MobileConnectInput = {
   id?: string;
   url?: string;
   candidates?: MobileTransportCandidate[];
@@ -433,11 +432,30 @@ const RELAY_CONNECT_TIMEOUT_MS = 15_000;
 
 type RelayProbeOutcome = 'ok' | 'needs-login' | 'auth-failed' | 'unreachable';
 
+// A relay tunnel a connect flow holds. `owned` is false for the runtime's own
+// connected tunnel, which the flow borrowed and must never close.
+type HeldRelayTunnel = { client: ReturnType<typeof createRelayTunnelClient>; owned: boolean };
+
+const releaseHeldRelayTunnel = (tunnel: HeldRelayTunnel | undefined): void => {
+  if (tunnel?.owned) tunnel.client.close();
+};
+
 type RelayProbeResult = {
   outcome: RelayProbeOutcome;
   // The live tunnel on 'ok' when the caller asked to keep it (adopted as the
   // runtime tunnel by switchToTransport, saving a second connect+handshake).
-  tunnel?: ReturnType<typeof createRelayTunnelClient>;
+  tunnel?: HeldRelayTunnel;
+};
+
+// What a /auth/session answer means for the connect flow.
+const relaySessionOutcome = async (session: Response, token: string | undefined): Promise<RelayProbeOutcome> => {
+  if (session.status === 401) return token ? 'auth-failed' : 'needs-login';
+  if (!session.ok && session.status !== 404) return 'auth-failed';
+  const status = await readSessionStatus(session);
+  if (status && status.disabled !== true && status.authenticated === false) {
+    return token ? 'auth-failed' : 'needs-login';
+  }
+  return 'ok';
 };
 
 // Probe /auth/session through a tunnel — the relay counterpart of the direct
@@ -446,8 +464,12 @@ type RelayProbeResult = {
 // the private key for the pinned hostEncPubJwk), and /auth/session proves both
 // liveness and token validity in one request. Cookies never ride the tunnel,
 // so the cookie-only-session special case from the direct flow does not apply.
-// With `keepTunnel`, an 'ok' result RETURNS the open tunnel (caller owns it);
-// every other path closes it.
+// When the runtime is already connected to this server through the relay, the
+// probe asks through that tunnel: a second dial from this device takes the
+// live leg at the relay and drops the session the user is in. It dials its own
+// tunnel only when the live one gives no answer.
+// With `keepTunnel`, an 'ok' result RETURNS the tunnel it used; every other
+// path closes a tunnel the probe opened.
 const probeRelaySession = async (
   relay: MobileRelayConfig,
   token?: string,
@@ -455,29 +477,29 @@ const probeRelaySession = async (
   timeoutMs: number = RELAY_CONNECT_TIMEOUT_MS,
   options?: { keepTunnel?: boolean },
 ): Promise<RelayProbeResult> => {
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const runtimeTunnel = connectedRuntimeTunnelFor(relay);
+  if (runtimeTunnel) {
+    const { response: session, failure } = await fetchThroughRelayOnce(runtimeTunnel, '/auth/session', { headers }, timeoutMs);
+    logConnect('relay:session', { shared: true, ok: session?.ok === true, status: session?.status ?? null, hasToken: Boolean(token), error: failure });
+    if (session) {
+      const outcome = await relaySessionOutcome(session, token);
+      return outcome === 'ok' && options?.keepTunnel ? { outcome, tunnel: { client: runtimeTunnel, owned: false } } : { outcome };
+    }
+  }
   const tunnel = createRelayTunnelClient({
     relayUrl: relay.relayUrl,
     serverId: relay.serverId,
     hostEncPubJwk: relay.hostEncPubJwk,
     ...(grant ? { grant } : {}),
   });
-  const finish = (outcome: RelayProbeOutcome): RelayProbeResult => {
-    if (outcome === 'ok' && options?.keepTunnel) return { outcome, tunnel };
+  try {
+    const { response: session, failure } = await fetchThroughRelayWithRetry(tunnel, '/auth/session', { headers }, timeoutMs);
+    logConnect('relay:session', { shared: false, ok: session?.ok === true, status: session?.status ?? null, hasToken: Boolean(token), error: failure });
+    const outcome = session ? await relaySessionOutcome(session, token) : 'unreachable';
+    if (outcome === 'ok' && options?.keepTunnel) return { outcome, tunnel: { client: tunnel, owned: true } };
     tunnel.close();
     return { outcome };
-  };
-  try {
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const session = await raceWithTimeout(timeoutMs, tunnel.fetch('/auth/session', { headers }).catch(() => null));
-    logConnect('relay:session', { ok: session?.ok === true, status: session?.status ?? null, hasToken: Boolean(token) });
-    if (!session) return finish('unreachable');
-    if (session.status === 401) return finish(token ? 'auth-failed' : 'needs-login');
-    if (!session.ok && session.status !== 404) return finish('auth-failed');
-    const status = await readSessionStatus(session);
-    if (status && status.disabled !== true && status.authenticated === false) {
-      return finish(token ? 'auth-failed' : 'needs-login');
-    }
-    return finish('ok');
   } catch (error) {
     tunnel.close();
     throw error;
@@ -800,11 +822,12 @@ const deleteMobileConnection = async (id: string): Promise<MobileSavedConnection
 };
 
 // The transport a connect/reconnect settled on. A relay transport MAY carry
-// the already-open probe tunnel; switchToTransport adopts it as the runtime
-// tunnel instead of dialing a fresh one.
+// the open tunnel its probe used, its own or the borrowed runtime one;
+// switchToTransport adopts it as the runtime tunnel instead of dialing a fresh
+// one.
 type ChosenTransport =
   | { kind: 'direct'; url: string }
-  | { kind: 'relay'; relay: MobileRelayConfig; tunnel?: ReturnType<typeof createRelayTunnelClient> };
+  | { kind: 'relay'; relay: MobileRelayConfig; tunnel?: HeldRelayTunnel };
 
 type ProbeResult =
   | { status: 'ok'; transport: ChosenTransport }
@@ -903,7 +926,7 @@ const probeConnectionCandidates = async (
   if (directList.length === 0) return probeRelay();
 
   // Race: direct keeps its priority via the headstart; the loser's work is
-  // discarded (an unused relay tunnel is closed, a late direct success is
+  // discarded (a relay tunnel the probe opened is closed, a late direct success is
   // reconciled later by reprobe/candidate-refresh which already prefer direct).
   return new Promise<ProbeResult>((resolve) => {
     let settled = false;
@@ -913,7 +936,7 @@ const probeConnectionCandidates = async (
     let relayResult: ProbeResult | null = null;
 
     const closeUnusedRelayTunnel = (result: ProbeResult | null) => {
-      if (result?.status === 'ok' && result.transport.kind === 'relay') result.transport.tunnel?.close();
+      if (result?.status === 'ok' && result.transport.kind === 'relay') releaseHeldRelayTunnel(result.transport.tunnel);
     };
     const finish = (result: ProbeResult) => {
       if (settled) return;
@@ -974,8 +997,9 @@ const switchToTransport = (
   token: string | null,
   options?: { runtimeKey?: string; grant?: string },
 ): void => {
+  autoConnectSuppressed = false;
   if (transport.kind === 'relay') {
-    switchToRelayRuntime(transport.relay, token, options?.grant, options?.runtimeKey, transport.tunnel);
+    switchToRelayRuntime(transport.relay, token, options?.grant, options?.runtimeKey, transport.tunnel?.client);
   } else {
     switchRuntimeEndpoint({ apiBaseUrl: transport.url, clientToken: token, runtimeKey: options?.runtimeKey });
   }
@@ -1008,7 +1032,21 @@ export type AutoConnectOutcome =
   /** The saved token was rejected (expired/revoked) — the user must sign in again. */
   | { status: 'needs-login'; label: string };
 
+// Set when the user removes the instance they were on. Until they connect
+// again themselves, nothing picks the next saved instance on its own: clearing
+// the endpoint remounts the app shell (re-running cold-launch auto-connect), and
+// resume/online would reconnect too. In memory only; a fresh launch auto-connects.
+let autoConnectSuppressed = false;
+
+export const suppressAutoConnectUntilManualConnect = (): void => {
+  autoConnectSuppressed = true;
+};
+
 export const autoConnectLastInstance = async (options?: { fast?: boolean; skipIfConnected?: boolean }): Promise<AutoConnectOutcome> => {
+  if (autoConnectSuppressed) {
+    logConnect('auto-connect:suppressed', {});
+    return { status: 'no-candidate' };
+  }
   const fast = options?.fast !== false;
   await migrateLegacyInlineTokens();
   const candidate = readConnections()[0]; // sorted most-recent-first
@@ -1042,10 +1080,11 @@ export const autoConnectLastInstance = async (options?: { fast?: boolean; skipIf
   if (result.status !== 'ok') return { status: 'unreachable', label: candidate.label };
   // Background-retry guard: while this slow probe ran, the user may have
   // connected manually from the connect screen. Their choice wins — discard
-  // this result instead of hijacking the runtime (close the probe's unused
-  // relay tunnel; a direct transport holds nothing).
+  // this result instead of hijacking the runtime (close a relay tunnel the
+  // probe opened; a borrowed runtime tunnel and a direct transport stay as
+  // they are).
   if (options?.skipIfConnected && getRuntimeApiBaseUrl()) {
-    if (result.transport.kind === 'relay') result.transport.tunnel?.close();
+    if (result.transport.kind === 'relay') releaseHeldRelayTunnel(result.transport.tunnel);
     logConnect('auto-connect:superseded', {});
     return { status: 'no-candidate' };
   }
@@ -1083,10 +1122,32 @@ export const validateMobileConnectionSession = async (input: {
 };
 
 // A live transport a redeem/login settled on: a reachable direct URL, or an OPEN
-// relay tunnel the caller must close after use.
+// relay tunnel. A tunnel the flow opened itself (`owned`) must be closed after
+// use unless the runtime adopts it; a borrowed runtime tunnel is never closed.
 type LiveTransport =
   | { kind: 'direct'; url: string }
-  | { kind: 'relay'; relay: MobileRelayConfig; tunnel: ReturnType<typeof createRelayTunnelClient> };
+  | { kind: 'relay'; relay: MobileRelayConfig; tunnel: ReturnType<typeof createRelayTunnelClient>; owned: boolean };
+
+const releaseLiveTransport = (transport: LiveTransport | null, adopted: boolean): void => {
+  if (transport?.kind === 'relay' && transport.owned && !adopted) transport.tunnel.close();
+};
+
+const sameHostKey = (left: JsonWebKey, right: JsonWebKey): boolean =>
+  left.kty === right.kty && left.crv === right.crv && left.x === right.x && left.y === right.y;
+
+// The runtime's connected tunnel when it already leads to this relay server
+// under the same pinned host key. Pairing or logging in again to the server the
+// phone is on rides it: a second tunnel to the same server from this device has
+// been seen to fail at once on the relay.
+const connectedRuntimeTunnelFor = (relay: MobileRelayConfig): ReturnType<typeof createRelayTunnelClient> | null => {
+  const tunnel = getActiveRelayTunnel();
+  const active = getActiveRelayDescriptor();
+  if (!tunnel || !active || tunnel.getStatus().state !== 'connected') return null;
+  const sameServer = active.relayUrl === relay.relayUrl
+    && active.serverId === relay.serverId
+    && sameHostKey(active.hostEncPubJwk, relay.hostEncPubJwk);
+  return sameServer ? tunnel : null;
+};
 
 // Convert pairing-payload candidates into ordered mobile transport candidates:
 // priority number ascending, relay last on ties (relay is the fallback), invalid
@@ -1118,10 +1179,16 @@ const establishLiveTransport = async (
   const expectedServerId = relayCandidateOf({ candidates })?.serverId ?? null;
   for (const candidate of candidates) {
     if (candidate.kind === 'relay') {
+      const runtimeTunnel = connectedRuntimeTunnelFor(candidate.relay);
+      if (runtimeTunnel) {
+        const shared = await fetchThroughRelayOnce(runtimeTunnel, '/health', undefined, MOBILE_CONNECT_TIMEOUT_MS);
+        logConnect('establish:relay:health', { shared: true, ok: shared.response?.ok === true, status: shared.response?.status ?? null, error: shared.failure });
+        if (shared.response?.ok) return { kind: 'relay', relay: candidate.relay, tunnel: runtimeTunnel, owned: false };
+      }
       const tunnel = createRelayTunnelClient(candidate.relay);
-      const health = await raceWithTimeout(RELAY_CONNECT_TIMEOUT_MS, tunnel.fetch('/health').catch(() => null));
-      logConnect('establish:relay:health', { ok: health?.ok === true, status: health?.status ?? null });
-      if (health?.ok) return { kind: 'relay', relay: candidate.relay, tunnel };
+      const { response: health, failure } = await fetchThroughRelayWithRetry(tunnel, '/health', undefined, RELAY_CONNECT_TIMEOUT_MS);
+      logConnect('establish:relay:health', { shared: false, ok: health?.ok === true, status: health?.status ?? null, error: failure });
+      if (health?.ok) return { kind: 'relay', relay: candidate.relay, tunnel, owned: true };
       tunnel.close();
       continue;
     }
@@ -1185,7 +1252,7 @@ export const isActiveRuntimeConnection = (connection: MobileSavedConnection): bo
   return Boolean(runtimeKey) && secureTokenKeyOf(connection) === runtimeKey;
 };
 
-export type ReprobeOutcome = 'switched' | 'unchanged' | 'unreachable' | 'needs-login' | 'no-connection';
+type ReprobeOutcome = 'switched' | 'unchanged' | 'unreachable' | 'needs-login' | 'no-connection';
 
 // App-resume re-probe: when the app wakes (Capacitor `isActive`), the network may
 // have changed while it slept, so re-select the active device's transport and
@@ -1375,7 +1442,7 @@ const scheduleCandidateRefresh = (): void => {
 // Shared connection controller
 // ---------------------------------------------------------------------------
 
-export type UseMobileConnection = {
+type UseMobileConnection = {
   connections: MobileSavedConnection[];
   isBusy: boolean;
   isPasswordBusy: boolean;
@@ -1502,8 +1569,8 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
     setError(null);
     beginBusy('pairing');
     const deviceCandidates = pairingCandidatesToMobile(payload.candidates);
-    // A chosen relay transport owns an open tunnel; close it unless the switch
-    // adopted it as the runtime tunnel.
+    // A relay tunnel this flow opened is closed unless the switch adopted it as
+    // the runtime tunnel; a borrowed runtime tunnel stays open.
     let chosen: LiveTransport | null = null;
     let adopted = false;
     try {
@@ -1532,9 +1599,11 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: redeemBody,
       } as const;
-      const response = chosen.kind === 'relay'
-        ? await raceWithTimeout(RELAY_CONNECT_TIMEOUT_MS, chosen.tunnel.fetch('/api/client-auth/pairing/redeem', redeemInit).catch(() => null))
-        : await requestWithTimeout(`${chosen.url}/api/client-auth/pairing/redeem`, redeemInit);
+      const redeem = chosen.kind === 'relay'
+        ? await fetchThroughRelayOnce(chosen.tunnel, '/api/client-auth/pairing/redeem', redeemInit, RELAY_CONNECT_TIMEOUT_MS)
+        : { response: await requestWithTimeout(`${chosen.url}/api/client-auth/pairing/redeem`, redeemInit), failure: null };
+      const response = redeem.response;
+      logConnect('pairing:redeem', { transport: chosen.kind, ok: response?.ok === true, status: response?.status ?? null, error: redeem.failure });
       if (!response?.ok) {
         setError(t('mobile.connect.error.authRequired'));
         return;
@@ -1565,7 +1634,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       // A relay transport hands its live redeem tunnel to the runtime (adopted
       // inside switchToTransport) — closing it here would tear down the runtime.
       switchToTransport(
-        chosen.kind === 'relay' ? { kind: 'relay', relay: chosen.relay, tunnel: chosen.tunnel } : { kind: 'direct', url: chosen.url },
+        chosen.kind === 'relay' ? { kind: 'relay', relay: chosen.relay, tunnel: { client: chosen.tunnel, owned: chosen.owned } } : { kind: 'direct', url: chosen.url },
         issuedToken,
         { runtimeKey: secureTokenKeyOf({ candidates: deviceCandidates }) },
       );
@@ -1575,7 +1644,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       console.warn('[mobile-connect] pairing threw', error);
       setError(t('mobile.connect.error.authRequired'));
     } finally {
-      if (!adopted && chosen?.kind === 'relay') chosen.tunnel.close();
+      releaseLiveTransport(chosen, adopted);
       endBusy('pairing');
     }
   }, [beginBusy, endBusy, onConnected, persistMetadata, t]);
@@ -1587,8 +1656,8 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
     const operation = passwordOperationRef.current.begin();
     const isCurrentOperation = () => passwordOperationRef.current.isCurrent(operation);
     const { id, label, candidates } = pendingConnection;
-    // A chosen relay transport owns an open tunnel; close it unless the switch
-    // adopted it as the runtime tunnel.
+    // A relay tunnel this flow opened is closed unless the switch adopted it as
+    // the runtime tunnel; a borrowed runtime tunnel stays open.
     let chosen: LiveTransport | null = null;
     let adopted = false;
     try {
@@ -1610,11 +1679,12 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
         body: JSON.stringify({ password, trustDevice: true, issueClientToken: true, clientLabel: 'OpenChamber Mobile', clientKind: 'mobile', devicePlatform: mobileDevicePlatform(), dedupeKey: mobileClientDedupeKey() }),
       };
       logConnect('password:start', { transport: chosen.kind });
-      const response = chosen.kind === 'relay'
-        ? await raceWithTimeout(RELAY_CONNECT_TIMEOUT_MS, chosen.tunnel.fetch('/auth/session', loginInit).catch(() => null))
-        : await requestWithTimeout(`${chosen.url}/auth/session`, loginInit);
+      const login = chosen.kind === 'relay'
+        ? await fetchThroughRelayOnce(chosen.tunnel, '/auth/session', loginInit, RELAY_CONNECT_TIMEOUT_MS)
+        : { response: await requestWithTimeout(`${chosen.url}/auth/session`, loginInit), failure: null };
+      const response = login.response;
       if (!isCurrentOperation()) return;
-      logConnect('password:done', { ok: response?.ok === true, status: response?.status ?? null });
+      logConnect('password:done', { ok: response?.ok === true, status: response?.status ?? null, error: login.failure });
       if (!response?.ok) {
         setError(t('mobile.connect.error.passwordFailed'));
         return;
@@ -1651,7 +1721,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       // A relay transport hands its live login tunnel to the runtime (adopted
       // inside switchToTransport) — closing it here would tear down the runtime.
       switchToTransport(
-        chosen.kind === 'relay' ? { kind: 'relay', relay: chosen.relay, tunnel: chosen.tunnel } : { kind: 'direct', url: chosen.url },
+        chosen.kind === 'relay' ? { kind: 'relay', relay: chosen.relay, tunnel: { client: chosen.tunnel, owned: chosen.owned } } : { kind: 'direct', url: chosen.url },
         issuedToken,
         { runtimeKey: secureTokenKeyOf({ candidates }) },
       );
@@ -1663,7 +1733,7 @@ export const useMobileConnection = (onConnected: () => void): UseMobileConnectio
       console.warn('[mobile-connect] password threw', error);
       setError(t('mobile.connect.error.passwordFailed'));
     } finally {
-      if (!adopted && chosen?.kind === 'relay') chosen.tunnel.close();
+      releaseLiveTransport(chosen, adopted);
       if (isCurrentOperation()) endBusy('password');
     }
   }, [beginBusy, endBusy, onConnected, pendingConnection, persistMetadata, t]);

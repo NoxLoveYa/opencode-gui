@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
 
-import { configureOpenCodeCredentials, getProviderAuth, openCodeCredentialSource, projectCredentialEntries, projectEnvironmentKeys, readOpenCodeCredentials } from './auth.js';
+import { configureOpenCodeCredentials, getProviderAuth, getStoredLogin, openCodeCredentialSource, projectCredentialEntries, projectEnvironmentKeys, readOpenCodeCredentials } from './auth.js';
 
 const entry = (integrationID, active, value) => ({ id: `cred_${integrationID}_${active}`, integrationID, label: 'default', active, value });
 
@@ -34,6 +34,37 @@ describe('projectCredentialEntries', () => {
       openai: { type: 'oauth', access: 'at', refresh: 'rt', expires: 42, accountId: 'acc_1' },
       'github-copilot': { type: 'oauth', access: 'gh', refresh: 'gh-r', expires: 0, enterpriseUrl: 'https://ghe.example' },
       custom: { type: 'api', key: 'k', metadata: { region: 'eu' } },
+    });
+  });
+
+  it('keeps only the Console server and organization from OpenCode Console metadata', () => {
+    const projected = projectCredentialEntries([
+      entry('opencode', true, {
+        type: 'oauth',
+        methodID: 'console',
+        access: 'console-access',
+        refresh: 'console-refresh',
+        expires: 42,
+        metadata: {
+          server: 'https://opencode.ai/console',
+          orgID: 'org_TESTORG123',
+          accountID: 'acc_console',
+          email: 'person@example.com',
+          orgName: 'Example',
+        },
+      }),
+    ]);
+
+    expect(projected).toEqual({
+      opencode: {
+        type: 'oauth',
+        access: 'console-access',
+        refresh: 'console-refresh',
+        expires: 42,
+        accountId: 'acc_console',
+        server: 'https://opencode.ai/console',
+        orgID: 'org_TESTORG123',
+      },
     });
   });
 });
@@ -97,6 +128,22 @@ describe('readOpenCodeCredentials', () => {
     await expect(getProviderAuth('deepseek')).resolves.toEqual({ type: 'api', key: 'ds' });
     await expect(getProviderAuth('openai')).resolves.toBeNull();
     expect(requests[0]).toEqual({ url: '/api/credential', authorization: 'Basic test' });
+  });
+
+  it('reads the selected browser login of an integration with its method and metadata, and without the refresh token', async () => {
+    const oauth = { type: 'oauth', methodID: 'chatgpt-token-sharing', access: 'eyJ-short', refresh: 'rt-long', expires: 1791600000000, metadata: { clientID: 'client_1' } };
+    respond = (res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data: [entry('openai', false, { ...oauth, methodID: 'chatgpt-browser' }), entry('openai', true, oauth), entry('deepseek', true, { type: 'key', key: 'ds' })] }));
+    };
+    await expect(getStoredLogin('openai')).resolves.toEqual({ methodID: 'chatgpt-token-sharing', access: 'eyJ-short', expires: 1791600000000, metadata: { clientID: 'client_1' } });
+    await expect(getStoredLogin('deepseek')).resolves.toBeNull();
+    await expect(getStoredLogin('anthropic')).resolves.toBeNull();
+    respond = (res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data: [entry('openai', true, { ...oauth, metadata: undefined })] }));
+    };
+    await expect(getStoredLogin('openai')).resolves.toMatchObject({ metadata: {} });
   });
 
   it('adds variable keys of a managed OpenCode, with stored credentials winning', async () => {

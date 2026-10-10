@@ -45,9 +45,12 @@ import { SessionBulkActions } from '../folders/SessionBulkActions';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
 import type { useSessionProjectViewState } from '../projects/useSessionProjectViewState';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
+import type { SidebarViewMode } from '@/stores/useSessionDisplayStore';
+import { holdOrder, rankByLatestActivity } from './projectSort';
 import type { DeleteSessionConfirmState } from '../sessions/useSessionActions';
 import { useExpandedParents } from '../sessions/useExpandedParents';
-import { getChatsRootForHome, getChatsRootFromDirectory, isChatDirectoryPath } from '@/lib/chatDirectories';
+import { getChatsRootFromDirectory, isChatDirectoryPath } from '@/lib/chatDirectories';
+import { useChatsRoot } from '@/hooks/useChatsRoot';
 import { isCapacitorApp } from '@/lib/platform';
 import { deriveRecentActivitySections, deriveTimelineActivityItems, sessionTreeMatchesSidebarQuery } from '../recent/activitySections';
 import { resolveSidebarSessionLocations } from '../recent/sessionLocation';
@@ -117,7 +120,7 @@ type SessionProjectCollectionProps = {
     isDesktopShellRuntime: boolean;
     stickyZoneHeaders: boolean;
     projectSortOrder: import('@/stores/useSessionDisplayStore').ProjectSortOrder;
-    sidebarViewMode: import('@/stores/useSessionDisplayStore').SidebarViewMode;
+    sidebarViewMode: SidebarViewMode;
     emptyState: React.ReactNode;
     searchEmptyState: React.ReactNode;
     isSessionsLoading: boolean;
@@ -153,7 +156,7 @@ type SessionProjectCollectionProps = {
     persistActiveSessionByProject: (value: Map<string, string>) => void;
     projectViewActions: Pick<
       ReturnType<typeof useSessionProjectViewState>['actions'],
-      'getOrderedGroups' | 'setGroupOrderByProject' | 'toggleGroup' | 'toggleProject'
+      'getOrderedGroups' | 'setGroupOrderByProject' | 'toggleGroup' | 'toggleProject' | 'setCollapsedActivities'
     >;
   };
 };
@@ -165,7 +168,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
   const createFolder = useSessionFoldersStore((state) => state.createFolder);
   const addSessionToFolder = useSessionFoldersStore((state) => state.addSessionToFolder);
   const projectView = view.projectView;
-  const { getOrderedGroups, setGroupOrderByProject, toggleGroup, toggleProject } = projectViewActions;
+  const { getOrderedGroups, setGroupOrderByProject, toggleGroup, toggleProject, setCollapsedActivities } = projectViewActions;
   const collection = useSessionProjectCollection({ knownDirectories: topology.knownDirectories, isVSCode: topology.isVSCode, isVisible: true });
   const authoritativeProjects = useGlobalSyncStore((state) => state.projects);
   const spaceList = useSidebarSpaces();
@@ -187,7 +190,6 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     [authoritativeProjects, collection.archivedSessions, collection.sessions, spaceList, topology.availableWorktreesByProject, topology.isVSCode, topology.projects],
   );
   const [visibleSessionCountByGroup, setVisibleSessionCountByGroup] = React.useState<Map<string, number>>(new Map());
-  const [collapsedActivityKeys, setCollapsedActivityKeys] = React.useState<Set<string>>(new Set());
   const [visibleActivityCountByKey, setVisibleActivityCountByKey] = React.useState<Map<string, number>>(new Map());
   const showMoreGroupSessions = React.useCallback((groupId: string, currentVisibleCount: number, increment = 7) => {
     setVisibleSessionCountByGroup((current) => new Map(current).set(groupId, currentVisibleCount + increment));
@@ -201,6 +203,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     });
   }, []);
   const showRecentSection = useSessionDisplayStore((state) => state.showRecentSection);
+  const showChatsSection = useSessionDisplayStore((state) => state.showChatsSection);
   const projectDisplayMode = useSessionDisplayStore((state) => state.projectDisplayMode);
   const singleProjectId = useSessionDisplayStore((state) => state.singleProjectId);
   const setSingleProjectId = useSessionDisplayStore((state) => state.setSingleProjectId);
@@ -262,12 +265,13 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     runKeyBySessionId,
   });
   const { getSessionsForProject, getArchivedSessionsForProject } = useProjectSessionLists({ ownership });
+  const knownChatsRoot = useChatsRoot();
   // Built before the sections hook runs, because that hook owns the search data
   // for every group the sidebar renders — the chats group included. A group the
   // hook never sees renders an empty list while a search is active.
   const chatGroup = React.useMemo<SessionGroup | null>(() => {
     if (topology.isVSCode) return null;
-    const chatsRoot = getChatsRootForHome(view.homeDirectory)
+    const chatsRoot = knownChatsRoot
       ?? collection.chatSessions.map((session) => getChatsRootFromDirectory(session.directory)).find(Boolean)
       ?? null;
     if (!chatsRoot) return null;
@@ -291,7 +295,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
         .filter((session) => !session.time?.archived && isRootSession(session))
         .map((session) => buildActiveSessionNode(collection.childrenMap, session)),
     };
-  }, [collection.chatSessions, collection.childrenMap, topology.isVSCode, view.homeDirectory]);
+  }, [collection.chatSessions, collection.childrenMap, knownChatsRoot, topology.isVSCode]);
   const standaloneGroups = React.useMemo<SessionGroup[]>(
     () => chatGroup ? [chatGroup] : EMPTY_STANDALONE_GROUPS,
     [chatGroup],
@@ -357,14 +361,28 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     () => new Map(collection.orderedSessions.map((session, index) => [session.id, index])),
     [collection.orderedSessions],
   );
-  const orderedSectionsForRender = React.useMemo(
+  // While the pointer is over the list, "Recent" keeps the order the user is
+  // looking at: a session finishing elsewhere must not move the row under
+  // the cursor. Leaving the list applies the live order.
+  const [heldProjectOrder, setHeldProjectOrder] = React.useState<readonly string[] | null>(null);
+  const shownProjectOrderRef = React.useRef<readonly string[]>([]);
+  const holdsProjectOrder = view.projectSortOrder === 'recent';
+  React.useEffect(() => {
+    if (!holdsProjectOrder) setHeldProjectOrder(null);
+  }, [holdsProjectOrder]);
+  const orderedSectionsForRender = React.useMemo(() => {
     // The saved drag order belongs to the manual worktree sort only.
-    () => (worktreeSortOrder !== 'manual' ? sectionsForSidebarRender : sectionsForSidebarRender.map((section) => {
+    const sections = worktreeSortOrder !== 'manual' ? sectionsForSidebarRender : sectionsForSidebarRender.map((section) => {
       const groups = getOrderedGroups(section.project.id, section.groups);
       return groups === section.groups ? section : { ...section, groups };
-    })),
-    [getOrderedGroups, sectionsForSidebarRender, worktreeSortOrder],
-  );
+    });
+    // "Recent" needs the sessions, which only exist from here on.
+    const ranked = rankByLatestActivity(sections, view.projectSortOrder, (section) => section.project.id, ownership.sessionsByProject);
+    return [...(heldProjectOrder && holdsProjectOrder ? holdOrder(ranked, heldProjectOrder, (section) => section.project.id) : ranked)];
+  }, [getOrderedGroups, heldProjectOrder, holdsProjectOrder, ownership.sessionsByProject, sectionsForSidebarRender, view.projectSortOrder, worktreeSortOrder]);
+  React.useEffect(() => {
+    shownProjectOrderRef.current = orderedSectionsForRender.map((section) => section.project.id);
+  }, [orderedSectionsForRender]);
   const recentActivitySections = React.useMemo(() => {
     const nodes = new Map(recentSessions.map((session) => [
       session.id, buildActiveSessionNode(collection.childrenMap, session),
@@ -432,7 +450,9 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
   // Sessions in work: top-level, unarchived project sessions (Chats are plain
   // conversations and never in work), in the shared lifecycle order.
   // They leave every other projection, so the row model gets the id set too.
+  // `sessionWorkKeepInGroup` keeps them under their project group and folders.
   const sessionWorkEnabled = useUIStore((state) => state.sessionWorkEnabled);
+  const sessionWorkKeepInGroup = useUIStore((state) => state.sessionWorkKeepInGroup);
   const workSessions = React.useMemo(() => {
     if (!sessionWorkEnabled) return EMPTY_WORK_SESSIONS;
     const sessions = collection.orderedSessions.filter((session) => !session.parentID && !session.time?.archived && !isChatDirectoryPath(session.directory) && isSessionInWork(session));
@@ -853,11 +873,13 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     viewMode: timelineMode ? 'timeline' : 'projects',
     sections: orderedSectionsForRender,
     authoritativeSections: projectSections,
-    chatGroup,
+    // Hidden only from the list: folders and search keep the group.
+    chatGroup: showChatsSection ? chatGroup : null,
     recentSections: recentActivitySections,
     timelineItems,
     workItems,
     workSessionIds,
+    keepWorkInGroup: sessionWorkKeepInGroup,
     showRecentSection: showRecentSection && !singleProjectMode && !timelineMode,
     foldersMap,
     groupSearchDataByGroup,
@@ -865,7 +887,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     collapsedProjects: projectView.collapsedProjects,
     collapsedGroups: projectView.collapsedGroups,
     collapsedFolders: collapsedFolderIds,
-    collapsedActivities: collapsedActivityKeys,
+    collapsedActivities: projectView.collapsedActivities,
     expandedParents,
     visibleCountByContainer,
     pinnedSessionIds: collection.pinnedSessionIds,
@@ -879,7 +901,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     hideDirectoryControls: view.hideDirectoryControls,
     sessionBatchSize: singleProjectMode && !view.useGroupedSections ? 20 : undefined,
     runIndex,
-  }), [runIndex, chatGroup, collapsedActivityKeys, timelineItems, timelineMode, workItems, workSessionIds, collapsedFolderIds, collection.pinnedSessionIds, expandedParents, folderAuthorityByOwner, foldersMap, groupSearchDataByGroup, groupStatusByKey, orderedSectionsForRender, projectSections, projectView.collapsedGroups, projectView.collapsedProjects, recentActivitySections, selectedSingleProjectId, sessionOrderIndex, showRecentSection, singleProjectMode, view.activeProjectId, view.hasSessionSearchQuery, view.hideDirectoryControls, view.normalizedSessionSearchQuery, view.showOnlyMainWorkspace, view.useGroupedSections, visibleCountByContainer]);
+  }), [runIndex, chatGroup, showChatsSection, projectView.collapsedActivities, timelineItems, timelineMode, workItems, workSessionIds, sessionWorkKeepInGroup, collapsedFolderIds, collection.pinnedSessionIds, expandedParents, folderAuthorityByOwner, foldersMap, groupSearchDataByGroup, groupStatusByKey, orderedSectionsForRender, projectSections, projectView.collapsedGroups, projectView.collapsedProjects, recentActivitySections, selectedSingleProjectId, sessionOrderIndex, showRecentSection, singleProjectMode, view.activeProjectId, view.hasSessionSearchQuery, view.hideDirectoryControls, view.normalizedSessionSearchQuery, view.showOnlyMainWorkspace, view.useGroupedSections, visibleCountByContainer]);
   React.useEffect(() => {
     onSearchMatchCountChange(sidebarRowModel.searchMatchCount);
   }, [onSearchMatchCountChange, sidebarRowModel.searchMatchCount]);
@@ -896,8 +918,8 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
       openSidebarMenuKey,
       setOpenSidebarMenuKey,
       visibleSessionCountByGroup,
-      collapsedActivityKeys,
-      setCollapsedActivityKeys,
+      collapsedActivityKeys: projectView.collapsedActivities,
+      setCollapsedActivityKeys: setCollapsedActivities,
       visibleActivityCountByKey,
       setVisibleActivityCountByKey,
     },
@@ -914,7 +936,8 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     view.searchEmptyState,
     visibleSessionCountByGroup,
     visibleActivityCountByKey,
-    collapsedActivityKeys,
+    projectView.collapsedActivities,
+    setCollapsedActivities,
     singleProjectMode,
   ]);
   const scrollerView = React.useMemo(() => ({
@@ -995,7 +1018,15 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
         isInlineEditing={editingId !== null}
         startFolderRename={startFolderRename}
       />
-      <SessionProjectScroller model={scrollerModel} view={scrollerView} actions={scrollerActionSet} />
+      <div
+        className="contents"
+        onPointerEnter={(event) => {
+          if (holdsProjectOrder && event.pointerType === 'mouse') setHeldProjectOrder(shownProjectOrderRef.current);
+        }}
+        onPointerLeave={() => setHeldProjectOrder(null)}
+      >
+        <SessionProjectScroller model={scrollerModel} view={scrollerView} actions={scrollerActionSet} />
+      </div>
     </SessionRowOrderProvider>
   </>;
 };

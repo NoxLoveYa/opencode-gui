@@ -1,3 +1,4 @@
+import { asNonEmptyString } from '../shared/guards.js';
 import {
   OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
   OPENCHAMBER_AGENT_TOOL_ACTIONS,
@@ -72,6 +73,7 @@ const ALL_PARAMETER_PROPERTIES = {
     additionalProperties: false,
   },
   taskId: { type: 'string' },
+  targetSessionId: { type: 'string', description: 'Scheduled task target; omit for a new session, empty on update clears it' },
   title: { type: 'string' },
   prompt: { type: 'string' },
   model: { type: 'string', description: 'Model in provider/model format. When the user names no model: for session.create pick a suitable one from models.list favorites or recents (omit if there are none); for send and fork omit it — the session reuses its previous model' },
@@ -81,6 +83,7 @@ const ALL_PARAMETER_PROPERTIES = {
   branch: { type: 'string', description: 'Branch name for the new worktree' },
   startRef: { type: 'string', description: 'Git ref used to create the new worktree' },
   setUpstream: { type: 'boolean', description: 'Make the new worktree branch track its upstream' },
+  pullRequest: { type: 'integer', minimum: 1, description: "Pull or merge request number in this project for session.create: the session starts in a new worktree on that request's branch, made the way the New worktree dialog makes it. worktree and branch only rename the folder and the local branch. Use only when the user asks to work on that pull request" },
   goal: { type: 'boolean', description: 'Run the dispatched prompt in Goal Mode; use only when the user explicitly requests it' },
   goalTokenBudget: { type: 'integer', minimum: 1000, maximum: 100_000_000, description: 'Goal token budget; requires goal' },
   returnResult: { type: 'boolean', description: 'For session.create, send and fork with a prompt: deliver the session\'s final answer back to you as a message when it finishes, waking you to continue. The call still returns at once. Set only when the user wants the outcome back or your next step needs it' },
@@ -168,12 +171,6 @@ const agentOnlyUsageError = (action, input) => {
     return 'lastAssistant belongs to session.messages. To get a dispatched session\'s answer when it finishes, set returnResult';
   }
   return null;
-};
-
-const asNonEmptyString = (value) => {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 };
 
 const createResult = ({ ok, action, data, error, exitCode }) => ({

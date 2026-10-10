@@ -409,7 +409,7 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
    * that met a dead pooled stream is sent once more. Resolves the response with its body still
    * to be read; the caller ends or destroys it. Rejects with the place's or the transport's code.
    */
-  const requestInside = async (spaceId, { method = 'GET', path: requestPath, headers = {}, timeoutMs = 0 }) => {
+  const requestInside = async (spaceId, { method = 'GET', path: requestPath, headers = {}, body = null, timeoutMs = 0 }) => {
     if (!await isKnownSpace(spaceId)) throw new SpaceError('space_not_found', `There is no space ${spaceId}`);
     const once = (cookie) => new Promise((resolve, reject) => {
       const request = http.request({
@@ -422,7 +422,8 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
       request.on('timeout', () => request.destroy(new SpaceError('space_unreachable', 'The server inside the space did not answer in time')));
       request.on('response', resolve);
       request.on('error', reject);
-      request.end();
+      // A body is sent whole and only once; a renewed session sends it again from this string.
+      request.end(body === null ? undefined : body);
     });
     let response;
     try {
@@ -521,6 +522,13 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
     res.on('close', onClientGone);
 
     upstreamRequest.on('response', (upstream) => {
+      // The client left between the request and the answer, a list poll aborted by its panel
+      // among them: nothing to write to, and `pipeline` into a destroyed response throws.
+      if (res.destroyed) {
+        upstream.destroy();
+        finish('done');
+        return;
+      }
       if (upstream.statusCode === 401 && onUnauthorized === 'report') {
         upstream.resume();
         upstream.on('end', () => finish('unauthorized'));

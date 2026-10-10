@@ -13,8 +13,18 @@ other.
   scheduled-task action allowlist. `actions.js` marks CLI-only actions with
   `agentExposed: false` (currently `schedule.status`); the agent tool consumes
   the filtered `OPENCHAMBER_AGENT_TOOL_*` exports. `schedule.toggle` requires
-  the `disabled` boolean and replaces separate enable/disable actions;
+  the `disabled` boolean and replaces separate enable/disable actions; its
+  `enabled` is the saved state, never the requested one. Loop tasks and the
+  refusal to enable a repository loop are the scheduled-task service's rules
+  (`../scheduled-tasks/DOCUMENTATION.md`, *Local approval*).
   `schedule.list` also returns scheduler status as `scheduler`.
+  `schedule.update` patches a task in place: only the fields the call names
+  change, the id and run state stay, and a task driven by a loop file is
+  refused (the file is its source).
+  `schedule.create` and `schedule.update` accept `targetSessionId`, validated
+  by the scheduled-task service. An empty update clears the target. Create
+  without a model inherits the target selection; an explicit agent overrides
+  it. A task without a target still requires a model.
 - `routes.js` is the authenticated CLI HTTP adapter. It forwards one action,
   preserves service status and partial-result details, and propagates request
   cancellation.
@@ -53,6 +63,14 @@ other.
 - Send and fork dispatches without an explicit model/agent/variant reuse the
   target session's last user-message selection before falling back to the
   configured defaults; only session creation resolves defaults directly.
+- `session.create` with `pullRequest` passes the number, and `worktree` and
+  `branch` as folder and local-branch names, to the session service, which
+  creates the worktree through the injected `createChangeRequestWorktree`
+  (the Git routes' contributor pipeline) before any session exists. A
+  malformed number, or `startRef`/`setUpstream` beside it, is a 400; a
+  server without that pipeline answers 501 and never makes a plain branch
+  worktree instead; a provider or transfer refusal keeps its status and
+  message, and no session is created.
 - Default agents resolve from the owning project before global settings and
   OpenCode defaults. Directory-based requests identify the project before
   creating a worktree; existing linked worktrees resolve through Git's primary

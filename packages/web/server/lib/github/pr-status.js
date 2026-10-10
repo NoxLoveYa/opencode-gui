@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { getRemotes, getTrackingBranch, isAncestorOfHead } from '../git/index.js';
+import { getRemotes, getTrackingBranch, isAncestorOfHead, isPatchEquivalentOfHead } from '../git/index.js';
 import { resolveGitHubRepoFromDirectory } from './repo/index.js';
 import { noteIfGitHubRateLimit } from './rate-limit.js';
 import { getOctokitCacheIdentity } from './octokit.js';
@@ -596,14 +596,25 @@ const isTerminalPr = (pr) => Boolean(pr) && (pr.state === 'closed' || Boolean(pr
 // fresh worktree called `feature` cut from the default branch would inherit
 // the merged PR of last month's `feature`. The PR only belongs to this checkout
 // when the commit it was merged or closed at is part of the checkout's history.
-// `isAncestor` is the git check, replaceable so the tests need no git repository.
-const isHistoricalPrOfCheckout = async (directory, pr, { isAncestor = isAncestorOfHead } = {}) => {
+// A rebase can preserve its patch while replacing its commit. Both checks are
+// injectable so focused tests need no git repository.
+const isHistoricalPrOfCheckout = async (directory, pr, {
+  isAncestor = isAncestorOfHead,
+  isPatchEquivalent = isPatchEquivalentOfHead,
+} = {}) => {
   const headSha = normalizeText(pr?.head?.sha);
   if (!headSha) {
     return false;
   }
   try {
-    return await isAncestor(directory, headSha);
+    if (await isAncestor(directory, headSha)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  try {
+    return await isPatchEquivalent(directory, headSha);
   } catch {
     return false;
   }
@@ -620,10 +631,10 @@ export { isHistoricalPrOfCheckout };
  * the same head. The caller must prefer an open PR from ANY target over a
  * historical one — otherwise a merged fork PR hides an open upstream PR.
  *
- * `includeHistory` is off by default and must stay that way for secondary
- * targets. Live status is worth searching the whole fork network for; history
- * is not, and doing it per target multiplied the serial GitHub calls until the
- * route hit its resolve timeout and reported no status at all.
+ * `includeHistory` is off by default and is only enabled for primary-source
+ * targets. Live status is worth searching every configured remote; history is
+ * limited to the branch's primary fork network so unrelated remotes cannot
+ * multiply serial GitHub calls until the route hits its resolve timeout.
  */
 const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidates, force = false, coverage = null, includeHistory = false }) => {
   const matcher = buildSourceMatcher(sourceCandidates);
@@ -659,7 +670,7 @@ const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidate
     return { open: null, historical: null };
   }
 
-  const historicalKey = scopedCacheKey(octokit, `${normalizeRepoKey(target.repo?.owner, target.repo?.repo)}::${branch}`);
+  const historicalKey = scopedCacheKey(octokit, `${normalizeRepoKey(target.repo?.owner, target.repo?.repo)}::${branch}::${sourceOwners.map(normalizeLower).filter(Boolean).join(',')}`);
   if (historicalKey && includeHistory && !force && openListWasComplete) {
     const cached = _historicalPrCache.get(historicalKey);
     if (isHistoricalPrCacheFresh(cached)) {
@@ -707,7 +718,7 @@ const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidate
 // Exported for focused unit tests of open-versus-historical branch matching.
 export { findBranchPrCandidates };
 
-export async function resolveGitHubPrStatus({ octokit, directory, branch, remoteName, force = false }) {
+export async function resolveGitHubPrStatus({ octokit, directory, branch, remoteName, sourceRemoteName = null, force = false }) {
   // A deleted worktree can still have a session in the sidebar that keeps
   // requesting its PR status. Bail before touching git or GitHub for a
   // directory that no longer exists — otherwise every poll spends a git call
@@ -755,10 +766,15 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
   // forks — are places to look for an open PR, but their `owner:branch`
   // heads are unrelated branches that merely share a name; treating them as
   // sources made a fork's closed `main` PR show up on the local main.
+  // A branch checked out from a contributor's fork PR comes from that fork's
+  // remote, which the caller knows from the worktree's provenance.
   const primaryRemoteName = resolvedTargets[0]?.remoteName ?? null;
-  const sourceCandidates = resolvedTargets.filter(
-    (target) => target.remoteName === primaryRemoteName,
-  );
+  const contributorSources = sourceRemoteName
+    ? resolvedTargets.filter((target) => target.remoteName === sourceRemoteName)
+    : [];
+  const sourceCandidates = contributorSources.length > 0
+    ? contributorSources
+    : resolvedTargets.filter((target) => target.remoteName === primaryRemoteName);
   // When every consulted repo list was complete, a no-PR result is
   // authoritative and the expensive Search API fallback is pointless.
   const coverage = { authoritative: true };
@@ -786,11 +802,12 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
         continue;
       }
 
-      // History is only asked of the branch's own repo and its own name: the
-      // ranked-first target is the remote this branch actually pushes to.
-      // Searching the rest of the fork network for history would multiply
-      // serial GitHub calls for no additional user-visible information.
-      const isPrimaryAssociation = target === resolvedTargets[0] && candidateBranch === branchCandidates[0];
+      // History is only asked for the branch's own name and its primary remote
+      // network. That includes a fork's parent/source, where a fork-owned PR
+      // may have been merged, while excluding unrelated contributor remotes.
+      // A contributor fork checkout's PR merges into the primary remote, which
+      // is not among its source candidates.
+      const isPrimaryAssociation = (target === resolvedTargets[0] || sourceCandidates.includes(target)) && candidateBranch === branchCandidates[0] && candidateBranch !== defaultBranch;
 
       const { open, historical } = await findBranchPrCandidates({
         octokit,

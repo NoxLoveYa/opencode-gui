@@ -1,3 +1,4 @@
+import { asNonEmptyString } from '../shared/guards.js';
 import path from 'node:path';
 import { OpenCode } from '@opencode/client';
 import { OpenChamberControlError, asControlError } from './error.js';
@@ -10,16 +11,11 @@ const WAIT_POLL_INTERVAL_MS = 500;
 // One service, both capabilities: which tool asked is the caller's concern.
 const CONTROL_ACTIONS = new Set(OPENCHAMBER_ALL_ACTIONS);
 const SCHEDULE_TASK_ID_ACTIONS = new Set([
+  'schedule.update',
   'schedule.run',
   'schedule.delete',
   'schedule.toggle',
 ]);
-
-const asNonEmptyString = (value) => {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-};
 
 const positiveInteger = (value, fallback, field) => {
   if (value === undefined || value === null) return fallback;
@@ -120,7 +116,8 @@ const buildScheduledTask = (input) => {
   const prompt = asNonEmptyString(input.prompt);
   if (!name) throw new OpenChamberControlError('name is required', 400);
   if (!prompt) throw new OpenChamberControlError('prompt is required', 400);
-  const model = parseModel(input.model);
+  const targetSessionId = asNonEmptyString(input.targetSessionId);
+  const model = targetSessionId && input.model === undefined ? { useDefaults: !asNonEmptyString(input.agent) } : parseModel(input.model);
   const goalTokenBudget = input.goalTokenBudget;
   if (goalTokenBudget !== undefined && input.goal !== true) {
     throw new OpenChamberControlError('goalTokenBudget requires goal', 400);
@@ -128,7 +125,7 @@ const buildScheduledTask = (input) => {
   if (goalTokenBudget !== undefined && (!Number.isSafeInteger(goalTokenBudget) || goalTokenBudget < 1000 || goalTokenBudget > 100_000_000)) {
     throw new OpenChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
   }
-  return {
+  const task = {
     name,
     enabled: input.disabled !== true,
     schedule: buildSchedule(input),
@@ -140,6 +137,70 @@ const buildScheduledTask = (input) => {
       ...(input.goal === true ? { goalEnabled: true } : {}),
       ...(goalTokenBudget !== undefined ? { goalTokenBudget } : {}),
     },
+  };
+  if (input.targetSessionId !== undefined) task.targetSessionId = targetSessionId ?? input.targetSessionId;
+  return task;
+};
+
+/**
+ * `schedule.update`: the stored task with only the fields the call names
+ * changed. The id and the run state stay, so history and references survive;
+ * the scheduler re-arms from the new schedule on save.
+ */
+const patchScheduledTask = (existing, input) => {
+  if (existing.loopFile) {
+    throw new OpenChamberControlError(`This task comes from ${existing.loopFile}; change that file instead`, 409);
+  }
+  const execution = { ...existing.execution };
+  if (input.prompt !== undefined) {
+    const prompt = asNonEmptyString(input.prompt);
+    if (!prompt) throw new OpenChamberControlError('prompt cannot be empty', 400);
+    execution.prompt = prompt;
+  }
+  if (input.model !== undefined) {
+    Object.assign(execution, parseModel(input.model));
+    // A thinking level belongs to the model it was chosen for.
+    delete execution.variant;
+    delete execution.useDefaults;
+  }
+  for (const field of ['variant', 'agent']) {
+    if (input[field] === undefined) continue;
+    const value = asNonEmptyString(input[field]);
+    if (value) execution[field] = value;
+    else delete execution[field];
+    if (field === 'agent' && value && (input.targetSessionId || existing.targetSessionId)) delete execution.useDefaults;
+  }
+  if (typeof input.goal === 'boolean') {
+    if (input.goal) execution.goalEnabled = true;
+    else {
+      delete execution.goalEnabled;
+      delete execution.goalTokenBudget;
+    }
+  }
+  if (input.goalTokenBudget !== undefined) {
+    if (!execution.goalEnabled) throw new OpenChamberControlError('goalTokenBudget requires goal', 400);
+    if (!Number.isSafeInteger(input.goalTokenBudget) || input.goalTokenBudget < 1000 || input.goalTokenBudget > 100_000_000) {
+      throw new OpenChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
+    }
+    execution.goalTokenBudget = input.goalTokenBudget;
+  }
+  let name = existing.name;
+  if (input.name !== undefined) {
+    name = asNonEmptyString(input.name);
+    if (!name) throw new OpenChamberControlError('name cannot be empty', 400);
+  }
+  const replacesSchedule = ['daily', 'weekly', 'once', 'cron'].some((key) => asNonEmptyString(input[key]));
+  const timezone = asNonEmptyString(input.timezone);
+  const schedule = replacesSchedule
+    ? buildSchedule(input)
+    : (timezone ? { ...existing.schedule, timezone } : existing.schedule);
+  return {
+    id: existing.id,
+    targetSessionId: input.targetSessionId === undefined ? existing.targetSessionId : input.targetSessionId,
+    name,
+    enabled: typeof input.disabled === 'boolean' ? !input.disabled : existing.enabled,
+    schedule,
+    execution,
   };
 };
 
@@ -262,18 +323,36 @@ export const createOpenChamberControlService = (dependencies) => {
     return asPublicStatus(statuses[sessionID]);
   };
 
-  // `order: 'desc'` puts the newest messages in the limited page;
-  // extractTextMessages re-sorts them oldest-first for the caller.
+  // The message list is cursor-paginated and `order: 'desc'` puts the newest
+  // messages in the page, so a single call returns only the recent tail.
+  // `all: true` walks `cursor.next` until the history is exhausted; a bounded
+  // `limit` stops once enough text messages are collected. Later pages carry
+  // the order inside the cursor, and OpenCode rejects a cursor combined with
+  // `order`, so only the first page sends it. An empty page or a repeated
+  // cursor ends the walk. `extractTextMessages` sorts the gathered records
+  // oldest-first for the caller.
+  const MESSAGE_PAGE_LIMIT = 200;
   const sessionMessages = async (client, sessionID, role, limit) => {
     const fetchLimit = limit === undefined ? undefined : Math.max(100, limit * 4);
-    let response = await client.message.list({ sessionID, ...(fetchLimit ? { limit: fetchLimit, order: 'desc' } : {}) });
-    let raw = Array.isArray(response?.data) ? response.data : [];
-    let messages = extractTextMessages(raw, role);
-    if (limit !== undefined && messages.length < limit && raw.length >= fetchLimit) {
-      response = await client.message.list({ sessionID });
-      raw = Array.isArray(response?.data) ? response.data : [];
-      messages = extractTextMessages(raw, role);
+    const collected = [];
+    const seenCursors = new Set();
+    let cursor;
+    for (;;) {
+      const response = await client.message.list({
+        sessionID,
+        limit: fetchLimit ?? MESSAGE_PAGE_LIMIT,
+        ...(cursor ? { cursor } : fetchLimit ? { order: 'desc' } : {}),
+      });
+      const raw = Array.isArray(response?.data) ? response.data : [];
+      collected.push(...raw);
+      const next = asNonEmptyString(response?.cursor?.next);
+      if (!next || raw.length === 0 || seenCursors.has(next)) break;
+      // A bounded read only needs enough pages to project `limit` text messages.
+      if (limit !== undefined && extractTextMessages(collected, role).length >= limit) break;
+      seenCursors.add(next);
+      cursor = next;
     }
+    const messages = extractTextMessages(collected, role);
     return limit === undefined ? messages : messages.slice(-limit);
   };
 
@@ -368,6 +447,10 @@ export const createOpenChamberControlService = (dependencies) => {
     if (input.timeout !== undefined && input.wait !== true) throw new OpenChamberControlError('timeout requires wait', 400);
     if (input.lastAssistant === true && input.wait !== true) throw new OpenChamberControlError('lastAssistant requires wait', 400);
     assertSingleScope(input);
+    // Only a new session gets a worktree; elsewhere the number would be ignored.
+    if (input.pullRequest !== undefined && action !== 'session.create') {
+      throw new OpenChamberControlError('pullRequest applies only to session.create', 400);
+    }
     const sessionID = asNonEmptyString(input.sessionId);
     const parentSessionID = asNonEmptyString(contextSessionId);
     const returnResult = input.returnResult === true;
@@ -395,6 +478,16 @@ export const createOpenChamberControlService = (dependencies) => {
       ...(typeof input.setUpstream === 'boolean' ? { setUpstream: input.setUpstream } : {}),
       ...(asNonEmptyString(input.messageId) ? { messageId: input.messageId.trim() } : {}),
     };
+    // A pull request makes a worktree of its own, so its branch name (and a
+    // start ref the session service refuses) travel without a worktree name.
+    if (input.pullRequest !== undefined) {
+      payload.pullRequest = input.pullRequest;
+      if (!payload.worktree) {
+        payload.worktree = {};
+        if (asNonEmptyString(input.branch)) payload.worktree.branchName = input.branch.trim();
+        if (asNonEmptyString(input.startRef)) payload.worktree.startRef = input.startRef.trim();
+      }
+    }
     const startedAt = now();
     let result;
     if (action === 'session.create') {
@@ -487,7 +580,6 @@ export const createOpenChamberControlService = (dependencies) => {
       }
       parameters.url = parsed.toString();
     }
-
 
     if (action === 'browser.click') {
       const selector = asNonEmptyString(input.selector);
@@ -648,6 +740,12 @@ export const createOpenChamberControlService = (dependencies) => {
             const result = await scheduledTaskService.upsert(projectID, buildScheduledTask(input));
             return { task: result.task, created: result.created };
           }
+          case 'schedule.update': {
+            const existing = (await scheduledTaskService.list(projectID)).find((task) => task.id === taskID);
+            if (!existing) throw new OpenChamberControlError(`Scheduled task not found: ${taskID}`, 404);
+            const result = await scheduledTaskService.upsert(projectID, patchScheduledTask(existing, input));
+            return { task: result.task, updated: true };
+          }
           case 'schedule.run':
             return scheduledTaskService.run(projectID, taskID);
           case 'schedule.delete':
@@ -656,8 +754,9 @@ export const createOpenChamberControlService = (dependencies) => {
             if (typeof input.disabled !== 'boolean') {
               throw new OpenChamberControlError('disabled is required for schedule.toggle', 400);
             }
-            const enabled = input.disabled === false;
-            return { task: await scheduledTaskService.setEnabled(projectID, taskID, enabled), enabled };
+            const task = await scheduledTaskService.setEnabled(projectID, taskID, input.disabled === false);
+            // What was saved, which is what the scheduler acts on.
+            return { task, enabled: task?.enabled === true };
           }
         }
       }

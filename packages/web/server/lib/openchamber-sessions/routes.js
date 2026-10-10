@@ -1,3 +1,4 @@
+import { asNonEmptyString } from '../shared/guards.js';
 import express from 'express';
 import {
   createWorktree as createWorktreeDefault,
@@ -15,12 +16,6 @@ import { createArchiveStore } from './archive-store.js';
 import { applyForkInheritance } from './fork-inheritance.js';
 import { createOpenCodeClient as defaultCreateOpenCodeClient } from './opencode-client.js';
 import { createSessionMetadataStore, createOpenCodeSessionMetadata } from './session-metadata-store.js';
-
-const asNonEmptyString = (value) => {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-};
 
 const asList = (value) => (Array.isArray(value) ? value : []);
 
@@ -91,6 +86,27 @@ const resolveVariant = (models, providerID, modelID, variant) => {
   return asList(model.variants).some((entry) => entry?.id === normalized) ? normalized : undefined;
 };
 
+const isModelHidden = (hiddenModels, providerID, modelID) => hiddenModels.some(
+  (hidden) => hidden?.providerID === providerID && hidden?.modelID === modelID,
+);
+
+// The pick when nothing is configured or remembered: Big Pickle, else the first
+// model. A model the user hid in the picker is skipped; configured defaults never
+// come through here, so they stay honoured even when hidden. With every model
+// hidden the session still needs one, so the unfiltered pick stands.
+const resolveFallbackModel = (models, hiddenModels) => {
+  const isVisible = (providerID, modelID) => !isModelHidden(hiddenModels, providerID, modelID);
+  const candidates = models.filter(
+    (entry) => asNonEmptyString(entry?.providerID) && asNonEmptyString(entry?.modelID),
+  );
+  const bigPickle = findCatalogModel(candidates, FALLBACK_PROVIDER_ID, FALLBACK_MODEL_ID);
+  const pick = (bigPickle && isVisible(bigPickle.providerID, bigPickle.modelID) ? bigPickle : null)
+    || candidates.find((entry) => isVisible(entry.providerID, entry.modelID))
+    || bigPickle
+    || candidates[0];
+  return pick ? { providerID: pick.providerID, modelID: pick.modelID } : null;
+};
+
 const resolveProjectDefaults = (settings, directory, projectId) => {
   const projects = Array.isArray(settings?.projects) ? settings.projects : [];
   const matchedProject = projectId
@@ -136,7 +152,7 @@ const fetchSelectionInputs = async ({ client, readSettingsFromDiskMigrated }) =>
   return { settings, models, agents, opencodeDefaultAgent, opencodeDefaultModel };
 };
 
-const resolveDefaultSelection = ({ agents, models, settings, projectDefaults, opencodeDefaultAgent, opencodeDefaultModel }) => {
+const resolveDefaultSelection = ({ agents, models, settings, projectDefaults, opencodeDefaultAgent, opencodeDefaultModel, autoAvailable }) => {
   const primaryAgents = agents.filter((agent) => isPrimaryAgentMode(agent?.mode) && agent?.hidden !== true);
   let resolvedAgent = null;
   const projectDefaultAgent = asNonEmptyString(projectDefaults?.defaultAgent);
@@ -193,16 +209,19 @@ const resolveDefaultSelection = ({ agents, models, settings, projectDefaults, op
     variant = resolveVariant(models, model.providerID, model.modelID, opencodeDefaultModel.variant);
   }
 
-  if (!model && hasCatalogModel(models, FALLBACK_PROVIDER_ID, FALLBACK_MODEL_ID)) {
-    model = { providerID: FALLBACK_PROVIDER_ID, modelID: FALLBACK_MODEL_ID };
+  // The model last picked in a chat composer. Like a saved default it is kept
+  // through catalog gaps; a model hidden since, or Auto on a server without
+  // routing, is skipped.
+  const hiddenModels = asList(settings?.hiddenModels);
+  const lastSelectedModel = splitModel(settings?.lastSelectedModel);
+  if (!model
+    && lastSelectedModel
+    && !isModelHidden(hiddenModels, lastSelectedModel.providerID, lastSelectedModel.modelID)
+    && (autoAvailable || !isAutoModel(lastSelectedModel))) {
+    model = lastSelectedModel;
   }
 
-  if (!model) {
-    const first = models[0];
-    if (asNonEmptyString(first?.providerID) && asNonEmptyString(first?.modelID)) {
-      model = { providerID: first.providerID, modelID: first.modelID };
-    }
-  }
+  if (!model) model = resolveFallbackModel(models, hiddenModels);
 
   return {
     agent: resolvedAgent?.id,
@@ -364,6 +383,27 @@ const resolveRequestedDirectory = async ({ payload, readSettingsFromDiskMigrated
 const WORKTREE_BOOTSTRAP_TIMEOUT_MS = 60_000;
 const WORKTREE_BOOTSTRAP_POLL_MS = 150;
 
+/**
+ * A worktree from a pull or merge request: its number, and the folder and
+ * branch names when the caller chose them. The head, the fork and its remote
+ * come from the provider; a start ref or upstream would contradict them.
+ */
+const resolvePullRequestInput = (payload) => {
+  if (payload?.pullRequest === undefined) return null;
+  if (!Number.isSafeInteger(payload.pullRequest) || payload.pullRequest < 1) {
+    throw new OpenChamberControlError('pullRequest must be a pull or merge request number, such as 42', 400);
+  }
+  if (payload.worktree?.startRef !== undefined || payload.setUpstream !== undefined) {
+    throw new OpenChamberControlError('pullRequest checks out the pull request\'s own branch; do not combine it with startRef or setUpstream', 400);
+  }
+  const input = { number: payload.pullRequest };
+  const name = asNonEmptyString(payload.worktree?.name);
+  if (name) input.name = name;
+  const branchName = asNonEmptyString(payload.worktree?.branchName);
+  if (branchName) input.branchName = branchName;
+  return input;
+};
+
 const resolveWorktreeInput = (payload) => {
   if (!payload?.worktree || typeof payload.worktree !== 'object') return null;
   const name = asNonEmptyString(payload.worktree.name);
@@ -393,6 +433,9 @@ export const createOpenChamberSessionService = (dependencies) => {
     sessionKnowledgeRuntime = null,
     worktreeBootstrapStore,
     hydrateWorktreeCheckout,
+    // Creates a worktree from a pull or merge request through the Git routes'
+    // contributor pipeline. Absent where contributor worktrees are not served.
+    createChangeRequestWorktree = null,
     dataDir = null,
     archiveStore: injectedArchiveStore = null,
     sessionMetadataStore: injectedSessionMetadataStore = null,
@@ -408,6 +451,9 @@ export const createOpenChamberSessionService = (dependencies) => {
     // `openchamber/auto` (Session Defaults) is resolved here before the
     // session is switched onto it. Null when routing is not wired in.
     resolveAutoSelection = null,
+    // Whether routing can run Auto right now (the composer's own test). Null
+    // when routing is not wired in.
+    isAutoReady = null,
   } = dependencies;
 
   if ((!injectedArchiveStore || !injectedSessionMetadataStore) && !dataDir) {
@@ -533,9 +579,15 @@ export const createOpenChamberSessionService = (dependencies) => {
     }
     if (!model || !agent) {
       const inputs = await fetchSelectionInputs({ client, readSettingsFromDiskMigrated });
+      // Asked only when the last chat pick is Auto; an unanswerable question
+      // skips that pick rather than refusing the request.
+      const autoAvailable = isAutoModel(splitModel(inputs.settings?.lastSelectedModel))
+        && isAutoReady !== null
+        && await isAutoReady().catch(() => false);
       const defaults = resolveDefaultSelection({
         ...inputs,
         projectDefaults: resolveProjectDefaults(inputs.settings, directory, projectId),
+        autoAvailable,
       });
       if (!model) {
         model = defaults.model;
@@ -783,10 +835,11 @@ export const createOpenChamberSessionService = (dependencies) => {
       throw new OpenChamberControlError(resolvedDirectory.error, resolvedDirectory.status || 400);
     }
 
-    const worktreeInput = resolveWorktreeInput(payload);
+    const pullRequestInput = resolvePullRequestInput(payload);
+    const worktreeInput = pullRequestInput ? null : resolveWorktreeInput(payload);
     let worktree = null;
     let sessionDirectory = resolvedDirectory.directory;
-    if (payload?.worktree && !worktreeInput) {
+    if (payload?.worktree && !worktreeInput && !pullRequestInput) {
       throw new OpenChamberControlError('worktree.name is required when worktree is provided', 400);
     }
 
@@ -801,7 +854,25 @@ export const createOpenChamberSessionService = (dependencies) => {
       });
     }
 
-    if (worktreeInput) {
+    if (pullRequestInput) {
+      // Never a plain branch worktree instead: without the contributor
+      // pipeline the request is refused.
+      if (!(createChangeRequestWorktree instanceof Function)
+        || !(worktreeBootstrapStore?.read instanceof Function)
+        || !(worktreeBootstrapStore?.write instanceof Function)) {
+        throw new OpenChamberControlError('Worktrees from pull requests are not available here', 501);
+      }
+      try {
+        worktree = await createChangeRequestWorktree({ directory: resolvedDirectory.directory, ...pullRequestInput });
+      } catch (error) {
+        throw asControlError(error, `Failed to create a worktree from pull request ${pullRequestInput.number}`);
+      }
+      sessionDirectory = worktree.path;
+      await waitForWorktreeBootstrapReady({
+        directory: sessionDirectory,
+        bootstrapStore: worktreeBootstrapStore,
+      });
+    } else if (worktreeInput) {
       if (!(hydrateWorktreeCheckout instanceof Function)
         || !(worktreeBootstrapStore?.read instanceof Function)
         || !(worktreeBootstrapStore?.write instanceof Function)) {

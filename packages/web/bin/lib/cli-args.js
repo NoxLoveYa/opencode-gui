@@ -1,4 +1,5 @@
 import { TunnelCliError, EXIT_CODE } from './cli-errors.js';
+import { injectedEnvKeys } from '../../server/lib/injected-env.js';
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_TAIL_LINES = 200;
@@ -83,7 +84,11 @@ function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     port: DEFAULT_PORT,
     host: undefined,
-    uiPassword: process.env.OPENCHAMBER_UI_PASSWORD || undefined,
+    // A password OpenChamber itself put into this shell (the desktop app's, a
+    // running server's) is not a default for a new one.
+    uiPassword: injectedEnvKeys(process.env).has('OPENCHAMBER_UI_PASSWORD')
+      ? undefined
+      : process.env.OPENCHAMBER_UI_PASSWORD || undefined,
     json: false,
     all: false,
     follow: true,
@@ -635,7 +640,10 @@ OPTIONS:
 
 ENVIRONMENT:
   OPENCHAMBER_HOST             Bind address (e.g. 0.0.0.0 for all interfaces)
+  OPENCHAMBER_LAN_URL          LAN address pairing links offer (e.g. http://192.168.1.20:3000 in Docker)
   OPENCHAMBER_UI_PASSWORD      Alternative to --ui-password flag
+  OPENCHAMBER_UI_SESSION_TTL_HOURS        Browser sign-in lifetime in hours (default: 12)
+  OPENCHAMBER_UI_TRUSTED_SESSION_TTL_DAYS Sign-in lifetime on a trusted device in days (default: 7)
   OPENCHAMBER_API_ONLY         Set to true/1 to start API routes only
   OPENCHAMBER_DATA_DIR         Override OpenChamber data directory
   OPENCODE_HOST               External OpenCode server base URL, e.g. http://hostname:4096

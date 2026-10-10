@@ -249,6 +249,15 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['suggestion', 'assist', 'small model', 'follow up'],
   },
   {
+    id: 'chat.session-review-offer',
+    page: 'chat',
+    titleKey: 'settings.openchamber.visual.field.sessionReviewOffer',
+    descriptionKey: 'settings.openchamber.visual.field.sessionReviewOfferInfo',
+    keywords: ['review', 'walkthrough', 'changes', 'diff', 'jev', 'classification'],
+    // Jev runs on the OpenChamber server; VS Code has no such offer.
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'chat.session-goal',
     page: 'chat',
     titleKey: 'settings.openchamber.visual.field.sessionGoal',
@@ -512,6 +521,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
+    id: 'sessions.show-chats',
+    page: 'sessions',
+    titleKey: 'settings.openchamber.defaults.field.showChats',
+    keywords: ['chats', 'sidebar', 'hide', 'show', 'section'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'sessions.work',
     page: 'sessions',
     titleKey: 'settings.openchamber.sessionWork.title',
@@ -532,6 +548,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['in work', 'automatic', 'jev', 'classification', 'track'],
     // Jev runs on the OpenChamber server; VS Code has only the manual part.
     isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    id: 'sessions.work-keep-in-group',
+    page: 'sessions',
+    titleKey: 'settings.openchamber.sessionWork.field.keepInGroup',
+    descriptionKey: 'settings.openchamber.sessionWork.field.keepInGroupInfo',
+    keywords: ['in work', 'track', 'project group', 'folder', 'sidebar', 'keep'],
   },
   {
     id: 'sessions.small-model',
@@ -628,6 +651,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => ctx.isDesktopLocalOrigin && ctx.isMac,
   },
   {
+    id: 'sessions.desktop-linux-native-frame',
+    page: 'general',
+    titleKey: 'settings.openchamber.desktopNetwork.field.linuxNativeFrame',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.linuxNativeFrameDescription',
+    keywords: ['desktop', 'linux', 'title bar', 'titlebar', 'window', 'frame', 'decorations', 'gnome', 'kde'],
+    isAvailable: (ctx) => ctx.isDesktopLocalOrigin && ctx.isLinux,
+  },
+  {
     id: 'sessions.desktop-minimize-to-tray',
     page: 'general',
     titleKey: 'settings.openchamber.desktopNetwork.field.minimizeToTray',
@@ -643,6 +674,24 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['desktop', 'sleep', 'awake', 'server', 'mobile', 'phone'],
     isAvailable: (ctx) => ctx.isDesktopLocalOrigin,
   },
+  {
+    id: 'sessions.desktop-mini-chat-global-shortcut',
+    page: 'general',
+    titleKey: 'settings.openchamber.desktopNetwork.field.miniChatGlobalShortcut',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.miniChatGlobalShortcutDescription',
+    keywords: ['desktop', 'mini chat', 'shortcut', 'hotkey', 'global', 'keyboard'],
+    isAvailable: (ctx) => ctx.isDesktopLocalOrigin,
+  },
+  {
+    id: 'sessions.desktop-quake-mode',
+    page: 'general',
+    titleKey: 'settings.openchamber.desktopNetwork.field.quakeMode',
+    descriptionKey: 'settings.openchamber.desktopNetwork.field.quakeModeDescription',
+    keywords: ['desktop', 'quake', 'dropdown', 'hotkey', 'shortcut', 'height', 'global', 'background', 'tray', 'terminal'],
+    isAvailable: (ctx) => ctx.isDesktopLocalOrigin,
+  },
+
+
   {
     id: 'sessions.desktop-ui-password',
     page: 'general',
@@ -671,6 +720,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'general',
     titleKey: 'settings.openchamber.opencodeCli.actions.restart',
     keywords: ['opencode', 'restart', 'reload', 'plugin'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    id: 'general.environment-variables',
+    page: 'general',
+    titleKey: 'settings.environment.user.title',
+    descriptionKey: 'settings.environment.user.info',
+    keywords: ['environment', 'env', 'variables', 'api key', 'token', 'secret', 'opencode', 'terminal', 'git'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
@@ -778,6 +835,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.routing.auto.enable',
     descriptionKey: 'settings.routing.auto.enableInfo',
     keywords: ['auto', 'routing', 'model', 'jev', 'automatic'],
+    isAvailable: (ctx) => !ctx.isVSCode && ctx.routingAvailable && !ctx.jevBlockedByEnterprise,
+  },
+  {
+    id: 'routing.preserve-cache',
+    page: 'routing',
+    titleKey: 'settings.routing.auto.preserveCache',
+    descriptionKey: 'settings.routing.auto.preserveCacheInfo',
+    keywords: ['cache', 'prompt cache', 'auto', 'routing', 'switch', 'model', 'cost'],
     isAvailable: (ctx) => !ctx.isVSCode && ctx.routingAvailable && !ctx.jevBlockedByEnterprise,
   },
   {
@@ -889,6 +954,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['worktree', 'setup commands', 'shared', 'team', 'only mine'],
   },
   {
+    id: 'projects.environment',
+    page: 'projects',
+    titleKey: 'settings.projects.environment.title',
+    descriptionKey: 'settings.projects.environment.info',
+    keywords: ['environment', 'env', 'variables', 'direnv', 'devenv', 'nix', 'envrc', 'path', 'terminal', 'git hooks'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'projects.shared',
     page: 'projects',
     titleKey: 'settings.projects.shared.title',
@@ -950,6 +1023,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.agents.page.field.mode',
     descriptionKey: 'settings.agents.page.field.modeTooltip',
     keywords: ['primary', 'subagent', 'visibility'],
+  },
+  {
+    id: 'agents.color',
+    page: 'agents',
+    titleKey: 'settings.agents.page.field.color',
+    descriptionKey: 'settings.agents.page.field.colorTooltip',
+    keywords: ['colour', 'hex', 'accent'],
   },
   {
     id: 'agents.model',

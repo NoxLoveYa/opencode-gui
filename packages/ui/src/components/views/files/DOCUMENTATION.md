@@ -12,6 +12,13 @@ matches. `fileTreeStatus.ts` builds path and ancestor indexes once per Git
 snapshot. Open-file membership has its own set, so changing tabs does not
 rebuild the Git index.
 
+Directory listings follow the "Show gitignored files" setting: `SidebarFilesTree`,
+`FilesView`, and the mobile `MobileFilesSurface` ask the runtime for
+`respectGitignore` unless the user has chosen to show gitignored entries, so the
+server's `git check-ignore` filter decides what appears inside a Git repository.
+Outside a repository no entries are ignored, so the hardcoded `node_modules`
+name filter remains as a fallback. Search already follows the same setting.
+
 Desktop `FilesView` in editor-only mode neither loads nor constructs its unused
 tree. Mobile retains its tree. The context panel passes actual visibility,
 including the panel's open state, its active tab, and the editor toggle, to each file surface.
@@ -28,6 +35,25 @@ runtime, in both editor-only and full Files modes. Chat navigation and file
 loading do not request native file grants. Server-backed text reads and metadata
 requests have a 30-second deadline, including response-body reads, so a stalled
 request reaches the existing error handler instead of leaving loading pending.
+
+A file that cannot be read, a missing one included, stays selected and shows
+the read error; the host's tab still names that path, so the editor never falls
+back to another open file. A pending line jump or focus for that path ends
+there. The metadata poll treats a file deleted while open the same way: without
+unsaved edits it shows the error, with unsaved edits it keeps them. It keeps
+polling a failed file and loads it again once a missing file is back; a file
+that exists but fails to read is never reloaded by the poll
+(`openFilePollStep`). Pruning stale open paths (`removeUnselectedOpenPath`)
+never removes the path on screen.
+
+A pending line jump (`pendingFileNavigationStep`) selects its file only until
+that file has been on screen. If the user then switches tabs while it loads,
+the jump leaves the other tab alone and runs when its file is selected again.
+A read-only text file, one outside the workspace for example, opens in the
+read-only code editor, because the selection effect resets the text mode after
+the effect that switches read-only files to the view mode; the jump runs there.
+If no editor is on screen the jump ends, so the waiting mask never hides a
+loaded file.
 
 Sidebar root/runtime changes remount the scoped tree. Its bounded module cache
 provides continuity between mounts; request cancellation for collapsed paths
@@ -163,6 +189,13 @@ save adopts content without a remount so the viewport is not reset. Exactly
 one instance is mounted, in the docked chain or in the fullscreen overlay;
 entering or leaving fullscreen moves unsaved edits through the text draft, as
 the source toggle does, and the other slot remounts from it.
+
+`isDirty` (draft differs from file) is not proof of a user edit. The context
+panel keeps one FilesView that follows the selected path, so during a file
+switch the draft and the file briefly belong to different files. React to real
+edits through CodeMirror transactions (`isUserEvent('input' | 'delete' | 'undo'
+| 'redo' | 'move')`). Autosave refuses to write an empty draft over a non-empty
+file (`shouldScheduleFileAutosave`); an explicit save still can.
 
 Canvas edits never enter the text draft. A separate `canvasDirty` flag feeds
 the shared `isDirty`, so autosave, Cmd/Ctrl+S, the unsaved-changes prompt,

@@ -496,6 +496,30 @@ describe("moveSessionToDirectory", () => {
     expect(destination.getState().message["session-a"]).toBe(undefined)
     expect(destination.getState().part["message-a"]).toBe(undefined)
   })
+
+  test("keeps the move the session.moved event already applied", async () => {
+    const message = { id: "message-a", sessionID: "session-a", role: "user", time: { created: 1 } } as Message
+    const requested = { id: "session-a", title: "Before", directory: "/source" } as Session
+    const source = createStore({}, {
+      session: [{ ...requested, title: "Renamed", directory: "/destination" } as Session],
+      sessionTotal: 1,
+      message: { "session-a": [message] },
+    })
+    const destination = createStore({})
+    const childStores = createChildStores([["/source", source], ["/destination", destination]])
+    const { adoptSessionMove, moveSessionToDirectory, setActionRefs } = await import("./session-actions")
+    setActionRefs(childStores, () => "/source")
+
+    adoptSessionMove("session-a", "/source", "/destination")
+    await moveSessionToDirectory(requested, "/source", "/destination")
+
+    expect(source.getState().session).toHaveLength(0)
+    expect(destination.getState().session).toHaveLength(1)
+    expect(destination.getState().session[0]?.title).toBe("Renamed")
+    expect(destination.getState().sessionTotal).toBe(1)
+    expect(destination.getState().message["session-a"]?.[0]?.id).toBe("message-a")
+    expect((globalUpsertedSessions.at(-1) as Session).title).toBe("Renamed")
+  })
 })
 
 describe("confirmed session removal", () => {
@@ -2907,6 +2931,7 @@ describe("dismissOpenFormsForSession", () => {
   beforeEach(() => {
     replyCalls.length = 0
     formReplyError = null
+    formCancelError = null
   })
 
   test("returns false and rejects nothing when no forms are pending", async () => {
@@ -2974,6 +2999,34 @@ describe("dismissOpenFormsForSession", () => {
     // The stale entry is cleared from the store even though the server reported not-found.
     expect(store.getState().form["session-a"]).toBe(undefined)
   })
+
+  test("puts the forms back when the cancel fails for another reason (#2448)", async () => {
+    const rootForm = buildForm("q-root", "session-a")
+    const childForm = buildForm("q-child", "session-child")
+    const store = createStore({}, {
+      session: [sessionFixture("session-a")],
+      form: { "session-a": [rootForm] },
+    })
+    // The subagent's session lives in its own worktree store.
+    const worktreeStore = createStore({}, {
+      session: [{ ...sessionFixture("session-child"), parentID: "session-a" }],
+      form: { "session-child": [childForm] },
+    })
+    const childStores = createChildStores([["/test/project", store], ["/test/project/wt", worktreeStore]])
+    formCancelError = Object.assign(new Error("session.form.cancel failed (500): unexpected status"), { status: 500 })
+
+    const { setActionRefs, dismissOpenFormsForSession } = await import("./session-actions")
+    setActionRefs(childStores, () => "/test/project")
+
+    const dismissed = await dismissOpenFormsForSession("session-a")
+
+    expect(dismissed).toBe(true)
+    // The agent is still waiting on both forms, so each goes back to the store it came from.
+    expect(store.getState().form["session-a"]).toEqual([rootForm])
+    expect(store.getState().form["session-child"]).toBe(undefined)
+    expect(worktreeStore.getState().form["session-child"]).toEqual([childForm])
+    expect(worktreeStore.getState().form["session-a"]).toBe(undefined)
+  })
 })
 
 describe("dismissPermission not-found handling", () => {
@@ -3008,6 +3061,32 @@ describe("dismissPermission not-found handling", () => {
 
     await expect(dismissPermission("session-a", "perm-500")).rejects.toThrow()
     // A non-not-found failure leaves store reconciliation to the next server event.
+    expect(store.getState().permission["session-a"]).toHaveLength(1)
+  })
+
+  test("an allow on a permission the server no longer has clears the card", async () => {
+    const permission = buildPermission("perm-stale", "session-a")
+    const store = createStore({ "session-a": [permission] })
+    const childStores = createChildStores([["/test/project", store]])
+    permissionReplyError = Object.assign(new Error("permission.reply failed (404): PermissionNotFoundError"), { status: 404 })
+
+    const { setActionRefs, respondToPermission } = await import("./session-actions")
+    setActionRefs(childStores, () => "/test/project")
+
+    await expect(respondToPermission("session-a", "perm-stale", "once")).rejects.toThrow()
+    expect(store.getState().permission["session-a"]).toBe(undefined)
+  })
+
+  test("an allow that fails for another reason keeps the card", async () => {
+    const permission = buildPermission("perm-500", "session-a")
+    const store = createStore({ "session-a": [permission] })
+    const childStores = createChildStores([["/test/project", store]])
+    permissionReplyError = Object.assign(new Error("permission.reply failed (500)"), { status: 500 })
+
+    const { setActionRefs, respondToPermission } = await import("./session-actions")
+    setActionRefs(childStores, () => "/test/project")
+
+    await expect(respondToPermission("session-a", "perm-500", "once")).rejects.toThrow()
     expect(store.getState().permission["session-a"]).toHaveLength(1)
   })
 })
@@ -3109,6 +3188,39 @@ describe("dismissOpenPermissionsForSession", () => {
     } finally {
       console.error = originalError
     }
+  })
+
+  test("puts the permissions back when the reject fails for another reason", async () => {
+    const rootPermission = buildPermission("perm-root", "session-a")
+    const childPermission = buildPermission("perm-child", "session-child")
+    const store = createStore({ "session-a": [rootPermission] }, {
+      session: [sessionFixture("session-a")],
+    })
+    // The subagent's session lives in its own worktree store.
+    const worktreeStore = createStore({ "session-child": [childPermission] }, {
+      session: [{ ...sessionFixture("session-child"), parentID: "session-a" }],
+    })
+    const childStores = createChildStores([["/test/project", store], ["/test/project/wt", worktreeStore]])
+    permissionReplyError = Object.assign(new Error("permission.reply failed (500): unexpected status"), { status: 500 })
+
+    const { setActionRefs, dismissOpenPermissionsForSession } = await import("./session-actions")
+    setActionRefs(childStores, () => "/test/project")
+
+    const originalError = console.error
+    console.error = () => {}
+    let dismissed: boolean
+    try {
+      dismissed = await dismissOpenPermissionsForSession("session-a")
+    } finally {
+      console.error = originalError
+    }
+
+    expect(dismissed).toBe(true)
+    // The agent is still waiting on both permissions, so each goes back to the store it came from.
+    expect(store.getState().permission["session-a"]).toEqual([rootPermission])
+    expect(store.getState().permission["session-child"]).toBe(undefined)
+    expect(worktreeStore.getState().permission["session-child"]).toEqual([childPermission])
+    expect(worktreeStore.getState().permission["session-a"]).toBe(undefined)
   })
 })
 

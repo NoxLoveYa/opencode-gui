@@ -55,6 +55,16 @@ const createService = (overrides = {}) => {
 };
 
 describe('OpenChamber control service', () => {
+  it('creates a target task with inherited selection and accepts retargeting on update', async () => {
+    const { service, scheduledTaskService } = createService();
+    scheduledTaskService.upsert.mockImplementation(async (_project, task) => ({ task }));
+    const created = await service.execute('schedule.create', { name: 'Reuse', prompt: 'Continue', daily: '09:00', targetSessionId: 'ses_target' }, '/repo');
+    expect(created.task).toMatchObject({ targetSessionId: 'ses_target', execution: { useDefaults: true } });
+    scheduledTaskService.list.mockResolvedValue([{ ...created.task, id: 'task-1' }]);
+    await service.execute('schedule.update', { taskId: 'task-1', targetSessionId: 'ses_second', agent: 'plan' }, '/repo');
+    expect(scheduledTaskService.upsert.mock.calls[1][1]).toMatchObject({ targetSessionId: 'ses_second', execution: { agent: 'plan' } });
+    expect(scheduledTaskService.upsert.mock.calls[1][1].execution.useDefaults).toBeUndefined();
+  });
   it('serves project and model projections without an HTTP or CLI round trip', async () => {
     const { service } = createService();
     await expect(service.execute('projects.list')).resolves.toEqual({
@@ -86,6 +96,46 @@ describe('OpenChamber control service', () => {
     }));
   });
 
+  it('updates a scheduled task in place, changing only the named fields', async () => {
+    const { service, scheduledTaskService } = createService();
+    const existing = {
+      id: 'task-1',
+      name: 'Nightly',
+      enabled: true,
+      schedule: { kind: 'daily', times: ['09:00'], timezone: 'UTC' },
+      execution: { prompt: 'Old', providerID: 'a', modelID: 'm', variant: 'high', agent: 'build' },
+      state: { lastRunAt: 5, lastStatus: 'success' },
+    };
+    scheduledTaskService.list.mockResolvedValue([existing]);
+    scheduledTaskService.upsert.mockImplementation(async (_project, task) => ({ task, created: false }));
+
+    await service.execute('schedule.update', { taskId: 'task-1', prompt: 'New', model: 'b/n', cron: '0 * * * *' }, '/repo');
+    const saved = scheduledTaskService.upsert.mock.calls[0][1];
+    expect(saved).toEqual({
+      id: 'task-1',
+      name: 'Nightly',
+      enabled: true,
+      schedule: { kind: 'cron', cron: '0 * * * *' },
+      execution: { prompt: 'New', providerID: 'b', modelID: 'n', agent: 'build' },
+    });
+    // No state in the patch: the stored run history is kept.
+    expect(saved.state).toBeUndefined();
+
+    await service.execute('schedule.update', { taskId: 'task-1', timezone: 'Europe/Kyiv', disabled: true }, '/repo');
+    expect(scheduledTaskService.upsert.mock.calls[1][1]).toMatchObject({
+      enabled: false,
+      schedule: { kind: 'daily', times: ['09:00'], timezone: 'Europe/Kyiv' },
+      execution: existing.execution,
+    });
+  });
+
+  it('refuses to update a missing task or one driven by a loop file', async () => {
+    const { service, scheduledTaskService } = createService();
+    await expect(service.execute('schedule.update', { taskId: 'nope', prompt: 'x' }, '/repo')).rejects.toThrow('Scheduled task not found');
+    scheduledTaskService.list.mockResolvedValue([{ id: 'loop:project:x', loopFile: '/repo/.agents/loops/x.md', name: 'x', execution: {}, schedule: {} }]);
+    await expect(service.execute('schedule.update', { taskId: 'loop:project:x', prompt: 'x' }, '/repo')).rejects.toThrow('change that file instead');
+  });
+
   it('does not combine an explicit schedule project with the tool context directory', async () => {
     const { service, scheduledTaskService } = createService();
     await service.execute('schedule.list', { projectId: ' project-1 ' }, '/current-session');
@@ -112,6 +162,15 @@ describe('OpenChamber control service', () => {
     expect(scheduledTaskService.setEnabled).toHaveBeenCalledWith('project-1', 'task-1', false);
   });
 
+  it('reports the enabled state that was saved, not the one requested', async () => {
+    const { service, scheduledTaskService } = createService();
+    scheduledTaskService.setEnabled.mockResolvedValue({ id: 'task-1', enabled: false });
+    await expect(service.execute('schedule.toggle', { taskId: 'task-1', disabled: false }, '/repo')).resolves.toEqual({
+      task: { id: 'task-1', enabled: false },
+      enabled: false,
+    });
+  });
+
   it('returns an actionable taskId error before resolving schedule scope', async () => {
     const { service, scheduledTaskService } = createService();
     await expect(service.execute('schedule.run', {}, '/repo')).rejects.toThrow('taskId is required');
@@ -129,6 +188,23 @@ describe('OpenChamber control service', () => {
     const { service, sessionService } = createService();
     await service.execute('session.create', { title: 'From tool' }, '/repo');
     expect(sessionService.create).toHaveBeenCalledWith({ directory: '/repo', title: 'From tool' });
+  });
+
+  it('hands a pull request number to session creation with the folder and branch names it may carry', async () => {
+    const { service, sessionService } = createService();
+    await service.execute('session.create', { pullRequest: 42 }, '/repo');
+    await service.execute('session.create', { pullRequest: 42, worktree: ' review ', branch: 'review-42' }, '/repo');
+    expect(sessionService.create.mock.calls).toEqual([
+      [{ directory: '/repo', worktree: {}, pullRequest: 42 }],
+      [{ directory: '/repo', worktree: { name: 'review', branchName: 'review-42' }, pullRequest: 42 }],
+    ]);
+  });
+
+  it('refuses a pull request number on a send or fork, which would ignore it', async () => {
+    const { service, sessionService } = createService();
+    await expect(service.execute('session.send', { sessionId: 'ses_1', prompt: 'Go', pullRequest: 42 }, '/repo'))
+      .rejects.toThrow('pullRequest applies only to session.create');
+    expect(sessionService.send).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -311,6 +387,96 @@ describe('OpenChamber control service', () => {
         { id: 'msg_assistant', role: 'assistant', createdAt: 20, completedAt: 30, model: 'openai/gpt-5.4-mini', text: 'First answer' },
       ],
     });
+  });
+
+  it('follows the message cursor so all: true returns the whole history', async () => {
+    const { service, client } = createService();
+    const page = (data, next) => ({ data, cursor: { next } });
+    // Newest page first (the API pages with order: 'desc'), then older pages
+    // reachable only through cursor.next.
+    client.message.list.mockImplementation(async (input) => {
+      if (!input.cursor) {
+        return page([
+          { id: 'msg_new_user', type: 'user', time: { created: 40 }, text: 'Recent question' },
+          { id: 'msg_new_assistant', type: 'assistant', time: { created: 50, completed: 55 }, content: [{ type: 'text', text: 'Recent answer' }] },
+        ], 'cursor-page-2');
+      }
+      if (input.cursor === 'cursor-page-2') {
+        return page([
+          { id: 'msg_old_user', type: 'user', time: { created: 10 }, text: 'Older requirement' },
+        ], undefined);
+      }
+      throw new Error(`unexpected cursor ${input.cursor}`);
+    });
+
+    const result = await service.execute('session.messages', {
+      sessionId: 'ses_1',
+      directory: '/repo',
+      role: 'all',
+      all: true,
+    });
+
+    expect(client.message.list).toHaveBeenCalledTimes(2);
+    expect(client.message.list.mock.calls[1][0]).toMatchObject({ sessionID: 'ses_1', cursor: 'cursor-page-2' });
+    expect(result.messages.map((message) => message.id)).toEqual([
+      'msg_old_user', 'msg_new_user', 'msg_new_assistant',
+    ]);
+  });
+
+  it('pages a bounded read with the cursor alone until it has enough text messages', async () => {
+    const { service, client } = createService();
+    const page = (data, next) => ({ data, cursor: { next } });
+    client.message.list.mockImplementation(async (input) => {
+      if (!input.cursor) {
+        return page([
+          { id: 'msg_new_assistant', type: 'assistant', time: { created: 50, completed: 55 }, content: [{ type: 'text', text: 'Recent answer' }] },
+          { id: 'msg_new_user', type: 'user', time: { created: 40 }, text: 'Recent question' },
+        ], 'cursor-page-2');
+      }
+      if (input.cursor === 'cursor-page-2') {
+        return page([
+          { id: 'msg_mid_user', type: 'user', time: { created: 20 }, text: 'Earlier question' },
+          { id: 'msg_old_user', type: 'user', time: { created: 10 }, text: 'First question' },
+        ], 'cursor-page-3');
+      }
+      throw new Error(`unexpected cursor ${input.cursor}`);
+    });
+
+    const result = await service.execute('session.messages', {
+      sessionId: 'ses_1',
+      directory: '/repo',
+      role: 'user',
+      limit: 2,
+    });
+
+    expect(client.message.list).toHaveBeenCalledTimes(2);
+    expect(client.message.list.mock.calls[0][0]).toMatchObject({ sessionID: 'ses_1', order: 'desc' });
+    expect(client.message.list.mock.calls[1][0]).toMatchObject({ sessionID: 'ses_1', cursor: 'cursor-page-2' });
+    expect(client.message.list.mock.calls[1][0]).not.toHaveProperty('order');
+    expect(result.messages.map((message) => message.id)).toEqual(['msg_mid_user', 'msg_new_user']);
+  });
+
+  it('stops paging when the message cursor repeats or a page comes back empty', async () => {
+    const { service, client } = createService();
+    client.message.list.mockImplementation(async (input) => {
+      if (!input.cursor) {
+        return { data: [{ id: 'msg_new_user', type: 'user', time: { created: 20 }, text: 'Question' }], cursor: { next: 'cursor-loop' } };
+      }
+      return { data: [{ id: 'msg_old_user', type: 'user', time: { created: 10 }, text: 'Older question' }], cursor: { next: 'cursor-loop' } };
+    });
+
+    const looped = await service.execute('session.messages', { sessionId: 'ses_1', directory: '/repo', all: true });
+    expect(client.message.list).toHaveBeenCalledTimes(2);
+    expect(looped.messages.map((message) => message.id)).toEqual(['msg_old_user', 'msg_new_user']);
+
+    client.message.list.mockReset();
+    client.message.list.mockImplementation(async (input) => (input.cursor
+      ? { data: [], cursor: { next: `${input.cursor}-next` } }
+      : { data: [{ id: 'msg_user', type: 'user', time: { created: 10 }, text: 'Question' }], cursor: { next: 'cursor-empty' } }));
+
+    const drained = await service.execute('session.messages', { sessionId: 'ses_1', directory: '/repo', all: true });
+    expect(client.message.list).toHaveBeenCalledTimes(2);
+    expect(drained.messages.map((message) => message.id)).toEqual(['msg_user']);
   });
 
   it('rejects actions outside the fixed contract', async () => {

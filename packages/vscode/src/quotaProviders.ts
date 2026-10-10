@@ -3,7 +3,7 @@ import { OPENCODE_CONFIG_DIR } from './opencodeConfigPaths';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fetchOpenCodeGoUsage } from './opencodeGoQuota';
+import { fetchOpenCodeGoUsage, type OpenCodeGoConsoleCredential } from './opencodeGoQuota';
 import { deleteLegacyOpenCodeGoCredential, readCredential } from './quotaCredentials';
 import { readOpenCodeCredentials } from './opencodeAuth';
 import { readConfig } from './opencodeConfig';
@@ -249,7 +249,7 @@ type NeuralwattPayload = {
   };
 };
 
-export type ProviderResult = {
+type ProviderResult = {
   providerId: string;
   providerName: string;
   ok: boolean;
@@ -263,10 +263,7 @@ export type ProviderResult = {
 const OPENCODE_DATA_DIR = path.join(os.homedir(), '.local', 'share', 'opencode');
 
 const XAI_USAGE_ENDPOINT = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig';
-const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
-const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
-const XAI_REFRESH_SKEW_MS = 120_000;
-const XAI_DEFAULT_EXPIRES_IN_SECONDS = 3600;
+const XAI_ACCESS_EXPIRY_SKEW_MS = 120_000;
 
 type XaiAuthEntry = Record<string, unknown> & {
   type: 'oauth';
@@ -274,9 +271,6 @@ type XaiAuthEntry = Record<string, unknown> & {
   refresh?: string;
   expires?: unknown;
 };
-
-let xaiRefreshPromise: Promise<XaiAuthEntry> | null = null;
-
 
 const ANTIGRAVITY_ACCOUNTS_PATHS = [
   path.join(OPENCODE_CONFIG_DIR, 'antigravity-accounts.json'),
@@ -424,6 +418,23 @@ const toTimestamp = (value: unknown): number | null => {
   return null;
 };
 
+// OpenCode Console signs in through the shared `opencode` integration and
+// records the Console server and selected organization on the credential. Only
+// a Console sign-in counts: its OAuth access token is not interchangeable with
+// an `opencode-go` service key. Credentials are global and OpenCode marks one
+// active per integration, so this is the selected account and organization.
+const CONSOLE_SERVER = 'https://opencode.ai/console';
+const CONSOLE_ORGANIZATION_ID_PATTERN = /^org_[A-Za-z0-9]+$/;
+const openCodeGoConsoleCredential = (auth: AuthFile): OpenCodeGoConsoleCredential | null => {
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['opencode']));
+  if (!entry || entry.type !== 'oauth') return null;
+  const accessToken = asNonEmptyString(entry.access);
+  const orgID = asNonEmptyString(entry.orgID);
+  if (!accessToken || entry.server !== CONSOLE_SERVER || !orgID || !CONSOLE_ORGANIZATION_ID_PATTERN.test(orgID)) return null;
+  const expires = toNumber(entry.expires);
+  return { accessToken, orgID, expires };
+};
+
 const formatResetTime = (timestamp: number) => {
   try {
     const resetDate = new Date(timestamp);
@@ -525,81 +536,31 @@ const jwtExpiryMilliseconds = (accessToken: string): number | null => {
   }
 };
 
-const xaiAccessNeedsRefresh = (entry: XaiAuthEntry, now = Date.now()): boolean => {
+const xaiAccessExpired = (entry: XaiAuthEntry, now = Date.now()): boolean => {
   const access = asNonEmptyString(entry.access);
   if (!access) return true;
 
-  const refreshDeadline = now + XAI_REFRESH_SKEW_MS;
+  const expiryDeadline = now + XAI_ACCESS_EXPIRY_SKEW_MS;
   const storedExpiry = Number(entry.expires);
-  if (Number.isFinite(storedExpiry) && storedExpiry <= refreshDeadline) {
+  if (Number.isFinite(storedExpiry) && storedExpiry <= expiryDeadline) {
     return true;
   }
 
   const jwtExpiry = jwtExpiryMilliseconds(access);
-  return jwtExpiry !== null && jwtExpiry <= refreshDeadline;
+  return jwtExpiry !== null && jwtExpiry <= expiryDeadline;
 };
 
-const refreshXaiAuth = (entry: XaiAuthEntry): Promise<XaiAuthEntry> => {
-  if (xaiRefreshPromise) return xaiRefreshPromise;
-
-  const refreshToken = asNonEmptyString(entry.refresh);
-  if (!refreshToken) {
-    return Promise.reject(new Error('xAI OAuth refresh token is unavailable'));
+// xAI rotates (and rejects the previous) refresh token on every exchange, and
+// OpenCode 2.x owns the credential store without exposing a refresh route. A
+// quota read that refreshed here would burn the token OpenCode still holds and
+// sign the user out. Claude's provider makes the same call; wait for OpenCode
+// to refresh and surface the stale state instead.
+const requireXaiAccessToken = (entry: XaiAuthEntry): string => {
+  const access = asNonEmptyString(entry.access);
+  if (!access || xaiAccessExpired(entry)) {
+    throw new Error('xAI access token expired — send a Grok message or re-authorize');
   }
-
-  const pending = (async () => {
-    const response = await fetch(XAI_TOKEN_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: XAI_CLIENT_ID,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
-    if (!response.ok) {
-      throw new Error(`xAI OAuth refresh failed: ${response.status}`);
-    }
-
-    const responsePayload = payload ?? {};
-    const access = asNonEmptyString(responsePayload.access_token);
-    if (!access) {
-      throw new Error('xAI OAuth refresh returned no access token');
-    }
-
-    const expiresIn = responsePayload.expires_in ?? XAI_DEFAULT_EXPIRES_IN_SECONDS;
-    if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn)) {
-      throw new Error('xAI OAuth refresh returned an invalid expiry');
-    }
-
-    const refreshed: XaiAuthEntry = {
-      ...entry,
-      type: 'oauth',
-      access,
-      refresh: asNonEmptyString(responsePayload.refresh_token) ?? refreshToken,
-      expires: Date.now() + expiresIn * 1000,
-    };
-
-    // Kept in memory for this process only: OpenCode 2.x owns the credential
-    // store, so writing it back would drift from what OpenCode actually uses.
-    return refreshed;
-  })();
-
-  const settled = pending.finally(() => {
-    if (xaiRefreshPromise === settled) {
-      xaiRefreshPromise = null;
-    }
-  });
-  xaiRefreshPromise = settled;
-  return settled;
-};
-
-const getXaiAccessToken = async (entry: XaiAuthEntry): Promise<string> => {
-  if (!xaiAccessNeedsRefresh(entry)) return entry.access!;
-  return (await refreshXaiAuth(entry)).access!;
+  return access;
 };
 
 type XaiFixed32Field = { path: number[]; value: number; order: number };
@@ -835,6 +796,7 @@ export const listConfiguredQuotaProviders = async () => {
   const configured = new Set<string>();
   const openCodeGoAuth = normalizeAuthEntry(getAuthEntry(auth, ['opencode-go']));
   if (openCodeGoAuth && (typeof openCodeGoAuth.key === 'string' || typeof openCodeGoAuth.token === 'string')) configured.add('opencode-go');
+  if (openCodeGoConsoleCredential(auth)) configured.add('opencode-go');
   if (readCredential('ollama-cloud')) configured.add('ollama-cloud');
   if (readCredential('cursor')) configured.add('cursor');
   if (readCredential('exe-dev')) configured.add('exe-dev');
@@ -1692,9 +1654,11 @@ const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
   }
 };
 
-// Kimi's weekly `usage` block reports `used`; its rate-limit `limits[].detail`
-// blocks report `remaining` instead. Neither field is guaranteed present, so
-// derive usedPercent from whichever one the API actually returned.
+// The pre-ratio payload: one counted weekly `usage` block plus `limits[]`
+// rate-limit entries. Plans that have not migrated still answer this way. Its
+// `usage` block reports `used`; the `limits[].detail` blocks report `remaining`
+// instead. Neither field is guaranteed present, so derive usedPercent from
+// whichever one the API actually returned.
 const computeKimiUsedPercent = (
   total: number | null,
   used: number | null,
@@ -1710,9 +1674,112 @@ const computeKimiUsedPercent = (
   return null;
 };
 
+// The ratio-based `usages` block, in the order Kimi's own CLI renders it.
+// `limit_month_code` is not read: it is the code-typed share of
+// `limit_month_total`, not a second allowance, and a value label carrying it
+// would replace the monthly percent and stay a used figure when the panel shows
+// what remains. `limit_7d` arrives only on plans that still have a weekly
+// quota, and Kimi documents the client as rendering whichever entries are served.
+type KimiRatioWindow = { key: string; label: string; windowSeconds: number | null };
+
+const KIMI_RATIO_WINDOWS: KimiRatioWindow[] = [
+  { key: 'limit_5h', label: '5h', windowSeconds: 5 * 60 * 60 },
+  { key: 'limit_7d', label: 'weekly', windowSeconds: 7 * 24 * 60 * 60 },
+  { key: 'limit_month_total', label: 'monthly', windowSeconds: null },
+];
+
+// `used_ratio` is a 0-1 fraction. An entry without a finite ratio carries no
+// information, so it is skipped rather than shown as an unknown percentage.
+const toKimiRatioPercent = (entry: Record<string, unknown> | null): number | null => {
+  const ratio = toNumber(entry?.used_ratio);
+  return ratio === null ? null : Math.max(0, Math.min(100, ratio * 100));
+};
+
+const kimiRatioWindows = (usages: Record<string, unknown>) => {
+  const windows: Record<string, UsageWindow> = {};
+  for (const { key, label, windowSeconds } of KIMI_RATIO_WINDOWS) {
+    const entry = asObject(usages[key]);
+    if (!entry) continue;
+    const usedPercent = toKimiRatioPercent(entry);
+    if (usedPercent === null) continue;
+    windows[label] = toUsageWindow({
+      usedPercent,
+      windowSeconds,
+      resetAt: toTimestamp(entry.reset_time),
+    });
+  }
+  return windows;
+};
+
+const kimiLegacyWindows = (payload: Record<string, unknown> | null) => {
+  const windows: Record<string, UsageWindow> = {};
+  const usage = asObject(payload?.usage);
+  if (usage) {
+    windows.weekly = toUsageWindow({
+      usedPercent: computeKimiUsedPercent(toNumber(usage.limit), toNumber(usage.used), toNumber(usage.remaining)),
+      windowSeconds: null,
+      resetAt: toTimestamp(usage.resetTime),
+    });
+  }
+
+  const rawLimits = payload?.limits;
+  const limits = Array.isArray(rawLimits) ? rawLimits : [];
+  for (const raw of limits) {
+    const limit = asObject(raw);
+    const window = asObject(limit?.window);
+    const detail = asObject(limit?.detail);
+    const duration = toNumber(window?.duration) ?? undefined;
+    const timeUnit = asNonEmptyString(window?.timeUnit) ?? undefined;
+    const rawLabel = durationToLabel(duration, timeUnit);
+    const windowSeconds = durationToSeconds(duration, timeUnit);
+    const label = windowSeconds === 5 * 60 * 60 ? `Rate Limit (${rawLabel})` : rawLabel;
+    windows[label] = toUsageWindow({
+      usedPercent: computeKimiUsedPercent(toNumber(detail?.limit), toNumber(detail?.used), toNumber(detail?.remaining)),
+      windowSeconds,
+      resetAt: toTimestamp(detail?.resetTime),
+    });
+  }
+  return windows;
+};
+
 type KimiQuotaDependencies = {
   readAuth?: () => AuthFile | Promise<AuthFile>;
   fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+const MOONSHOT_BALANCE_URL = 'https://api.moonshot.ai/v1/users/me/balance';
+
+type MoonshotBalancePayload = {
+  data?: { available_balance?: number };
+};
+
+// Mirrors packages/web/server/lib/quota/providers/kimi.js: a pay-as-you-go Moonshot
+// platform key is refused by the Kimi Code usage address, so its balance is read instead.
+// Returns the credits_balance windows, or null when they cannot be read.
+const fetchMoonshotBalanceWindows = async (
+  apiKey: string,
+  fetchImpl: (url: string, options: RequestInit) => Promise<Response>,
+): Promise<Record<string, UsageWindow> | null> => {
+  try {
+    const response = await fetchImpl(MOONSHOT_BALANCE_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return null;
+    const balance = (await response.json() as MoonshotBalancePayload)?.data?.available_balance;
+    if (typeof balance !== 'number' || !Number.isFinite(balance)) return null;
+    return {
+      credits_balance: toUsageWindow({
+        usedPercent: null,
+        windowSeconds: null,
+        resetAt: null,
+        valueLabel: `$${formatMoney(balance)}`,
+      }),
+    };
+  } catch {
+    return null;
+  }
 };
 
 export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl = fetch }: KimiQuotaDependencies = {}): Promise<ProviderResult> => {
@@ -1738,6 +1805,18 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
     });
 
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        const balanceWindows = await fetchMoonshotBalanceWindows(apiKey, fetchImpl);
+        if (balanceWindows) {
+          return buildResult({
+            providerId: 'kimi-for-coding',
+            providerName: 'Kimi for Coding',
+            ok: true,
+            configured: true,
+            usage: { windows: balanceWindows },
+          });
+        }
+      }
       return buildResult({
         providerId: 'kimi-for-coding',
         providerName: 'Kimi for Coding',
@@ -1747,38 +1826,12 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
       });
     }
 
-    const payload = await response.json() as Record<string, unknown>;
-    const windows: Record<string, UsageWindow> = {};
-    const usage = payload.usage as Record<string, unknown> | undefined;
-    if (usage) {
-      const limit = toNumber(usage.limit);
-      const used = toNumber(usage.used);
-      const remaining = toNumber(usage.remaining);
-      const usedPercent = computeKimiUsedPercent(limit, used, remaining);
-      windows.weekly = toUsageWindow({
-        usedPercent,
-        windowSeconds: null,
-        resetAt: toTimestamp(usage.resetTime),
-      });
-    }
-
-    const limits = Array.isArray(payload.limits) ? payload.limits : [];
-    for (const limit of limits) {
-      const window = (limit as Record<string, unknown>)?.window as Record<string, unknown> | undefined;
-      const detail = (limit as Record<string, unknown>)?.detail as Record<string, unknown> | undefined;
-      const rawLabel = durationToLabel(window?.duration as number | undefined, window?.timeUnit as string | undefined);
-      const windowSeconds = durationToSeconds(window?.duration as number | undefined, window?.timeUnit as string | undefined);
-      const label = windowSeconds === 5 * 60 * 60 ? `Rate Limit (${rawLabel})` : rawLabel;
-      const total = toNumber(detail?.limit);
-      const used = toNumber(detail?.used);
-      const remaining = toNumber(detail?.remaining);
-      const usedPercent = computeKimiUsedPercent(total, used, remaining);
-      windows[label] = toUsageWindow({
-        usedPercent,
-        windowSeconds,
-        resetAt: toTimestamp(detail?.resetTime),
-      });
-    }
+    const payload = asObject(await response.json());
+    // Kimi replaced the counted payload with a ratio-based `usages` map. Its own
+    // client reads only `usages`, so when that block is present the `limits[]`
+    // entry for the same 5-hour window is a coarser duplicate and is not read.
+    const usages = asObject(payload?.usages);
+    const windows = usages ? kimiRatioWindows(usages) : kimiLegacyWindows(payload);
 
     return buildResult({
       providerId: 'kimi-for-coding',
@@ -3675,9 +3728,14 @@ export const fetchKiloQuota = async ({
   }
 };
 
-const fetchXaiQuota = async (): Promise<ProviderResult> => {
+type XaiQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+  fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+export const fetchXaiQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl = fetch }: XaiQuotaDependencies = {}): Promise<ProviderResult> => {
   try {
-    const entry = resolveXaiAuth(await readOpenCodeCredentials());
+    const entry = resolveXaiAuth(await readAuth());
     if (!entry) {
       return buildResult({
         providerId: 'xai',
@@ -3688,8 +3746,8 @@ const fetchXaiQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const accessToken = await getXaiAccessToken(entry);
-    const response = await fetch(XAI_USAGE_ENDPOINT, {
+    const accessToken = requireXaiAccessToken(entry);
+    const response = await fetchImpl(XAI_USAGE_ENDPOINT, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -3782,8 +3840,21 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
     case 'opencode-go': {
       try {
         deleteLegacyOpenCodeGoCredential();
-        const entry = normalizeAuthEntry(getAuthEntry(await readOpenCodeCredentials(), ['opencode-go']));
+        const auth = await readOpenCodeCredentials();
+        // A Console sign-in serves OpenCode Go once it exists; the
+        // `opencode-go` service key is the fallback for accounts without one,
+        // and for a Console read that fails (no Go in that org, an endpoint
+        // change, a hiccup).
+        const consoleCredential = openCodeGoConsoleCredential(auth);
+        const entry = normalizeAuthEntry(getAuthEntry(auth, ['opencode-go']));
         const apiKey = typeof entry?.key === 'string' ? entry.key : typeof entry?.token === 'string' ? entry.token : null;
+        if (consoleCredential) {
+          try {
+            return buildResult({ providerId, providerName: 'OpenCode Go', ok: true, configured: true, usage: { windows: await fetchOpenCodeGoUsage(consoleCredential) } });
+          } catch (consoleError) {
+            if (!apiKey) throw consoleError;
+          }
+        }
         if (!apiKey) return buildResult({ providerId, providerName: 'OpenCode Go', ok: false, configured: false, error: 'Not configured' });
         return buildResult({ providerId, providerName: 'OpenCode Go', ok: true, configured: true, usage: { windows: await fetchOpenCodeGoUsage({ apiKey }) } });
       } catch (error) {

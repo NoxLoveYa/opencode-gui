@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 
-import { noteSpaceModelAccess, resetSpaceModelAccess, spaceModelRefusal } from './space-model-access';
+import { noteSpaceModelAccess, resetSpaceModelAccess, spaceModelRefusal, stoppedSpaceOfTarget } from './space-model-access';
 import type { SpaceEntry } from './spaces-api';
 import { useSpacesStore } from './spaces-store';
 
@@ -11,6 +11,7 @@ const anthropic = { kind: 'model' as const, id: 'anthropic', provider: 'anthropi
 const running = (change: Partial<SpaceEntry> = {}): SpaceEntry => ({
   id: ID,
   name: 'Fix login',
+  placeId: 'docker',
   projectDirectory: '/home/me/app',
   projectFolder: { path: '/home/me/app', found: true },
   directory: DIRECTORY,
@@ -54,10 +55,27 @@ describe('spaceModelRefusal', () => {
     expect(spaceModelRefusal(session, 'anthropic')).toEqual({ spaceId: ID, providerId: 'anthropic', reason: 'not_granted' });
   });
 
-  test('never refuses a provider the grant dialog cannot give a key for', () => {
-    listed(running({ grants: [], access: null }));
+  test('never refuses a provider the grant dialog cannot give a key for, when the space can reach it', () => {
+    listed(running({ grants: [], access: null, network: { mode: 'open', domains: [] } }));
     expect(spaceModelRefusal(session, 'opencode')).toBeNull();
     expect(spaceModelRefusal(session, 'github-copilot')).toBeNull();
+    listed(running({ grants: [], access: null, network: { mode: 'allowlist', domains: ['opencode.ai'] } }));
+    expect(spaceModelRefusal(session, 'opencode')).toBeNull();
+  });
+
+  test("refuses OpenCode's own provider in a space that allows only chosen addresses without its name, while it is made and once it runs", () => {
+    const blocked = { spaceId: ID, providerId: 'opencode', reason: 'domain_blocked', domain: 'opencode.ai' };
+    noteSpaceModelAccess({ requestId: 'r1', directory: DIRECTORY }, ['anthropic']);
+    listed(running({ state: 'preparing', step: 'creating', grants: [], access: null }));
+    expect(spaceModelRefusal({ requestId: 'r1', directory: '/home/me/app' }, 'opencode')).toEqual(blocked);
+    listed(running());
+    expect(spaceModelRefusal(session, 'opencode')).toEqual(blocked);
+    // A provider whose address nobody knows is not refused by the network; a space not listed yet, or
+    // one whose network the host could not read, refuses nothing.
+    expect(spaceModelRefusal(session, 'github-copilot')).toBeNull();
+    expect(spaceModelRefusal({ requestId: null, directory: '/spaces/ffffffffffff/app' }, 'opencode')).toBeNull();
+    listed(running({ network: null }));
+    expect(spaceModelRefusal(session, 'opencode')).toBeNull();
   });
 
   test('refuses nothing without an answer: a list not read yet, or a gatekeeper that did not say', () => {
@@ -72,6 +90,23 @@ describe('spaceModelRefusal', () => {
     expect(spaceModelRefusal({ requestId: 'r1', directory: '/home/me/app' }, 'openai')).toEqual({ spaceId: ID, providerId: 'openai', reason: 'not_granted' });
     listed(running({ grants: [anthropic, { ...anthropic, id: 'openai', provider: 'openai' }] }));
     expect(spaceModelRefusal({ requestId: 'r1', directory: '/home/me/app' }, 'openai')).toBeNull();
+  });
+
+  test('a stopped space is named before any model is looked at; a running or unlisted one is not', () => {
+    expect(stoppedSpaceOfTarget(session)).toBeNull();
+    listed(running({ state: 'exited', stoppedIdle: true }));
+    expect(stoppedSpaceOfTarget(session)).toEqual({ spaceId: ID, reason: 'stopped', start: true });
+    // A draft still waiting on its creation request names the space by that request.
+    noteSpaceModelAccess({ requestId: 'r1', directory: DIRECTORY }, ['anthropic']);
+    expect(stoppedSpaceOfTarget({ requestId: 'r1', directory: '/home/me/app' })).toEqual({ spaceId: ID, reason: 'stopped', start: true });
+    expect(stoppedSpaceOfTarget({ requestId: null, directory: '/home/me/app' })).toBeNull();
+    // A stopped space whose gatekeeper is gone never starts again; a space whose container is gone can only be deleted.
+    listed(running({ state: 'exited', damage: 'gatekeeper_gone' }));
+    expect(stoppedSpaceOfTarget(session)).toEqual({ spaceId: ID, reason: 'stopped', start: false });
+    listed(running({ state: 'missing' }));
+    expect(stoppedSpaceOfTarget(session)).toEqual({ spaceId: ID, reason: 'gone', start: false });
+    listed(running());
+    expect(stoppedSpaceOfTarget(session)).toBeNull();
   });
 
   test('while the creation in this window is still giving access, what it chose decides', () => {

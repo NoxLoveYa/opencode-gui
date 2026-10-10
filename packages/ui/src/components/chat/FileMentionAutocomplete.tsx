@@ -2,6 +2,7 @@ import React from 'react';
 import { cn, truncatePathMiddle } from '@/lib/utils';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { filterVisibleAgents } from '@/stores/useAgentsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
@@ -23,6 +24,9 @@ import {
 } from './fileMentionResults';
 import { matchesRankQuery, rankByQuery } from '@/lib/search/fuzzySearch';
 import { AutocompleteRowTooltip } from './composer/ui/AutocompleteRowTooltip';
+
+/** Subagents listed before the user types; the rest are a keystroke away. */
+const AGENTS_SHOWN_WITHOUT_QUERY = 6;
 
 type FileInfo = ProjectFileSearchHit;
 type AgentInfo = {
@@ -71,10 +75,11 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
     ),
   );
   const { files: filesApi } = useRuntimeAPIs();
-  const removeOpenPathsByPrefix = useFilesViewTabsStore((state) => state.removeOpenPathsByPrefix);
+  const removeUnselectedOpenPath = useFilesViewTabsStore((state) => state.removeUnselectedOpenPath);
   const [staleRecentPaths, setStaleRecentPaths] = React.useState<ReadonlySet<string>>(() => new Set());
   const verifiedPathsRef = React.useRef<Set<string>>(new Set());
-  const getVisibleAgents = useConfigStore((state) => state.getVisibleAgents);
+  // Subscribed, not read once: the session's directory may still be loading its agents.
+  const configAgents = useConfigStore((state) => state.agents);
   const searchFiles = useFileSearchStore((state) => state.searchFiles);
   const debouncedQuery = useDebouncedValue(searchQuery, 180);
   const showHidden = useDirectoryShowHidden();
@@ -175,7 +180,7 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
               next.add(filePath);
               return next;
             });
-            removeOpenPathsByPrefix(projectRoot, filePath);
+            removeUnselectedOpenPath(projectRoot, filePath);
           }
         } catch (error) {
           if (cancelled) return;
@@ -187,7 +192,7 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
               next.add(filePath);
               return next;
             });
-            removeOpenPathsByPrefix(projectRoot, filePath);
+            removeUnselectedOpenPath(projectRoot, filePath);
           }
         }
       }),
@@ -196,10 +201,10 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
     return () => {
       cancelled = true;
     };
-  }, [filesApi, projectRoot, recentCandidatePathsKey, removeOpenPathsByPrefix]);
+  }, [filesApi, projectRoot, recentCandidatePathsKey, removeUnselectedOpenPath]);
 
   const visibleAgents = React.useMemo(
-    () => normalizedSearchQuery.length > 0 ? agents : agents.slice(0, 2),
+    () => normalizedSearchQuery.length > 0 ? agents : agents.slice(0, AGENTS_SHOWN_WITHOUT_QUERY),
     [agents, normalizedSearchQuery.length],
   );
   const visibleRecentFiles = React.useMemo(
@@ -335,8 +340,7 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
   }, [currentDirectory, debouncedQuery, searchFiles, showHidden, showGitignored]);
 
   React.useEffect(() => {
-    const visibleAgents = getVisibleAgents();
-    const subagents = visibleAgents
+    const subagents = filterVisibleAgents(configAgents)
       .filter((agent) => agent.mode && agent.mode !== 'primary')
       .map((agent) => ({
         name: agent.name,
@@ -346,7 +350,7 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     setAgents(rankByQuery(subagents, searchQuery ?? '', (agent) => [agent.name, agent.displayName, agent.description]));
-  }, [getVisibleAgents, searchQuery]);
+  }, [configAgents, searchQuery]);
 
   React.useEffect(() => {
     setSelectedIndex(0);
@@ -539,7 +543,7 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
                 </AutocompleteRowTooltip>
               );
             })}
-            {visibleAgents.length === 2 && normalizedSearchQuery.length === 0 && agents.length > 2 && (
+            {visibleAgents.length < agents.length && (
               <div className="px-3 py-1 typography-meta text-muted-foreground">
                 {t('chat.fileMentionAutocomplete.searchMoreAgents')}
               </div>
