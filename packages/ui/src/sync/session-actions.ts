@@ -3,7 +3,7 @@
  * Replaces the action methods from the old useSessionStore.
  */
 
-import type { FilePart, FormRequest, JsonValue, Message, Metadata, ModelRef, Part, PermissionRequest, Session, SyntheticMessage, TextPart, UserMessage } from "@/lib/opencode/model"
+import type { FilePart, FormRequest, JsonValue, Message, Metadata, ModelSelection, Part, PermissionRequest, Session, SyntheticMessage, TextPart, UserMessage } from "@/lib/opencode/model"
 import { compact, partIds } from "@/lib/opencode/model"
 import { readSubagentRun } from "@/lib/opencode/subagent-run"
 import { readDispatchedSessionResult } from "@/lib/opencode/dispatched-session"
@@ -17,6 +17,7 @@ import { toJsonRecord } from "@/lib/opencode/json"
 import { ascendingId } from "@/lib/opencode/ids"
 import { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useConfigStore } from "@/stores/useConfigStore"
+import { waitForOpenCodeStartup } from "./opencode-startup-gate"
 import { registerSessionDirectory } from "./sync-refs"
 import { useGlobalSessionStatusStore } from "./global-session-status"
 import { recordSendFailure } from "./send-failure-log"
@@ -383,6 +384,9 @@ const CONNECTION_PROBE_MS = 500
 const RELAY_CONNECTION_GRACE_MS = 3000
 const RELAY_CONNECTION_PROBE_MS = 3000
 export async function waitForConnectionOrThrow(): Promise<void> {
+  // Before the page's first connection, wait for OpenCode to start instead of
+  // failing after the short reconnect grace below.
+  await waitForOpenCodeStartup()
   const relayed = isRelayModeActive()
   const deadline = Date.now() + (relayed ? RELAY_CONNECTION_GRACE_MS : CONNECTION_GRACE_MS)
   const probeMs = relayed ? RELAY_CONNECTION_PROBE_MS : CONNECTION_PROBE_MS
@@ -511,6 +515,25 @@ async function fetchSessionMessages(sessionId: string, directory?: string | null
 }
 
 /**
+ * Finds one message by id, following the cursor until it appears or the
+ * history runs out. The local store holds only the newest page, so a revert
+ * target older than that must be searched for across pages, not assumed gone.
+ */
+async function findSessionMessageById(sessionId: string, messageId: string, directory?: string | null): Promise<Message | null> {
+  const seenCursors = new Set<string>()
+  let cursor: string | undefined
+  for (;;) {
+    const page = await opencodeClient.getSessionMessages(sessionId, cursor ? { cursor } : undefined, directory)
+    const found = page.items.map(({ info }) => info).find((message) => message.id === messageId)
+    if (found) return found
+    const next = page.cursor.next
+    if (!next || seenCursors.has(next)) return null
+    seenCursors.add(next)
+    cursor = next
+  }
+}
+
+/**
  * From when descendants are reverted along with a cut at `target`. A subagent
  * run's report lands after its child already worked, so reverting the run
  * reverts the child from its start; any other target cuts at its own time.
@@ -538,27 +561,6 @@ async function cascadeRevertToDescendants(rootId: string, cutoff: number): Promi
       console.error(`[session-actions] Failed to cascade revert to descendant ${session.id}:`, error)
     }
   }
-}
-
-/**
- * Finalizes a staged revert: the hidden messages are deleted for good, in the
- * session and in every descendant that was staged alongside it.
- */
-export async function commitStagedRevert(sessionId: string): Promise<void> {
-  const { directory } = dirStoreForSession(sessionId)
-  for (const descendant of getDescendantSessions(sessionId)) {
-    if (!descendant.session.revert) continue
-    try {
-      await opencodeClient.commitRevert(descendant.session.id, descendant.directory)
-      mirrorSessionIntoLiveStores(await opencodeClient.getSession(descendant.session.id, descendant.directory), descendant.directory)
-    } catch (error) {
-      console.error(`[session-actions] Failed to commit revert in descendant ${descendant.session.id}:`, error)
-    }
-  }
-  await opencodeClient.commitRevert(sessionId, directory)
-  mirrorSessionIntoLiveStores(await opencodeClient.getSession(sessionId, directory), directory)
-  await refetchSessionMessages(sessionId)
-  if (directory) sessionEvents.requestGitRefresh({ directory })
 }
 
 /** Cancels a staged revert: the hidden messages come back, in descendants too. */
@@ -989,7 +991,7 @@ function getRequestReplyDirectory(
  * what the first turn will run on pass it here, so the session is created on
  * that selection and the first prompt needs no switch at all.
  */
-export type SessionCreateSelection = { model?: ModelRef; agent?: string }
+export type SessionCreateSelection = { model?: ModelSelection; agent?: string }
 
 export async function createSession(
   title?: string,
@@ -1937,6 +1939,13 @@ export async function optimisticSend(input: {
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   /** Context admitted ahead of the prompt; shown in the optimistic message until the server echoes it. */
   context?: SyntheticContextInput[]
+  /**
+   * Context still being fetched, admitted ahead of `context` once it resolves
+   * (the session's project knowledge). The user message is inserted without
+   * waiting for it; only the request waits. Must not reject: it resolves to
+   * null when there is nothing to add.
+   */
+  leadingContext?: Promise<SyntheticContextInput | null>
   appendSubmissions?: () => void
   onOptimisticInsert?: () => void
   onMessageID?: (messageID: string) => void
@@ -2003,6 +2012,9 @@ export async function optimisticSend(input: {
 
   // Context ids come first so they sort before the prompt the way the server
   // admits them. The client skips blank items, so they get no record here.
+  // The leading item's id is reserved now, before it is known, so it still
+  // sorts ahead of everything else when it arrives after the insert.
+  const leadingContextID = input.leadingContext ? ascendingId("msg") : null
   const context = (input.context ?? [])
     .filter((item) => item.text.trim())
     .map((item) => ({ ...item, id: ascendingId("msg") }))
@@ -2045,7 +2057,7 @@ export async function optimisticSend(input: {
   // Insert into store + register in shadow Map (for mergeOptimisticPage cleanup).
   // The context records carry the prompt's timestamp, so the timeline folds
   // them onto the prompt from the first frame.
-  for (const item of context) {
+  const addSyntheticContext = (item: SyntheticContextInput & { id: string }) => {
     const synthetic: SyntheticMessage = compact({
       id: item.id,
       role: "synthetic",
@@ -2057,6 +2069,7 @@ export async function optimisticSend(input: {
     })
     optimisticAdd({ sessionID: input.sessionId, directory: targetDirectory, message: synthetic, parts: [] })
   }
+  for (const item of context) addSyntheticContext(item)
   optimisticAdd({
     sessionID: input.sessionId,
     directory: targetDirectory,
@@ -2075,8 +2088,18 @@ export async function optimisticSend(input: {
   })
 
   try {
+    let sentContext = context
+    if (input.leadingContext && leadingContextID) {
+      const leading = await input.leadingContext
+      if (leading?.text.trim()) {
+        const leadingItem = { ...leading, id: leadingContextID }
+        addSyntheticContext(leadingItem)
+        optimisticIDs.unshift(leadingContextID)
+        sentContext = [leadingItem, ...context]
+      }
+    }
     assertRuntimeUnchanged()
-    await input.send(messageID, context)
+    await input.send(messageID, sentContext)
   } catch (error) {
     const status = getErrorStatus(error)
     const ambiguousFailure = isAmbiguousSendFailure(error)
@@ -2483,7 +2506,7 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
 
   const localTarget = state.message[sessionId]?.find((message) => message.id === messageId)
   const targetMessage = localTarget
-    ?? (await fetchSessionMessages(sessionId, directory)).find((message) => message.id === messageId)
+    ?? (await findSessionMessageById(sessionId, messageId, directory))
   if (!targetMessage) throw new Error(`Cannot revert session: message ${messageId} was not found`)
 
   // Abort if busy before mutating session state

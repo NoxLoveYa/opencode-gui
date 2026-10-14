@@ -11,6 +11,9 @@ let formReplyError: unknown | null = null
 let formCancelError: unknown | null = null
 let permissionReplyError: unknown | null = null
 const sessionMessageRecords = new Map<string, Array<{ info: Message; parts: Part[] }>>()
+// Optional cursor pages for getSessionMessages: the request's cursor selects
+// the page by index, so a paged lookup can be pinned without the flat records.
+let cursorMessagePages: Array<{ items: Array<{ info: Message; parts: Part[] }>; cursor: { next?: string } }> | null = null
 const sessionRecords = new Map<string, Session>()
 const failingRevertSessionIds = new Set<string>()
 let sessionDeleteError: unknown | null = null
@@ -69,7 +72,9 @@ mock.module("@/lib/opencode/client", () => ({
       options?: { limit?: number; cursor?: string },
       directory?: string | null,
     ) => {
-      replyCalls.push({ method: "session.messages", params: { sessionID: sessionId, directory, limit: options?.limit } })
+      replyCalls.push({ method: "session.messages", params: { sessionID: sessionId, directory, limit: options?.limit, cursor: options?.cursor } })
+      const page = cursorMessagePages ? cursorMessagePages[Number(options?.cursor ?? "0")] : undefined
+      if (page) return page
       return { items: sessionMessageRecords.get(sessionId) ?? [], cursor: {} }
     }),
     createSession: mock(async (params: Record<string, unknown>, directory?: string | null): Promise<Session> => {
@@ -109,9 +114,6 @@ mock.module("@/lib/opencode/client", () => ({
       const record = sessionRecords.get(sessionId)
       sessionRecords.set(sessionId, { ...(record ?? sessionFixture(sessionId)), revert: { messageID: messageId } })
       return { messageID: messageId }
-    }),
-    commitRevert: mock(async (sessionId: string, directory?: string | null) => {
-      replyCalls.push({ method: "session.revert.commit", params: { sessionID: sessionId, directory } })
     }),
     forkSession: mock(async (
       sessionId: string,
@@ -1594,6 +1596,82 @@ describe("optimisticSend target directory", () => {
     expect(removed).toEqual(ids)
   })
 
+  test("shows the prompt before late leading context resolves and admits that context first", async () => {
+    const targetStore = createStore({})
+    const childStores = createChildStores([["/target/project", targetStore]])
+    const added: Message[] = []
+    const removed: string[] = []
+    let sent: { messageID: string; contextIDs: Array<string | undefined>; texts: string[] } | null = null
+    let resolveLeading: (value: { text: string } | null) => void = () => {}
+    const leadingContext = new Promise<{ text: string } | null>((resolve) => { resolveLeading = resolve })
+
+    const { optimisticSend, setActionRefs, setOptimisticRefs } = await import("./session-actions")
+    setActionRefs(childStores, () => "/target/project")
+    setOptimisticRefs(
+      (input) => {
+        added.push(input.message)
+      },
+      (input) => {
+        removed.push(input.messageID)
+      },
+    )
+
+    const sending = optimisticSend({
+      sessionId: "session-leading",
+      directory: "/target/project",
+      content: "hello",
+      context: [{ text: "quoted" }],
+      leadingContext,
+      send: async (messageID, context) => {
+        sent = { messageID, contextIDs: context.map((item) => item.id), texts: context.map((item) => item.text) }
+        throw new Error("rejected")
+      },
+    })
+    for (let tick = 0; tick < 50 && !added.some((message) => message.role === "user"); tick += 1) {
+      await Promise.resolve()
+    }
+
+    // The bubble is on screen while the knowledge is still on its way, and
+    // nothing has been sent without it.
+    expect(added.map((message) => message.role)).toEqual(["synthetic", "user"])
+    expect(sent).toBe(null)
+
+    resolveLeading({ text: "pinned knowledge" })
+    await expect(sending).rejects.toThrow("rejected")
+
+    expect(added.map((message) => message.role)).toEqual(["synthetic", "user", "synthetic"])
+    const [quoted, prompt, leading] = added.map((message) => message.id)
+    // Reserved before the other ids, so it still sorts first.
+    expect(leading < quoted && quoted < prompt).toBe(true)
+    expect(sent).toEqual({ messageID: prompt, contextIDs: [leading, quoted], texts: ["pinned knowledge", "quoted"] })
+    // A rejected send leaves no optimistic record behind, the late one included.
+    expect([...removed].sort()).toEqual([leading, quoted, prompt])
+  })
+
+  test("sends without a leading record when the late context is empty", async () => {
+    const targetStore = createStore({})
+    const childStores = createChildStores([["/target/project", targetStore]])
+    const added: Message[] = []
+    let sentContext: string[] | null = null
+
+    const { optimisticSend, setActionRefs, setOptimisticRefs } = await import("./session-actions")
+    setActionRefs(childStores, () => "/target/project")
+    setOptimisticRefs((input) => { added.push(input.message) }, () => {})
+
+    await optimisticSend({
+      sessionId: "session-leading-empty",
+      directory: "/target/project",
+      content: "hello",
+      leadingContext: Promise.resolve(null),
+      send: async (_messageID, context) => {
+        sentContext = context.map((item) => item.text)
+      },
+    })
+
+    expect(added.map((message) => message.role)).toEqual(["user"])
+    expect(sentContext).toEqual([])
+  })
+
   test("runs appendSubmissions once for an ambiguous confirmation", async () => {
     const targetStore = createStore({})
     const childStores = createChildStores([["/target/project", targetStore]])
@@ -2563,6 +2641,51 @@ describe("revertToMessage passes session directory", () => {
       "idle-child",
       "root",
     ])
+  })
+})
+
+describe("revertToMessage paged message lookup", () => {
+  beforeEach(() => {
+    replyCalls.length = 0
+    sessionMessageRecords.clear()
+    sessionRecords.clear()
+    failingRevertSessionIds.clear()
+    cursorMessagePages = null
+    Object.assign(inputState, {
+      pendingInputText: "",
+      pendingInputMode: "replace",
+      attachedFiles: [],
+    })
+  })
+
+  test("stages the revert when the target message is only on a later page", async () => {
+    const session = sessionFixture("session-a")
+    sessionRecords.set(session.id, session)
+    const newer: Message = { id: "msg_newer", sessionID: "session-a", role: "user", time: { created: 3 } }
+    const older: Message = { id: "msg_old", sessionID: "session-a", role: "user", time: { created: 1 } }
+    const sessionStore = createStore({}, {
+      session: [session],
+      message: { "session-a": [newer] },
+      part: {},
+    })
+    const currentStore = createStore({})
+    const childStores = createChildStores([
+      ["/test/project", sessionStore],
+      ["/current/project", currentStore],
+    ])
+    // The local store holds only the newest page; the target sits behind a cursor.
+    cursorMessagePages = [
+      { items: [{ info: newer, parts: [] }], cursor: { next: "1" } },
+      { items: [{ info: older, parts: [] }], cursor: {} },
+    ]
+    const { setActionRefs, revertToMessage } = await import("./session-actions")
+    setActionRefs(childStores, () => "/current/project")
+
+    await revertToMessage("session-a", "msg_old")
+
+    expect(replyCalls.find((call) => call.method === "session.revert.stage")?.params.messageID).toBe("msg_old")
+    expect(sessionStore.getState().session[0]?.revert?.messageID).toBe("msg_old")
+    expect(replyCalls.filter((call) => call.method === "session.messages")).toHaveLength(2)
   })
 })
 

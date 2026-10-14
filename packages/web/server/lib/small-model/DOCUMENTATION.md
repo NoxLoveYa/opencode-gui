@@ -20,9 +20,10 @@ credentials, the provider dispatch and the token refresh. Routes live under
   Also caches the model list for 30 seconds — a generation needs the model's
   context and output limits, and a round trip per session title is the wrong
   trade. An unreachable OpenCode keeps the previous answer rather than
-  retracting it.
+  retracting it. An empty list is never cached: OpenCode 2 answers with one
+  while it starts, and caching it hid every provider from the pickers.
 - `index.js` — `generateSmallModelText()`, `describeSmallModel()`,
-  `listAuthenticatedProviders()`.
+  `listAuthenticatedProviders(directory?)`.
 - `routes.js` — `GET /api/small-model` (resolution preview) and
   `POST /api/small-model/generate` (`{ prompt, system?, maxOutputTokens?,
   model?, directory? }` → `{ text, providerID, modelID, source }`).
@@ -172,23 +173,37 @@ capability is not knowable before the call, and callers must read `null` as
 
 ## Which providers the pickers may offer
 
-`listAuthenticatedProviders()` answers one question for the Small Model and
+`listAuthenticatedProviders(directory)` answers one question for the Small Model and
 Changes Walkthrough pickers: which providers OpenCode can call right now. A
 provider counts when it has at least one enabled model in `GET /api/model` —
-the same test OpenCode applies before letting a chat turn use it.
+the same test OpenCode applies before letting a chat turn use it. The model
+list is directory-scoped, so `directory` scopes this answer the same way
+`describeSmallModel` scopes its own; without one the server default applies,
+and a default directory with no model config would report no providers for
+models that work perfectly in the user's project.
 
 `GET /api/provider` only contributes names. It comes back empty on setups where
 models are perfectly usable, so an empty provider list is never read as "no
 providers". Claude Code is removed from the result for the reason above.
 
-The field is served as `authenticatedProviders` on `GET /api/small-model`. The
-name predates this resolution; it now means "callable".
+The field is served as `authenticatedProviders` on `GET /api/small-model`, and
+the route forwards its `?directory=` query to both halves of the answer. The
+Settings pickers send the current directory with the request, so the list
+matches what the user sees in chat for that project. The name predates this
+resolution; it now means "callable".
 
 ## describeSmallModel
 
 Reports which model would be used without calling it: `providerID`, `modelID`,
 `source`, plus `inputCharBudget`, `contextTokens`, `contextKnown`,
-`outputTokens`, `outputTokenLimit`, `structuredOutput` and `hasLogin`.
+`outputTokens`, `outputTokenLimit`, `structuredOutput`, `hasLogin` and
+`localEndpoint`.
+
+`localEndpoint` is `true` when the model's `settings.baseURL` (as OpenCode
+reports it on `GET /api/model`) points at loopback, a private or CGNAT
+(Tailscale) address, or a LAN-style host name: single-label, `.local`, `.lan`,
+`.internal`, `.home.arpa`, `.localhost`. A model without an endpoint is not
+local. Session assist uses it to keep background calls off a local chat model.
 
 `hasLogin` is `false` when OpenCode lists the model as disabled — a settings
 override can name a model there is no credential for, and the walkthrough

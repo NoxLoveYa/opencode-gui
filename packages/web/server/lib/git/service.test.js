@@ -9,6 +9,7 @@ import { loadSourceSections, parseSource, sourceKey } from '../walkthrough/sourc
 import { registerGitRoutes } from './routes.js';
 import { isUserAction } from '../environment/refresh-scope.js';
 import { normalizeGitOutputPath } from './output-path.js';
+import { configureProjectStartCommandSource } from '../opencode/project-start-command.js';
 
 import {
   configureGitEnvironment,
@@ -203,6 +204,23 @@ describe('getLog on a repository with no commits yet', () => {
     await git.commit('first');
     const history = await getLog(tmpDir, { maxCount: 25 });
     expect(history.all.map((entry) => entry.message)).toEqual(['first']);
+  });
+});
+
+describe('getLog with a base', () => {
+  it('lists only the commits the target adds, never what the base gained since', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    await git.commit('one', { '--allow-empty': null });
+    await git.raw(['branch', 'feature']);
+    await git.commit('main moved on', { '--allow-empty': null });
+    await git.checkout('feature');
+    await git.commit('feature work', { '--allow-empty': null });
+
+    const branchOnly = await getLog(tmpDir, { from: 'main', to: 'HEAD', maxCount: 25 });
+    expect(branchOnly.all.map((entry) => entry.message)).toEqual(['feature work']);
+    // A checkout behind the base adds nothing.
+    const behind = await getLog(tmpDir, { from: 'feature', to: 'main~1', maxCount: 25 });
+    expect(behind.all).toEqual([]);
   });
 });
 
@@ -742,6 +760,55 @@ describe.runIf(canRunGit())('untracked diffs', () => {
   });
 });
 
+// An external diff configured in git (difftastic via diff.external, or
+// GIT_EXTERNAL_DIFF in the session environment) replaces patch text with its own
+// format. The UI parses patches as unified diffs, so patch-producing calls must
+// always use git's internal diff machinery.
+describe.runIf(canRunGit())('diff output with diff.external configured', () => {
+  // `echo` runs on every platform's shell and its output is never a unified diff.
+  // simple-git's safety plugin refuses to configure diff.external, so the fixture
+  // writes it through runGit like any other local git config.
+  const useFakeExternalDiff = (tmpDir) => runGit(tmpDir, ['config', 'diff.external', 'echo EXTERNAL-DIFF-OUTPUT']);
+
+  it('returns a unified working-tree diff the UI parser can split', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    useFakeExternalDiff(tmpDir);
+    await git.commit('one', { '--allow-empty': null });
+    await writeFile(tmpDir, 'file.txt', ORIGINAL_FILE);
+    await git.add('file.txt');
+    await git.commit('Initial');
+    await writeFile(tmpDir, 'file.txt', EDITED_FILE);
+
+    const diff = await getDiff(tmpDir, { path: 'file.txt' });
+    expect(diff).toContain('diff --git');
+    expect(diff).not.toContain('EXTERNAL-DIFF-OUTPUT');
+    // ORIGINAL_FILE and EDITED_FILE change line 1 and line 20: two hunks. The
+    // point is that the parser sees hunks at all — difftastic-format text splits to zero.
+    expect(splitHunks(diff)).toHaveLength(2);
+  });
+
+  it('keeps untracked-file and range diffs unified', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    useFakeExternalDiff(tmpDir);
+    await git.commit('one', { '--allow-empty': null });
+    await git.raw(['branch', 'base-branch']);
+    await writeFile(tmpDir, 'file.txt', 'changed\n');
+    await git.add('file.txt');
+    await git.commit('two');
+    await git.raw(['branch', 'head-branch']);
+    await writeFile(tmpDir, 'new.txt', 'untracked\n');
+
+    const [untracked] = await getUntrackedDiffs(tmpDir, ['new.txt']);
+    expect(untracked).toContain('@@');
+    expect(untracked).not.toContain('EXTERNAL-DIFF-OUTPUT');
+
+    const range = await getRangeDiff(tmpDir, { base: 'base-branch', head: 'head-branch' });
+    expect(range).toContain('diff --git');
+    expect(range).toContain('@@');
+    expect(range).not.toContain('EXTERNAL-DIFF-OUTPUT');
+  });
+});
+
 describe('symlink diffs', () => {
   it('treats an untracked directory symlink as a link in patch and split diffs', async () => {
     if (!canRunGit() || process.platform === 'win32') return;
@@ -945,6 +1012,14 @@ describe('getStatus', () => {
     await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 0, aheadBase: 'origin/main' });
 
     runGit(repo, ['commit', '--allow-empty', '-m', 'Unpublished work']);
+    await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 1, aheadBase: 'origin/main' });
+
+    // A contributor's PR head fetched as a fork remote-tracking branch is
+    // already published, though the branch tracks nothing.
+    runGit(repo, ['update-ref', 'refs/remotes/pr-fork/feature', 'HEAD']);
+    await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 0, aheadBase: 'origin/main' });
+
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Work after checkout']);
     await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 1, aheadBase: 'origin/main' });
   });
 
@@ -1596,6 +1671,55 @@ describe('createWorktree', () => {
     }
   });
 
+  it('runs the start command OpenCode keeps for the project in the new worktree', async () => {
+    if (!canRunGit()) return;
+
+    // The project is a subfolder of the repository: the read goes to that
+    // folder, which OpenCode already serves, and the command runs at the root
+    // of the new worktree.
+    const repo = createTempDir();
+    const projectFolder = path.join(repo, 'app');
+    fs.mkdirSync(projectFolder);
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(projectFolder, 'README.md'), '# Test\n');
+    runGit(repo, ['add', 'app/README.md']);
+    runGit(repo, ['commit', '-m', 'Initial commit']);
+
+    const previousXdgDataHome = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = createTempDir();
+    const askedFor = [];
+    const markerScript = path.join(createTempDir(), 'project-start.cjs');
+    fs.writeFileSync(markerScript, "require('node:fs').writeFileSync('START_RAN', process.cwd());\n");
+    configureProjectStartCommandSource({
+      read: async (directory) => {
+        askedFor.push(directory);
+        return `${JSON.stringify(process.execPath)} ${JSON.stringify(markerScript)}`;
+      },
+    });
+
+    try {
+      const created = await createWorktree(projectFolder, {
+        mode: 'new',
+        branchName: 'feature/project-start',
+        worktreeName: 'project-start',
+        returnAfterDirectoryCreated: true,
+      });
+
+      await expect.poll(
+        async () => (await getWorktreeBootstrapStatus(created.path)).phase,
+        { timeout: 5_000 },
+      ).toBe('setup-ready');
+      expect(fs.readFileSync(path.join(created.path, 'START_RAN'), 'utf8')).toBe(fs.realpathSync(created.path));
+      expect(askedFor.map((directory) => fs.realpathSync(directory))).toEqual([fs.realpathSync(projectFolder)]);
+    } finally {
+      configureProjectStartCommandSource(null);
+      if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previousXdgDataHome;
+    }
+  });
+
   it('does not report Git-ready when checkout hydration is incomplete', async () => {
     if (!canRunGit()) return;
     const repo = createTempDir();
@@ -2088,20 +2212,21 @@ describe('createWorktree', () => {
     }
   }, 30_000);
 
-  describe('from a local base branch', () => {
-    const withDataHome = async (run) => {
-      const previousXdgDataHome = process.env.XDG_DATA_HOME;
-      process.env.XDG_DATA_HOME = createTempDir();
-      try {
-        await run();
-      } finally {
-        if (previousXdgDataHome === undefined) {
-          delete process.env.XDG_DATA_HOME;
-        } else {
-          process.env.XDG_DATA_HOME = previousXdgDataHome;
-        }
+  const withDataHome = async (run) => {
+    const previousXdgDataHome = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = createTempDir();
+    try {
+      await run();
+    } finally {
+      if (previousXdgDataHome === undefined) {
+        delete process.env.XDG_DATA_HOME;
+      } else {
+        process.env.XDG_DATA_HOME = previousXdgDataHome;
       }
-    };
+    }
+  };
+
+  describe('from a local base branch', () => {
 
     // The repository sits on `next` with a local `main` tracking origin/main;
     // a teammate then pushes one commit to main that was never pulled.
@@ -2179,6 +2304,71 @@ describe('createWorktree', () => {
       });
     }, 30_000);
   });
+
+  // A collaborator pushes straight to the remote; the repository never
+  // fetches, so the branch list offers `remotes/origin/collab` with no local ref.
+  const pushCollaboratorBranch = (remote) => {
+    const collaborator = createTempDir();
+    runGit(collaborator, ['clone', remote, '.']);
+    runGit(collaborator, ['config', 'user.email', 'test@example.com']);
+    runGit(collaborator, ['config', 'user.name', 'Test']);
+    runGit(collaborator, ['checkout', '-b', 'collab']);
+    fs.writeFileSync(path.join(collaborator, 'collab.txt'), 'collab\n');
+    runGit(collaborator, ['add', 'collab.txt']);
+    runGit(collaborator, ['commit', '-m', 'collab']);
+    runGit(collaborator, ['push', 'origin', 'collab']);
+    return runGit(collaborator, ['rev-parse', 'HEAD']).trim();
+  };
+
+  it('fetches a never-fetched remote branch for an existing-branch worktree', async () => {
+    if (!canRunGit()) return;
+    await withDataHome(async () => {
+      const { repository, remote } = createRepositoryWithRemote();
+      const collabHead = pushCollaboratorBranch(remote);
+      const input = { mode: 'existing', existingBranch: 'remotes/origin/collab', worktreeName: 'collab-wt' };
+
+      const validation = await validateWorktreeCreate(repository, input);
+      expect(validation.errors).toEqual([]);
+
+      const created = await createWorktree(repository, input);
+      expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(collabHead);
+      expect(runGit(created.path, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe('collab');
+    });
+  }, 30_000);
+
+  it('fetches a never-fetched remote start ref for a new-branch worktree', async () => {
+    if (!canRunGit()) return;
+    await withDataHome(async () => {
+      const { repository, remote } = createRepositoryWithRemote();
+      const collabHead = pushCollaboratorBranch(remote);
+      const input = {
+        mode: 'new',
+        branchName: 'openchamber/from-collab',
+        worktreeName: 'from-collab',
+        startRef: 'remotes/origin/collab',
+      };
+
+      const validation = await validateWorktreeCreate(repository, input);
+      expect(validation.errors).toEqual([]);
+
+      const created = await createWorktree(repository, input);
+      expect(runGit(created.path, ['rev-parse', 'HEAD']).trim()).toBe(collabHead);
+    });
+  }, 30_000);
+
+  it('reports a remote branch that cannot be fetched as not found', async () => {
+    if (!canRunGit()) return;
+    await withDataHome(async () => {
+      const { repository } = createRepositoryWithRemote();
+      const validation = await validateWorktreeCreate(repository, {
+        mode: 'existing',
+        existingBranch: 'remotes/origin/never-pushed',
+        worktreeName: 'never-pushed-wt',
+      });
+      expect(validation.ok).toBe(false);
+      expect(validation.errors.some((error) => /Remote branch not found/.test(error.message))).toBe(true);
+    });
+  }, 30_000);
 
   it('rejects creation from a remote start ref that was never fetched and cannot be fetched', async () => {
     if (!canRunGit()) return;
@@ -4981,6 +5171,9 @@ describe.runIf(canRunGit())('Git revision arguments', () => {
   });
 });
 
+// The file list without the per-file revision, which carries timestamps.
+const listed = (files) => files.map(({ path: filePath, status }) => ({ path: filePath, status }));
+
 describe.runIf(canRunGit())('getRangeDiff', () => {
   it('loads a committed deletion that no longer exists in HEAD or the working tree', async () => {
     const { repository } = createRepositoryWithRemote();
@@ -5012,7 +5205,7 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
       await routes.get(`/api/git/${endpoint}`)({ query }, response);
       expect(status).toBe(200);
       if (endpoint === 'range-diff') expect(body.diff).toContain('+current local work');
-      else expect(body.files).toEqual([{ path: 'local.txt', status: 'A' }]);
+      else expect(listed(body.files)).toEqual([{ path: 'local.txt', status: 'A' }]);
     }
   });
 
@@ -5040,7 +5233,7 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     expect(await getBranchBase(repository, 'child')).toEqual({ base: null });
     fs.writeFileSync(path.join(repository, 'child.txt'), 'current child\n');
     const options = { base: 'refs/heads/parent', head: 'child', includeWorkingTree: true };
-    expect(await getRangeFiles(repository, options)).toEqual([{ path: 'child.txt', status: 'A' }]);
+    expect(listed(await getRangeFiles(repository, options))).toEqual([{ path: 'child.txt', status: 'A' }]);
     const diff = await getRangeDiff(repository, options);
     expect(diff).toContain('+current child');
     expect(diff).not.toContain('parent.txt');
@@ -5067,7 +5260,7 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     expect(diff).not.toContain('+# Committed');
     expect(diff).toContain('+new local file');
     expect(diff).toContain('+staged only');
-    expect(await getRangeFiles(repository, options)).toEqual(expect.arrayContaining([
+    expect(listed(await getRangeFiles(repository, options))).toEqual(expect.arrayContaining([
       { path: 'README.md', status: 'M' },
       { path: 'staged.txt', status: 'A' },
       { path: 'untracked.txt', status: 'A' },
@@ -5089,14 +5282,43 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     runGit(repository, ['rm', 'README.md']);
     fs.writeFileSync(path.join(repository, 'README.md'), '# Recreated\n');
     const options = { base: 'origin/react', head: 'next', includeWorkingTree: true };
-    expect(await getRangeFiles(repository, options)).toEqual([{ path: 'README.md', status: 'M' }]);
+    expect(listed(await getRangeFiles(repository, options))).toEqual([{ path: 'README.md', status: 'M' }]);
     const diff = await getRangeDiff(repository, options);
     expect(diff).toContain('-# Test');
     expect(diff).toContain('+# Recreated');
     expect(diff.match(/diff --git/g)).toHaveLength(1);
     fs.writeFileSync(path.join(repository, 'README.md'), '# Test\n');
-    expect(await getRangeFiles(repository, options)).toEqual([]);
+    expect(listed(await getRangeFiles(repository, options))).toEqual([]);
     expect(await getRangeDiff(repository, options)).toBe('');
+  });
+
+  it('gives each working-tree file a revision that moves only when its patch can change', async () => {
+    const { repository } = createRepositoryWithRemote();
+    runGit(repository, ['branch', 'react']);
+    fs.writeFileSync(path.join(repository, 'a.txt'), 'one\n');
+    fs.writeFileSync(path.join(repository, 'b.txt'), 'two\n');
+    const options = { base: 'react', head: 'next', includeWorkingTree: true };
+    const revisions = async () => Object.fromEntries((await getRangeFiles(repository, options)).map((file) => [file.path, file.revision]));
+
+    const first = await revisions();
+    expect(await revisions()).toEqual(first);
+
+    // Same size, same line counts: only the write itself tells the patch apart.
+    fs.writeFileSync(path.join(repository, 'a.txt'), 'uno\n');
+    const edited = await revisions();
+    expect(edited['a.txt']).not.toBe(first['a.txt']);
+    expect(edited['b.txt']).toBe(first['b.txt']);
+
+    // A commit that keeps the content keeps the patch against the merge base.
+    runGit(repository, ['add', 'a.txt']);
+    runGit(repository, ['commit', '-m', 'a']);
+    expect(await revisions()).toEqual(edited);
+
+    // The base moving to that commit changes the merge base, so every patch.
+    runGit(repository, ['branch', '-f', 'react', 'HEAD']);
+    const moved = await revisions();
+    expect(moved['a.txt']).toBeUndefined();
+    expect(moved['b.txt']).not.toBe(edited['b.txt']);
   });
 
   it('keeps local and remote bases distinct and rejects a different checked-out branch', async () => {
@@ -5113,7 +5335,7 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     expect(local).not.toContain('parent.txt');
     expect(remote).toContain('parent.txt');
     expect(local).toContain('child.txt');
-    expect(await getRangeFiles(repository, { ...options, base: 'react' })).toEqual([{ path: 'child.txt', status: 'A' }]);
+    expect(listed(await getRangeFiles(repository, { ...options, base: 'react' }))).toEqual([{ path: 'child.txt', status: 'A' }]);
     runGit(repository, ['checkout', 'react']);
     await expect(getRangeDiff(repository, { ...options, base: 'origin/react' })).rejects.toThrow(/checked-out branch/);
   });

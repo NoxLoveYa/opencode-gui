@@ -26,7 +26,6 @@ const SETTINGS_TRIGGER_WIDTH_CLASS = 'w-full min-w-[16ch] max-w-[28ch]';
 
 /** Settings select trigger: full column width in stacked cells; capped in field rows via parent. */
 export const SETTINGS_SELECT_TRIGGER_CLASS = SETTINGS_TRIGGER_WIDTH_CLASS;
-export const SETTINGS_SELECT_SIZE = 'settings' as const;
 
 /** Fixed-width select used inside full-width SettingsFieldRow control columns. */
 export const SETTINGS_SELECT_ROW_TRIGGER_CLASS = SETTINGS_TRIGGER_WIDTH_CLASS;
@@ -45,7 +44,7 @@ export const SETTINGS_ICON_BUTTON_CLASS =
   'h-8 w-8 px-0 text-muted-foreground hover:text-foreground';
 
 /** Custom dropdown triggers (ModelSelector / AgentSelector) in settings field rows. */
-// eslint-disable-next-line react-refresh/only-export-components
+// oxlint-disable-next-line react/only-export-components
 export const SETTINGS_CUSTOM_TRIGGER_CLASS = cn(
   dropdownTriggerVariants(),
   SETTINGS_TRIGGER_WIDTH_CLASS,

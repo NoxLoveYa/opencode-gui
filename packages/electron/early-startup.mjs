@@ -219,6 +219,21 @@ export const macosMajorVersion = () => {
   return major === 10 ? minor : major;
 };
 
+let cachedMacTrafficLightPosition = null;
+
+/**
+ * Where macOS draws the window controls. The renderer sizes its titlebar per
+ * macOS version around this point (`Header.tsx`, `MiniChatLayout.tsx`), so
+ * change them together. macOS 26 draws 14px controls, centred in the 44px
+ * titlebar: y = (44 - 14) / 2. Older releases keep the calibrated 56px layout.
+ */
+export const macTrafficLightPosition = () => {
+  if (!cachedMacTrafficLightPosition) {
+    cachedMacTrafficLightPosition = Object.freeze(macosMajorVersion() >= 26 ? { x: 14, y: 15 } : { x: 16, y: 17 });
+  }
+  return cachedMacTrafficLightPosition;
+};
+
 const SPLASH_DEFAULTS = { bgLight: '#FFFCF0', fgLight: '#100F0F', bgDark: '#151313', fgDark: '#CECDC3' };
 
 const readSplashColor = (settings, key, fallback) => {
@@ -381,6 +396,7 @@ export const buildRendererAdditionalArguments = ({
   requestHeaders = {},
   bootOutcome = null,
   relayHostId = '',
+  explicitRuntime = false,
   trayEnabled = isMacMenuBarEnabled(),
   nativeFrame = usesLinuxNativeFrame(),
 } = {}) => [
@@ -393,6 +409,7 @@ export const buildRendererAdditionalArguments = ({
   `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
   `--openchamber-boot-outcome=${JSON.stringify(bootOutcome)}`,
   `--openchamber-relay-host-id=${relayHostId}`,
+  `--openchamber-explicit-runtime=${explicitRuntime ? '1' : '0'}`,
   `--openchamber-native-frame=${nativeFrame ? '1' : '0'}`,
 ];
 
@@ -409,7 +426,7 @@ export const usesFramelessChrome = () => (
 // Native backdrop behind the main window. Windows-only (Mica/Acrylic); the
 // renderer mirrors the same choice from its own store and tells main over
 // IPC, which persists it here so the next cold start paints it immediately.
-export const resolveWindowMaterial = () => {
+const resolveWindowMaterial = () => {
   if (process.platform !== 'win32') return 'none';
   const raw = readSettingsRoot().desktopWindowMaterial;
   return raw === 'mica' || raw === 'acrylic' ? raw : 'none';
@@ -434,7 +451,7 @@ export const buildMainWindowOptions = ({ bounds, backgroundColor, additionalArgu
     // visibly lower than the app header. Use a plain hidden title bar instead.
     titleBarStyle: usesCustomTitleBar ? 'hidden' : 'default',
     titleBarOverlay: false,
-    trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 17 } : undefined,
+    trafficLightPosition: process.platform === 'darwin' ? macTrafficLightPosition() : undefined,
     webPreferences: {
       additionalArguments,
       preload: resolvePreloadPath(),

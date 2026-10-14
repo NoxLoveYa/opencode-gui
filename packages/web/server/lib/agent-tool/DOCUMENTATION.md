@@ -16,6 +16,16 @@ the user can want independently:
   `POST /api/notifications/emit`). Off by default: enabled only while
   `agentNotifyToolEnabled` is `true`, and the control service refuses the
   action when the setting is off, so a stale plugin cannot keep paging.
+- `openchamber_knowledge` — the project's Notes, Todos and Plans, the items of
+  the Project knowledge panel (`knowledge.list`, `save`, `delete`, `show`,
+  with `kind` naming note, todo or plan; plans are files, so list and save
+  give their path and the agent reads and edits them with its own file tools;
+  dispatched by
+  `../openchamber-control/project-knowledge.js` into
+  `../project-context/runtime.js`). On by default: enabled while
+  `agentKnowledgeToolEnabled` is not `false`, and the control service refuses
+  these actions when it is, so a stale plugin cannot keep writing. Writes are
+  attributed to the session OpenCode reported, never to a payload field.
 
 Both default to on, are toggled in Settings → General → OpenChamber Tools, and take
 effect in the running OpenCode within a couple of seconds — OpenChamber rewrites
@@ -87,6 +97,11 @@ both settings are `false`.
   `lastAssistant` on a dispatch with a usage error naming `returnResult`
   (`agentOnlyUsageError`). `session.messages` does not wait either: it reads
   what is there. The control service keeps `wait` for the CLI only.
+- Boolean inputs are checked at the tool boundary: the plugin forwards raw
+  JSON, so a field declared `type: 'boolean'` in any tool's schema that
+  arrives as anything else (the string `"true"`) fails the call with a usage
+  error naming the field (`nonBooleanParameterError`), before any action runs.
+  Downstream `=== true` checks would otherwise read it as false.
 - The description draws the line against OpenCode's own `subagent` tool:
   `subagent` when the agent delegates part of its own task and wants the
   answer for itself, `session.*` when the user asks for a separate session
@@ -109,6 +124,17 @@ both settings are `false`.
   starts in a worktree made from it the way the New worktree dialog makes one
   (`../git/DOCUMENTATION.md`, *Worktree creation from a GitHub pull request*);
   everything else about the request is resolved on the server.
+- `session.moveToWorktree` moves the calling session (or `sessionId`) into a
+  new worktree of its repository, carrying the checkout's uncommitted changes
+  along (`../openchamber-sessions/worktree-move.js`). `worktree` is required
+  there and `startRef` defaults to the repository's default branch. When to
+  offer it is stated at the head of the tool description, in the form the
+  `agentWorktreeMoveWithoutAsking` setting selects: asking first by default,
+  or moving unasked and saying so. The setting is read into the plugin source
+  (`materializePlugin({ worktreeMoveWithoutAsking })`), so a toggle rewrites
+  the managed config like the other tool settings and the running OpenCode
+  reads the new description. The session context carries the same rule
+  (`../session-knowledge/`, `WORKTREE_MOVE_GUIDANCE`); change both together.
 - A rule about when to act belongs where the model reads it before choosing a
   tool: the head of the tool description and, when it must hold in every
   session, the session context (`../session-knowledge/`). An action's

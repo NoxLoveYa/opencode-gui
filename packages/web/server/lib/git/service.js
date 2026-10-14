@@ -10,6 +10,7 @@ import { createRequire } from 'module';
 import crypto from 'node:crypto';
 import { fingerprintRemoteUrl } from '../source-control/url-redaction.js';
 import { readWorktreeDirectorySetting } from '../opencode/shared.js';
+import { readProjectStartCommand } from '../opencode/project-start-command.js';
 import { normalizeGitOutputPath } from './output-path.js';
 import { overlayEnvironment } from '../environment/variables.js';
 import { primaryWorktreeRootFromGitDir, unsupportedRepositoryRootReason } from './repository-root.js';
@@ -1204,8 +1205,11 @@ const resolveGitCommitFilePath = async (repoRoot, hash, candidates) => {
 // simple-git 3.36 refuses GIT_EDITOR unless allowUnsafeEditor is enabled, and
 // once an instance has an explicit env it also rejects inherited PAGER or
 // GIT_ASKPASS values. Run editor-free continuation commands directly instead.
+// The full git environment must survive the override: git execs the no-op
+// editor through PATH, and an env of only GIT_EDITOR makes that spawn search
+// the execvp fallback (/bin:/usr/bin), where NixOS has no `true`.
 const runGitCommandWithoutEditor = async (cwd, args) => {
-  const result = await runGitCommand(cwd, args, { env: { GIT_EDITOR: 'true' } });
+  const result = await runGitCommand(cwd, args, { env: { ...(await buildGitEnv(cwd)), GIT_EDITOR: 'true' } });
   if (!result.success) {
     throw new Error(result.message || 'Git command failed');
   }
@@ -1405,7 +1409,7 @@ export const inspectContributorCheckoutActions = async (directory, provenance) =
   const head = String((await runGitCommandOrThrow(directory, ['rev-parse', 'HEAD'], 'Failed to inspect worktree HEAD')).stdout || '').trim().toLowerCase();
   if (head !== provenance.sourceSha) throw Object.assign(new Error('Contributor worktree HEAD changed'), { code: 'STALE_CONFIG', status: 409 });
   const hook = await inspectPostCheckoutHook(directory);
-  const projectCommand = await loadProjectStartCommand(provenance.projectId);
+  const projectCommand = await readProjectStartCommand((await resolvePrimaryWorktreeRoot(directory)).root);
   const setupCommand = String(provenance.setupCommand || '').trim();
   const actions = [];
   if (hook) actions.push(hook);
@@ -1708,9 +1712,9 @@ export async function getIntegrateConflictDetails(tmpDir) {
   const [status, unmerged, diff, meta, patch] = await Promise.all([
     runGitCommand(target, ['status', '--porcelain']),
     runGitCommand(target, ['diff', '--name-only', '--diff-filter=U']),
-    runGitCommand(target, ['diff']),
+    runGitCommand(target, ['diff', '--no-ext-diff']),
     runGitCommand(target, ['show', '--no-patch', '--pretty=fuller', 'CHERRY_PICK_HEAD']),
-    runGitCommand(target, ['show', 'CHERRY_PICK_HEAD']),
+    runGitCommand(target, ['show', '--no-ext-diff', 'CHERRY_PICK_HEAD']),
   ]);
 
   return {
@@ -1974,6 +1978,7 @@ const resolveWorktreeProjectContext = async (directory, options = {}) => {
 
   return {
     projectID,
+    requestedDirectory: directoryPath,
     sandbox,
     primaryWorktree,
     worktreeRoot,
@@ -2052,9 +2057,9 @@ const resolveBranchForExistingMode = async (primaryWorktree, existingBranch, pre
     throw new Error(`Branch not found: ${requested}`);
   }
 
-  const remoteExists = await runGitCommand(primaryWorktree, ['show-ref', '--verify', '--quiet', remoteRef.fullRef]);
-  if (!remoteExists.success) {
-    throw new Error(`Remote branch is not available locally: ${requested}. Fetch it explicitly and retry.`);
+  const remoteCheck = await ensureLocalRemoteBranchRef(primaryWorktree, remoteRef.remote, remoteRef.branch);
+  if (!remoteCheck.found) {
+    throw new Error(`Remote branch not found: ${requested}`);
   }
 
   const localBranch = cleanBranchName(preferredBranchName || remoteRef.branch || requested);
@@ -2118,18 +2123,6 @@ const runWorktreeStartCommand = async (directory, command) => {
   return result;
 };
 
-const loadProjectStartCommand = async (projectID) => {
-  const storagePath = path.join(getOpenCodeDataPath(), 'storage', 'project', `${projectID}.json`);
-  try {
-    const raw = await fsp.readFile(storagePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    const start = typeof parsed?.commands?.start === 'string' ? parsed.commands.start.trim() : '';
-    return start || '';
-  } catch {
-    return '';
-  }
-};
-
 // OpenCode owns its own project/sandbox registry. It records a worktree as a
 // sandbox itself when an instance boots for that directory, and filters entries
 // whose directory no longer exists when reading them back. OpenChamber used to
@@ -2169,8 +2162,10 @@ const cleanupFailedFastWorktreeCreate = async (context, candidate) => {
   }
 };
 
-const runWorktreeStartScripts = async (directory, projectID, startCommand) => {
-  const projectStart = await loadProjectStartCommand(projectID);
+// `projectDirectory` is the directory the worktree was requested from: the user
+// already works there, so OpenCode answers without starting another location.
+const runWorktreeStartScripts = async (directory, projectDirectory, startCommand) => {
+  const projectStart = await readProjectStartCommand(projectDirectory);
   if (projectStart) {
     const projectResult = await runWorktreeStartCommand(directory, projectStart);
     if (!projectResult.success) {
@@ -2192,7 +2187,7 @@ const runWorktreeStartScripts = async (directory, projectID, startCommand) => {
 const queueWorktreeBootstrap = (args) => {
   const {
     directory,
-    projectID,
+    projectDirectory,
     primaryWorktree,
     localBranch,
     setUpstream,
@@ -2247,7 +2242,7 @@ const queueWorktreeBootstrap = (args) => {
         bootstrapStore,
       );
       if (!contributorFork) {
-        await runWorktreeStartScripts(directory, projectID, startCommand).catch((error) => {
+        await runWorktreeStartScripts(directory, projectDirectory, startCommand).catch((error) => {
           console.warn('Worktree start script task failed:', error instanceof Error ? error.message : String(error));
         });
       }
@@ -2449,6 +2444,16 @@ const resolveExistingWorktreeSource = async (primaryWorktree, input = {}, intent
     setUpstream: wantUpstream && Boolean(upstream),
     upstream,
   };
+};
+
+// The branch list offers remote branches that were never fetched (it asks
+// each remote with `ls-remote`), so a worktree from one of them fetches that
+// single branch first. A failed fetch reports the branch as missing.
+const ensureLocalRemoteBranchRef = async (primaryWorktree, remoteName, branchName) => {
+  const localCheck = await checkLocalRemoteBranchExists(primaryWorktree, remoteName, branchName);
+  if (localCheck.found || !localCheck.success) return localCheck;
+  await fetchRemoteBranchRef(primaryWorktree, remoteName, branchName).catch(() => undefined);
+  return checkLocalRemoteBranchExists(primaryWorktree, remoteName, branchName);
 };
 
 const checkLocalRemoteBranchExists = async (primaryWorktree, remoteName, branchName) => {
@@ -3145,8 +3150,10 @@ async function readStatus(normalizedDirectory, lightMode) {
     if (!lightMode && !tracking && status.current) {
       const baseRef = await selectBaseRefForUnpublished();
       if (baseRef) {
+        // Commits already on a remote are published even without an upstream:
+        // a contributor's PR head arrives as a fork remote-tracking branch.
         const countRaw = await git
-          .raw(['rev-list', '--count', `${baseRef}..HEAD`])
+          .raw(['rev-list', '--count', 'HEAD', '--not', baseRef, '--remotes'])
           .then((value) => String(value || '').trim())
           .catch(() => '');
         const count = parseInt(countRaw, 10);
@@ -3251,7 +3258,7 @@ async function readStatus(normalizedDirectory, lightMode) {
 }
 
 const getNoIndexDiff = async (repoRoot, repoPath, contextLines) => {
-  const args = ['diff', '--no-color', '--full-index'];
+  const args = ['diff', '--no-color', '--full-index', '--no-ext-diff'];
   if (Number.isFinite(contextLines)) {
     args.push(`-U${Math.max(0, contextLines)}`);
   }
@@ -3288,7 +3295,7 @@ export async function getPathDiff(directory, { path: filePath, staged = false, c
 
 async function readDiff({ repoRoot, git }, fileContext, { staged, contextLines }) {
   try {
-    const args = ['diff', '--no-color', '--full-index'];
+    const args = ['diff', '--no-color', '--full-index', '--no-ext-diff'];
 
     if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
       args.push(`-U${Math.max(0, contextLines)}`);
@@ -3424,6 +3431,7 @@ async function assertRangeRefsResolve(git, refs) {
 // A private index lets git include untracked paths in the same tree comparison
 // as tracked files, including a staged deletion recreated at the same path.
 // Intent-to-add records only their existence; diff reads current file contents.
+// Resolves to the diff output and the merge base it was taken against.
 async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = []) {
   const { git, repoRoot } = context;
   const readHead = async () => {
@@ -3439,11 +3447,11 @@ async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = 
   }
   const mergeBase = (await git.raw(['merge-base', baseRef, headCommit])).trim();
   const readDiff = async (comparisonGit) => {
-    const diff = await comparisonGit.raw([...args, mergeBase, '--', ...paths]);
+    const output = await comparisonGit.raw([...args, mergeBase, '--', ...paths]);
     if (await readHead() !== startingHead) {
       throw new Error('The checked-out branch changed during comparison. Refresh and try again.');
     }
-    return diff;
+    return { output, mergeBase };
   };
   const untracked = await git.raw(['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths]);
   if (!untracked) return readDiff(git);
@@ -3475,7 +3483,7 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
 
   await assertRangeRefsResolve(git, [baseRef, headRef]);
 
-  const args = ['diff', '--no-color'];
+  const args = ['diff', '--no-color', '--no-ext-diff'];
   if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
     args.push(`-U${Math.max(0, contextLines)}`);
   }
@@ -3503,7 +3511,7 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
     }
   }
   if (includeWorkingTree) {
-    return runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args, paths);
+    return (await runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args, paths)).output;
   }
   args.push(`${baseRef}...${headRef}`, '--', ...paths);
   const diff = await git.raw(args);
@@ -3617,9 +3625,10 @@ export async function getRangeFiles(directory, { base, head, includeWorkingTree 
   // surface as C entries instead of plain additions; rename detection is on
   // by default.
   const args = ['diff', '--name-status', '-z', '-C'];
-  const raw = includeWorkingTree
+  const workingTree = includeWorkingTree
     ? await runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args)
-    : await git.raw([...args, `${baseRef}...${headRef}`, '--']);
+    : null;
+  const raw = workingTree ? workingTree.output : await git.raw([...args, `${baseRef}...${headRef}`, '--']);
   // -z format: STATUS\0PATH\0[ORIG\0] repeated. For rename/copy entries
   // (`R100`, `C75`) the first path token is the ORIGINAL path and the second
   // is the DESTINATION — the diff (and the UI) must address the destination.
@@ -3635,7 +3644,27 @@ export async function getRangeFiles(directory, { base, head, includeWorkingTree 
       files.push({ path, status: status.charAt(0) });
     }
   }
-  return files;
+  if (!workingTree) return files;
+  return Promise.all(files.map(async (file) => ({
+    ...file,
+    revision: `${workingTree.mergeBase}:${await readWorkingFileSignature(path.join(repoRoot, file.path))}`,
+  })));
+}
+
+/**
+ * What a working-tree range patch of one file depends on besides the merge
+ * base: the file as it is on disk. Its stat changes with every write, so the
+ * Changes view re-reads a patch only when the file was written, and a status
+ * refresh that changed nothing re-reads nothing. A write that keeps the size
+ * and line counts still moves the timestamps. Missing reads as `missing`.
+ */
+async function readWorkingFileSignature(absolutePath) {
+  try {
+    const stat = await fsp.lstat(absolutePath, { bigint: true });
+    return `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.mode}:${stat.ino}`;
+  } catch {
+    return 'missing';
+  }
 }
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'avif'];
@@ -4977,7 +5006,7 @@ export async function validateWorktreeCreate(directory, input = {}) {
             });
           }
         } else if (parsedRemoteRef) {
-          const remoteCheck = await checkLocalRemoteBranchExists(
+          const remoteCheck = await ensureLocalRemoteBranchRef(
             context.primaryWorktree,
             parsedRemoteRef.remote,
             parsedRemoteRef.branch
@@ -4985,7 +5014,7 @@ export async function validateWorktreeCreate(directory, input = {}) {
           if (!remoteCheck.found) {
             errors.push({
               code: 'start_ref_not_found',
-              message: `Remote branch is not available locally: ${parsedRemoteRef.remoteRef}`,
+              message: `Remote branch not found: ${parsedRemoteRef.remoteRef}`,
             });
           }
         } else {
@@ -5280,7 +5309,7 @@ async function attachGitWorktreeToCandidateWithoutRemoteRollback(context, candid
   if (bootstrapStatus.status === WORKTREE_BOOTSTRAP_PENDING) {
     queueWorktreeBootstrap({
       directory: candidate.directory,
-      projectID: context.projectID,
+      projectDirectory: context.requestedDirectory,
       primaryWorktree: context.primaryWorktree,
       localBranch,
       setUpstream: shouldSetUpstream,
@@ -6171,7 +6200,9 @@ export async function getLog(directory, options = {}) {
     // branch. A single requested ref means its reachable history instead.
     const baseLog = options.to && !resolvedFrom
       ? await git.log([`--max-count=${maxCount}`, options.to, ...(filePath ? ['--', filePath] : [])])
-      : await git.log({ maxCount, from: resolvedFrom, to: options.to, file: filePath });
+      // `from..to`, the commits `to` adds; simple-git defaults to `from...to`,
+      // which also lists what `from` gained since the two diverged.
+      : await git.log({ maxCount, from: resolvedFrom, to: options.to, file: filePath, symmetric: false });
 
     const logArgs = [
       'log',
@@ -6792,7 +6823,7 @@ export async function getConflictDetails(directory) {
       .filter(Boolean);
 
     // Get current diff
-    const diff = await git.raw(['diff']).catch(() => '');
+    const diff = await git.raw(['diff', '--no-ext-diff']).catch(() => '');
 
     // simple-git resolves a quiet `rev-parse --verify` miss with empty output instead of rejecting.
     let operation = 'merge';

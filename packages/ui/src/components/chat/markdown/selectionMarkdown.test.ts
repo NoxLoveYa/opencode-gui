@@ -59,11 +59,8 @@ test('whole blocks serialize to their markdown form', () => {
 test('decorated code blocks keep language and code text, not the toolbar', () => {
   const root = render(
     '<div data-component="markdown-code"><div><span>ts</span><div data-md-code-actions><button data-md-action="copy-code">Copy</button></div></div>'
-    + '<div data-md-code-body><pre data-md-lang="ts"><code data-md-code-lines data-md-code-trailing-newline>'
-    + '<span data-md-code-line><span data-md-code-line-number="1" aria-hidden="true"></span><span data-md-code-line-content>const a = 1;</span></span>'
-    + '<span data-md-code-line-break>\n</span>'
-    + '<span data-md-code-line><span data-md-code-line-number="2" aria-hidden="true"></span><span data-md-code-line-content>a += 1;</span></span>'
-    + '<span data-md-code-line-break>\n</span>'
+    + '<div data-md-code-body><pre data-md-lang="ts"><code data-md-code-lines>'
+    + '<span class="line"><span style="color:red">const</span> a = 1;</span>\n<span class="line">a += 1;</span>\n<span class="line"></span>'
     + '</code></pre></div></div>',
   );
 
@@ -185,4 +182,14 @@ test('rendered HTML from the copy button reads as plain text', () => {
   const html = '<h1>Title</h1><p>Use <strong>bold</strong> and <a href="https://example.com">a link</a>.</p><pre><code>x = 1\n</code></pre>';
 
   expect(renderedMarkdownHtmlToPlainText(html, document)).toBe('Title\n\nUse bold and a link.\n\nx = 1');
+});
+
+test('an assistant image copies as the Markdown the message wrote, label or drawn', () => {
+  const root = render([
+    '<p>See <span data-openchamber-markdown-image-label="true" data-openchamber-markdown-image-source="screens/run.png">run.png</span> now</p>',
+    '<p><span data-openchamber-markdown-image-label="true" data-openchamber-markdown-image-source="screens/next.png"><button type="button"><img src="https://host/api/fs/raw?token=secret" alt="next.png"></button></span></p>',
+  ].join(''));
+
+  expect(serializeRenderedMarkdown(root)).toBe('See ![run.png](screens/run.png) now\n\n![next.png](screens/next.png)');
+  expect(serializeRenderedMarkdown(root, 'plain')).toBe('See run.png now\n\nnext.png');
 });

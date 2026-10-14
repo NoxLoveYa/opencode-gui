@@ -22,15 +22,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import type { ScheduledTask } from '@/lib/scheduledTasksApi';
+import { fetchEligibleScheduledTaskTargets } from '@/lib/scheduledTasksApi';
 import { useI18n } from '@/lib/i18n';
 import { isValidCronExpression, getNextRuns, CRON_EXAMPLES } from '@/lib/cron';
 import { canonicalizeTimezone } from '@/lib/timezones';
 import { listModelVariantIds, type ModelVariantSource } from '@/lib/modelVariants';
 import { useGlobalSessionsStore, refreshGlobalSessions } from '@/stores/useGlobalSessionsStore';
 import { useAllLiveSessions } from '@/sync/sync-context';
-import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useProjectsStore } from '@/stores/useProjectsStore';
-import { CHAT_DRAFT_PROJECT_ID, isChatDirectoryPath } from '@/lib/chatDirectories';
 import { SettingsStackedField } from '@/components/sections/shared/SettingsSection';
 
 const WEEKDAY_INDEXES = [0, 1, 2, 3, 4, 5, 6] as const;
@@ -269,7 +267,7 @@ const FieldLabel: React.FC<{
   <div className="flex items-center gap-1.5">
     <label htmlFor={htmlFor} className="typography-meta font-medium text-foreground">
       {children}
-      {required && <span className="ml-0.5 text-destructive">*</span>}
+      {required && <span className="ms-0.5 text-destructive">*</span>}
     </label>
   </div>
 );
@@ -402,8 +400,8 @@ const TimePill: React.FC<TimePillProps> = ({
   return (
     <div
       className={cn(
-        'oc-surface-elevated inline-flex h-9 w-fit items-center gap-1 rounded-md border border-border bg-surface-elevated focus-within:ring-1 focus-within:ring-ring focus-within:border-ring',
-        use24Hour ? 'px-2' : 'pl-2 pr-1',
+        'oc-surface-elevated inline-flex h-8 w-fit items-center gap-1 rounded-md border border-border bg-surface-elevated focus-within:ring-1 focus-within:ring-ring focus-within:border-ring',
+        use24Hour ? 'px-2' : 'ps-2 pe-1',
       )}
     >
       <input
@@ -435,7 +433,7 @@ const TimePill: React.FC<TimePillProps> = ({
         <Select value={parts.meridiem} onValueChange={(next) => setPeriod(next as 'AM' | 'PM')}>
           <SelectTrigger
             aria-label={periodAriaLabel}
-            className="ml-1 h-7 w-fit border-0 bg-transparent pl-2 pr-1 shadow-none hover:bg-interactive-hover focus:ring-0"
+            className="ms-1 h-7 w-fit border-0 bg-transparent ps-2 pe-1 shadow-none hover:bg-interactive-hover focus:ring-0"
           >
             <SelectValue />
           </SelectTrigger>
@@ -731,7 +729,7 @@ const CronScheduleSection: React.FC<{
             }));
           }}
         >
-          <SelectTrigger size="lg" className="w-fit max-w-full"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-fit max-w-full"><SelectValue /></SelectTrigger>
           <SelectContent>
             {TIMEZONE_OPTIONS.map((timezone) => (
               <SelectItem key={timezone} value={timezone}>{timezone}</SelectItem>
@@ -754,18 +752,51 @@ export function ScheduledTaskEditorDialog(props: {
   const { t, locale } = useI18n();
   const globalSessions = useGlobalSessionsStore((state) => state.activeSessions);
   const liveSessions = useAllLiveSessions();
-  const projects = useProjectsStore((state) => state.projects);
-  const worktrees = useSessionUIStore((state) => state.availableWorktreesByProject);
-  const sessions = React.useMemo(() => {
+  // Candidates only. Whether one belongs to the task is the scheduler's own
+  // membership rule, fetched below, so this list never re-implements the
+  // policy the backend enforces on save and run (#4757).
+  const candidates = React.useMemo(() => {
     const merged = new Map(globalSessions.map((session) => [session.id, session]));
     for (const session of liveSessions) merged.set(session.id, session);
-    const project = projects.find((entry) => entry.id === props.projectId);
-    const roots = [project?.path, ...(worktrees.get(props.projectId) ?? []).map((tree) => tree.path)].filter((root) => root !== undefined);
-    return [...merged.values()].filter((session) => !session.time?.archived && (
-      props.projectId === CHAT_DRAFT_PROJECT_ID ? isChatDirectoryPath(session.directory)
-        : roots.some((root) => session.directory === root || session.directory.startsWith(`${root}/`))
-    ));
-  }, [globalSessions, liveSessions, projects, worktrees, props.projectId]);
+    return [...merged.values()].filter((session) => !session.time?.archived);
+  }, [globalSessions, liveSessions]);
+  // The eligibility request depends on which sessions sit in which directory,
+  // never on the session objects, which change on every step an agent takes.
+  const candidatesKey = React.useMemo(
+    () => candidates.map((session) => `${session.id}:${session.directory ?? ''}`).sort().join('\n'),
+    [candidates],
+  );
+  const candidatesRef = React.useRef(candidates);
+  candidatesRef.current = candidates;
+  const [eligibility, setEligibility] = React.useState<
+    { status: 'idle' | 'loading' | 'error' } | { status: 'ready'; ids: ReadonlySet<string> }
+  >({ status: 'idle' });
+  const [eligibilityAttempt, setEligibilityAttempt] = React.useState(0);
+  React.useEffect(() => {
+    if (!open || !props.projectId || !candidatesKey) {
+      setEligibility({ status: 'idle' });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setEligibility((current) => (current.status === 'ready' ? current : { status: 'loading' }));
+    fetchEligibleScheduledTaskTargets(
+      props.projectId,
+      candidatesRef.current.map((session) => ({ sessionId: session.id, directory: session.directory ?? '' })),
+      controller.signal,
+    ).then(
+      (ids) => setEligibility({ status: 'ready', ids }),
+      () => {
+        // A failed read is an error, never an empty list: the picker would
+        // otherwise read as "this project has no sessions".
+        if (!controller.signal.aborted) setEligibility({ status: 'error' });
+      },
+    );
+    return () => controller.abort();
+  }, [open, props.projectId, candidatesKey, eligibilityAttempt]);
+  const sessions = React.useMemo(
+    () => (eligibility.status === 'ready' ? candidates.filter((session) => eligibility.ids.has(session.id)) : []),
+    [candidates, eligibility],
+  );
   React.useEffect(() => {
     if (open) void refreshGlobalSessions().catch(() => undefined);
   }, [open]);
@@ -1251,7 +1282,7 @@ export function ScheduledTaskEditorDialog(props: {
         <Select value={draft.sessionMode} onValueChange={(value: 'new' | 'existing') => setDraft((prev) => ({
           ...prev, sessionMode: value,
         }))}>
-          <SelectTrigger size="settings"><SelectValue>{draft.sessionMode === 'existing' ? t('sessions.scheduledTasks.editor.existingSession') : t('sessions.scheduledTasks.editor.newSession')}</SelectValue></SelectTrigger>
+          <SelectTrigger><SelectValue>{draft.sessionMode === 'existing' ? t('sessions.scheduledTasks.editor.existingSession') : t('sessions.scheduledTasks.editor.newSession')}</SelectValue></SelectTrigger>
           <SelectContent>
             <SelectItem value="new">{t('sessions.scheduledTasks.editor.newSession')}</SelectItem>
             <SelectItem value="existing">{t('sessions.scheduledTasks.editor.existingSession')}</SelectItem>
@@ -1261,13 +1292,23 @@ export function ScheduledTaskEditorDialog(props: {
       {draft.sessionMode === 'existing' ? (
         <SettingsStackedField label={t('sessions.scheduledTasks.editor.targetSession')} info={t('sessions.scheduledTasks.editor.targetHint')}>
           <Select value={draft.targetSessionId} onValueChange={(targetSessionId) => setDraft((prev) => ({ ...prev, targetSessionId }))}>
-            <SelectTrigger size="settings"><SelectValue placeholder={t('sessions.scheduledTasks.editor.targetSession')}>
-              {sessions.find((session) => session.id === draft.targetSessionId)?.title || draft.targetSessionId || undefined}
+            <SelectTrigger><SelectValue placeholder={t('sessions.scheduledTasks.editor.targetSession')}>
+              {candidates.find((session) => session.id === draft.targetSessionId)?.title || draft.targetSessionId || undefined}
             </SelectValue></SelectTrigger>
             <SelectContent>
-              {sessions.map((session) => <SelectItem key={session.id} value={session.id}>{session.title || session.id}</SelectItem>)}
+              {eligibility.status === 'loading'
+                ? <SelectItem value="__loading" disabled>{t('common.loading')}</SelectItem>
+                : sessions.map((session) => <SelectItem key={session.id} value={session.id}>{session.title || session.id}</SelectItem>)}
             </SelectContent>
           </Select>
+          {eligibility.status === 'error' ? (
+            <div className="flex items-center gap-2 typography-meta text-muted-foreground">
+              <span>{t('sessions.scheduledTasks.editor.targetLoadFailed')}</span>
+              <Button type="button" variant="ghost" size="xs" onClick={() => setEligibilityAttempt((attempt) => attempt + 1)}>
+                {t('sessions.scheduledTasks.editor.targetRetry')}
+              </Button>
+            </div>
+          ) : null}
         </SettingsStackedField>
       ) : null}
                 <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
@@ -1300,7 +1341,7 @@ export function ScheduledTaskEditorDialog(props: {
                         }));
                       }}
                     >
-                      <SelectTrigger size="lg" className="w-fit max-w-full">
+                      <SelectTrigger className="w-fit max-w-full">
                         <SelectValue>
                           {(value) => value === 'daily'
                             ? t('sessions.scheduledTasks.editor.scheduleType.daily')
@@ -1342,7 +1383,7 @@ export function ScheduledTaskEditorDialog(props: {
                   </button>
 
                   {isDatePickerOpen ? (
-                    <div className="oc-surface-elevated absolute left-0 top-[calc(100%+6px)] z-50 w-[288px] rounded-xl border border-border bg-surface-elevated p-3 shadow-sm">
+                    <div className="oc-surface-elevated absolute inset-s-0 top-[calc(100%+6px)] z-50 w-[288px] rounded-xl border border-border bg-surface-elevated p-3 shadow-sm">
                       <div className="mb-2 flex items-center justify-between">
                         <button
                           type="button"
@@ -1460,7 +1501,7 @@ export function ScheduledTaskEditorDialog(props: {
                       }));
                     }}
                   >
-                    <SelectTrigger size="lg" className="w-fit max-w-full"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-fit max-w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {TIMEZONE_OPTIONS.map((timezone) => (
                         <SelectItem key={timezone} value={timezone}>{timezone}</SelectItem>
@@ -1532,7 +1573,7 @@ export function ScheduledTaskEditorDialog(props: {
                 </div>
                 <div>
                   <Button type="button" size="sm" variant="outline" onClick={addTime}>
-                    <Icon name="add" className="mr-1 h-4 w-4" /> {t('sessions.scheduledTasks.editor.times.add')}
+                    <Icon name="add" className="me-1 h-4 w-4" /> {t('sessions.scheduledTasks.editor.times.add')}
                   </Button>
                 </div>
               </div>
@@ -1548,7 +1589,7 @@ export function ScheduledTaskEditorDialog(props: {
                     }));
                   }}
                 >
-                  <SelectTrigger size="lg" className="w-fit max-w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-fit max-w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {TIMEZONE_OPTIONS.map((timezone) => (
                       <SelectItem key={timezone} value={timezone}>{timezone}</SelectItem>
@@ -1610,7 +1651,7 @@ export function ScheduledTaskEditorDialog(props: {
                   }));
                 }}
               >
-                <SelectTrigger size="lg" className="w-fit max-w-full">
+                <SelectTrigger className="w-fit max-w-full">
                   <SelectValue>
                     {(value) => value === '__default'
                       ? t('sessions.scheduledTasks.editor.thinkingLevel.default')

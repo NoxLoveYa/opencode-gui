@@ -111,6 +111,7 @@ Error codes:
 - `DISABLED` — extension paused in Settings → Extensions (service stopped; tokens/grants stay)
 - `SERVICE_FAILED` — process crashed or never became ready; nothing was sent to it
 - `REQUEST_FAILED` — the request was sent but got no usable answer (timeout, dropped connection); the service may have acted on it
+- `RESPONSE_TOO_LARGE` — the service answered with more than `GUEST_REQUEST_RESPONSE_MAX` bytes; it acted on the request, the answer is dropped whole
 - Existing: `HOST_TIMEOUT`, `HOST_REJECTED`, `HOST_UNAVAILABLE`, `BAD_PATH`
 
 Server routes (authenticated UI session):
@@ -155,6 +156,7 @@ Ship `service/main.js` already built. Same packaging rule as `panel/main.js`.
 | Panel open | Status via `serviceStatus`. Dead service restarts on the next `serviceRequest`. |
 | Uninstall | SIGTERM, then kill after timeout. Clear grant and socket overrides. Path-install does not delete the user's folder. |
 | Host quit | Kill every guest service. |
+| Host crash | The service keeps running until the next host start, which stops it (SIGTERM, then kill after timeout) before spawning any service. |
 | Crash | Status `failed`. Panel sees `SERVICE_FAILED` / status. Manual retry, not silent loops. |
 
 ## Security invariants

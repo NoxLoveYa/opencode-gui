@@ -1,4 +1,4 @@
-import { Marked, marked, type MarkedExtension, type Tokens, type TokenizerAndRendererExtension } from 'marked';
+import { Marked, type MarkedExtension, type Tokens, type TokenizerAndRendererExtension } from 'marked';
 import markedLinkifyIt from 'marked-linkify-it';
 import remend from 'remend';
 import katex from 'katex';
@@ -7,8 +7,17 @@ import { INLINE_REFERENCE_CHIP_CLASS, INTERACTIVE_REFERENCE_CHIP_CLASS, buildAge
 import { isAppLinkUrl } from '@/lib/url';
 import { isSessionDeepLink } from '@/lib/sessionLinks';
 import { isVSCodeRuntime } from '@/lib/desktop';
-import { contentFingerprint, HighlightResultCache, utf16Bytes } from './highlightResultCache';
+import {
+  contentFingerprint,
+  EMPTY_FINGERPRINT,
+  extendFingerprint,
+  fingerprintKey,
+  HighlightResultCache,
+  utf16Bytes,
+  type FingerprintState,
+} from './highlightResultCache';
 import { highlightCodeInWorker } from './markdown-worker';
+import { createOpenFenceRenderer, type OpenFencePatch } from './openFenceIncremental';
 import { streamTuning } from '../lib/streamTuningFlags';
 import {
   DOCUMENT_HTML_ALLOWED_ATTR,
@@ -27,14 +36,10 @@ const LOCAL_IMAGE_EXTENSION_RE = /\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i;
 const WINDOWS_ABSOLUTE_PATH_RE = /^[A-Za-z]:[\\/]/;
 const URL_SCHEME_RE = /^[A-Za-z][A-Za-z\d+.-]*:/;
 
-export interface MarkdownImageCandidate {
-  source: string;
-  filename: string;
-}
-
 /**
  * `inline` draws every image. `label` draws none: the image becomes its file
- * name (assistant text, whose images the gallery shows). `local` draws images
+ * name (assistant text, whose settled local images are then drawn in place,
+ * see inlineMarkdownImages.ts). `local` draws images
  * from this machine and `data:` images, and turns a remote one into a link.
  * A remote image loads by itself the moment it renders, so in output the
  * model or a tool wrote (tool results, reasoning) it could report what the
@@ -42,7 +47,7 @@ export interface MarkdownImageCandidate {
  */
 export type MarkdownImageMode = 'inline' | 'label' | 'local';
 
-export const isRemoteMarkdownImageSource = (source: string): boolean => /^(?:https?:)?\/\//i.test(source);
+const isRemoteMarkdownImageSource = (source: string): boolean => /^(?:https?:)?\/\//i.test(source);
 
 /**
  * `escape` keeps raw HTML visible as text (assistant output and every other
@@ -50,21 +55,6 @@ export const isRemoteMarkdownImageSource = (source: string): boolean => /^(?:htt
  * is for documents a user opens to read, such as a README in the Files preview.
  */
 export type MarkdownRawHtmlMode = 'escape' | 'sanitize';
-
-export const MAX_MARKDOWN_IMAGE_COUNT = 12;
-
-const MARKDOWN_IMAGE_CANDIDATE_CACHE_MAX_ENTRIES = 1024;
-const MARKDOWN_IMAGE_CANDIDATE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
-const MARKDOWN_IMAGE_CANDIDATE_CACHE_MAX_ENTRY_BYTES = 64 * 1024;
-
-type MarkdownImageCandidateCacheEntry = {
-  candidates: MarkdownImageCandidate[];
-  bytes: number;
-};
-
-const markdownImageCandidateCache = new Map<string, MarkdownImageCandidateCacheEntry>();
-let markdownImageCandidateCacheBytes = 0;
-let markdownImageCandidateScanCount = 0;
 
 const isLocalMarkdownImageSource = (source: string): boolean => {
   if (/^\/\//.test(source) || !LOCAL_IMAGE_EXTENSION_RE.test(source)) return false;
@@ -95,80 +85,6 @@ const getMarkdownImageFilename = (source: string, fallback: string): string => {
   }
 };
 
-const estimateMarkdownImageCandidateCacheEntryBytes = (
-  markdown: string,
-  candidates: readonly MarkdownImageCandidate[],
-): number => (
-  (markdown.length + candidates.reduce((total, candidate) => total + candidate.source.length + candidate.filename.length, 0)) * 2
-);
-
-const scanMarkdownImageCandidates = (markdown: string): MarkdownImageCandidate[] => {
-  markdownImageCandidateScanCount += 1;
-  const candidates: MarkdownImageCandidate[] = [];
-  const seen = new Set<string>();
-  const tokens = marked.lexer(markdown);
-  marked.walkTokens(tokens, (token) => {
-    if (token.type !== 'image') return;
-
-    const source = token.href ?? '';
-    if (!source || !isSupportedMarkdownImageSource(source) || seen.has(source)) return;
-    const fallback = typeof token.text === 'string' ? token.text : '';
-    const filename = getMarkdownImageFilename(source, fallback);
-    if (!filename) return;
-
-    seen.add(source);
-    candidates.push({ source, filename });
-  });
-  return candidates;
-};
-
-const getMarkdownImageCandidates = (markdown: string): MarkdownImageCandidate[] => {
-  const cached = markdownImageCandidateCache.get(markdown);
-  if (cached) {
-    markdownImageCandidateCache.delete(markdown);
-    markdownImageCandidateCache.set(markdown, cached);
-    return cached.candidates;
-  }
-
-  let candidates: MarkdownImageCandidate[];
-  try {
-    candidates = scanMarkdownImageCandidates(markdown);
-  } catch {
-    // Image discovery is optional; a malformed message must not hide the chat
-    // or prevent discovery in the other messages.
-    return [];
-  }
-  const bytes = estimateMarkdownImageCandidateCacheEntryBytes(markdown, candidates);
-  if (bytes > MARKDOWN_IMAGE_CANDIDATE_CACHE_MAX_ENTRY_BYTES) return candidates;
-
-  while (
-    markdownImageCandidateCache.size >= MARKDOWN_IMAGE_CANDIDATE_CACHE_MAX_ENTRIES
-    || markdownImageCandidateCacheBytes + bytes > MARKDOWN_IMAGE_CANDIDATE_CACHE_MAX_BYTES
-  ) {
-    const oldest = markdownImageCandidateCache.entries().next().value;
-    if (!oldest) break;
-    markdownImageCandidateCache.delete(oldest[0]);
-    markdownImageCandidateCacheBytes -= oldest[1].bytes;
-  }
-  markdownImageCandidateCache.set(markdown, { candidates, bytes });
-  markdownImageCandidateCacheBytes += bytes;
-  return candidates;
-};
-
-/** @internal Test-only cache instrumentation for deterministic regression tests. */
-export const __markdownImageCandidateCacheForTests = {
-  reset: (): void => {
-    markdownImageCandidateCache.clear();
-    markdownImageCandidateCacheBytes = 0;
-    markdownImageCandidateScanCount = 0;
-  },
-  stats: () => ({
-    entries: markdownImageCandidateCache.size,
-    bytes: markdownImageCandidateCacheBytes,
-    scans: markdownImageCandidateScanCount,
-  }),
-};
-
 /** Links being rendered right now; parsing is synchronous, so a counter is exact. */
 let markdownLinkDepth = 0;
 
@@ -183,33 +99,17 @@ const renderMarkdownImageLabel = ({
 }): string => {
   const label = getMarkdownImageFilename(href ?? '', text);
   const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
-  const span = `<span${titleAttr} class="inline-flex items-center gap-1 align-text-bottom text-muted-foreground" data-openchamber-markdown-image-label="true">${escapeAttr(label)}</span>`;
+  const remote = isRemoteMarkdownImageSource(href ?? '');
+  // A local or embedded image outside a link keeps its source, so the chat
+  // can draw it in place once the message settles (inlineMarkdownImages.ts).
+  const sourceAttr = !remote && markdownLinkDepth === 0 && isSupportedMarkdownImageSource(href ?? '')
+    ? ` data-openchamber-markdown-image-source="${escapeAttr(href)}"`
+    : '';
+  const span = `<span${titleAttr} class="inline-flex items-center gap-1 align-text-bottom text-muted-foreground" data-openchamber-markdown-image-label="true"${sourceAttr}>${escapeAttr(label)}</span>`;
   // A remote image becomes a link to itself, unless it already sits inside
   // one (a badge): a link cannot hold another.
-  if (!isRemoteMarkdownImageSource(href ?? '') || markdownLinkDepth > 0) return span;
+  if (!remote || markdownLinkDepth > 0) return span;
   return `<a href="${escapeAttr(href)}" class="external-link" target="_blank" rel="noopener noreferrer">${span}</a>`;
-};
-
-export const extractMarkdownImageCandidates = (
-  markdownTexts: readonly string[],
-  limit = MAX_MARKDOWN_IMAGE_COUNT,
-): MarkdownImageCandidate[] => {
-  if (limit <= 0) return [];
-
-  const candidates: MarkdownImageCandidate[] = [];
-  const seen = new Set<string>();
-
-  for (const markdown of markdownTexts) {
-    if (!markdown || candidates.length >= limit) continue;
-    for (const candidate of getMarkdownImageCandidates(markdown)) {
-      if (candidates.length >= limit) break;
-      if (seen.has(candidate.source)) continue;
-      seen.add(candidate.source);
-      candidates.push({ ...candidate });
-    }
-  }
-
-  return candidates;
 };
 
 // ---------------------------------------------------------------------------
@@ -229,6 +129,10 @@ type MarkdownBlock = {
   // Set when the lexer already failed on this text. Parsing runs the same
   // lexer and would fail the same way, after the same cost.
   plainText?: true;
+  // A trailing fence whose closing marker has not arrived yet.
+  openFence?: true;
+  // The piece of the split this block renders; carries its content hash.
+  segment?: Segment;
 };
 
 const hasReferenceDefinitions = (text: string): boolean =>
@@ -283,143 +187,281 @@ const heal = (text: string): string => {
   }
 };
 
-// While a fence stays open, every new line of code used to lex the whole
-// message again, although nothing above the fence can change and everything
-// after its opening line is code. The previous split is remembered, and text
-// that only extends an open trailing fence reuses it: the blocks above are
-// returned as they were and the fence block grows by the added text. Anything
-// that could change the split (a closing fence, a reference definition) takes
-// the full path. A few entries cover parts that stream side by side.
-type LiveSplit = { text: string; blocks: MarkdownBlock[]; fence: { char: string; size: number } };
+// ---------------------------------------------------------------------------
+// Splitting a message into top-level blocks
+// ---------------------------------------------------------------------------
+//
+// A message is split into its top-level tokens, streaming or settled, so a
+// block keeps its identity (content hash) and its DOM when the stream ends:
+// rendering the settled message as one block re-parsed, re-sanitized and
+// rebuilt the whole reply in one task the moment it finished. Parsing each
+// top-level token on its own gives the same HTML as parsing the whole text,
+// except where one token refers to another: reference definitions keep the
+// whole message one block.
+//
+// While a message streams, every new line used to lex the whole message
+// again. A split is remembered, and text that extends it is lexed again only
+// from its second-to-last block: everything before that ended before the
+// added text began, and a token can only absorb text that follows it while it
+// is the last or, for list items merging across a blank line, the one before.
+// Two constructs can reach back further and take the full path when their
+// closer arrives: display math `\[ ... \]` and a disclosure `<summary>`, both
+// of which may span blank lines. A fence that stays open only grows its last
+// block. A few splits are remembered for parts that stream side by side.
 
-const LIVE_SPLIT_MEMO_MAX = 4;
-let liveSplits: LiveSplit[] = [];
+type Segment = {
+  // The block's text is `text.slice(start, end)` of the split. Only offsets
+  // are kept: a substring of the text lexed at one streaming step can keep
+  // that whole text alive in V8 (a sliced string references its parent), so
+  // a segment kept across steps or cached for a settled message pinned an
+  // earlier copy of the message for as long as the split lived.
+  start: number;
+  end: number;
+  // Marker of a trailing fence that has not closed, and its line count.
+  fence?: { char: string; size: number; lines: number };
+  // Hash state of the block's text, filled on first use.
+  fingerprint?: FingerprintState;
+};
+
+type Split =
+  | { text: string; kind: 'blocks'; segments: Segment[] }
+  // The whole text is one block: it holds reference definitions, has no
+  // block at all, or the lexer failed on it (`plainText`).
+  | { text: string; kind: 'whole'; plainText: boolean };
+
+const SPLIT_MEMO_MAX = 4;
+let liveSplits: Array<Extract<Split, { kind: 'blocks' }>> = [];
 const liveSplitStats = { reused: 0, lexed: 0 };
 
-const openFenceMarker = (raw: string): { char: string; size: number } | null => {
+// Settled messages are looked up by their exact text on every paint, so their
+// splits are kept apart from the streaming ones and bounded by text size. A
+// split holds no text besides its key (segments are offsets), so the key
+// length is what an entry retains.
+const SETTLED_SPLIT_MAX_ENTRIES = 256;
+const SETTLED_SPLIT_MAX_CHARS = 4 * 1024 * 1024;
+const settledSplits = new Map<string, Split>();
+let settledSplitChars = 0;
+
+// Characters each stage of the render pipeline has read, so tests can show
+// that streaming costs work in proportion to what changed, not to the message.
+const pipelineStats = { lexedChars: 0, parsedChars: 0, hashedChars: 0, sanitizeCalls: 0, sanitizedChars: 0 };
+
+/** Test-only: reset and read the pipeline work counters. */
+export const resetPipelineStatsForTests = (): void => {
+  pipelineStats.lexedChars = 0;
+  pipelineStats.parsedChars = 0;
+  pipelineStats.hashedChars = 0;
+  pipelineStats.sanitizeCalls = 0;
+  pipelineStats.sanitizedChars = 0;
+};
+export const __pipelineStatsForTests = () => ({ ...pipelineStats });
+
+const fenceMarker = (raw: string): { char: string; size: number } | null => {
   if (!hasOpenFence(raw)) return null;
   const mark = raw.match(/^[ \t]{0,3}(`{3,}|~{3,})/)?.[1];
   return mark ? { char: mark[0] ?? '`', size: mark.length } : null;
 };
 
-const rememberLiveSplit = (text: string, blocks: MarkdownBlock[]): void => {
-  // The lexer path keeps a text with reference definitions as one healed
-  // block; extending it as a plain fence would render it differently.
-  if (hasReferenceDefinitions(text)) return;
-  const last = blocks.at(-1);
-  const fence = last ? openFenceMarker(last.raw) : null;
-  // The fence block has to be exactly the tail of the text for the added text
-  // to belong to it, and a block the lexer failed on is not a split at all.
-  if (!last || last.plainText || !fence || !text.endsWith(last.raw)) return;
-  liveSplits = [{ text, blocks, fence }, ...liveSplits.filter((entry) => entry.text !== text)].slice(0, LIVE_SPLIT_MEMO_MAX);
+const countLines = (value: string, from = 0): number => {
+  let lines = 0;
+  for (let index = value.indexOf('\n', from); index !== -1; index = value.indexOf('\n', index + 1)) lines += 1;
+  return lines;
 };
 
-const extendOpenFence = (text: string): MarkdownBlock[] | null => {
-  let base: LiveSplit | undefined;
-  for (const entry of liveSplits) {
-    if (entry.text.length >= text.length || (base && base.text.length >= entry.text.length)) continue;
-    if (text.startsWith(entry.text)) base = entry;
-  }
-  if (!base) return null;
+// Closers of constructs that can span blank lines and so absorb blocks before
+// the second-to-last one.
+const FAR_REACHING_CLOSER_RE = /\\\]|<\/summary/i;
 
+/**
+ * Lex `text` from `from`, a block start of the remembered split whose first
+ * `kept` segments stay. Null when the result cannot be trusted as a split.
+ */
+const lexSplit = (text: string, from: number, kept: Segment[]): Split | null => {
+  if (from === 0 && hasReferenceDefinitions(text)) return { text, kind: 'whole', plainText: false };
+
+  const source = from === 0 ? text : text.slice(from);
+  let tokens: Tokens.Generic[];
+  try {
+    pipelineStats.lexedChars += source.length;
+    tokens = inlineImageParser.lexer(source);
+  } catch {
+    return from === 0 ? { text, kind: 'whole', plainText: true } : null;
+  }
+
+  const segments = kept.slice();
+  let offset = from;
+  let lastType = '';
+  for (const token of tokens) {
+    const length = token.raw?.length ?? 0;
+    if (token.type !== 'space') {
+      segments.push({ start: offset, end: offset + length });
+      lastType = token.type;
+    }
+    offset += length;
+  }
+  // Offsets are only meaningful when the tokens cover the text exactly; the
+  // lexer normalizes line endings, for one.
+  if (offset !== text.length) return from === 0 ? { text, kind: 'whole', plainText: false } : null;
+  if (segments.length === 0) return { text, kind: 'whole', plainText: false };
+
+  // An open fence runs to the end of the text, so only the last block can be one.
+  const last = segments.at(-1);
+  const marker = last && lastType === 'code' && last.end === text.length ? fenceMarker(text.slice(last.start)) : null;
+  if (last && marker) segments[segments.length - 1] = { ...last, fence: { ...marker, lines: countLines(text, last.start) } };
+  return { text, kind: 'blocks', segments };
+};
+
+const extendSplit = (base: Extract<Split, { kind: 'blocks' }>, text: string): Split | null => {
   // Judge whole lines: the line the previous text ended in may only now have
   // become a closing fence or a reference definition.
   const region = text.slice(base.text.lastIndexOf('\n') + 1);
-  if (hasReferenceDefinitions(region)) return null;
-  const closing = new RegExp(`^[\\t ]{0,3}${base.fence.char}{${base.fence.size},}[\\t ]*$`, 'm');
-  if (closing.test(region)) return null;
+  if (hasReferenceDefinitions(region) || FAR_REACHING_CLOSER_RE.test(region)) return null;
 
-  const previous = base.blocks.at(-1);
-  if (!previous) return null;
-  const raw = previous.raw + text.slice(base.text.length);
-  const blocks = [
-    ...base.blocks.slice(0, -1),
-    { raw, src: raw, mode: 'live' as const, highlight: raw.split('\n').length <= OPEN_FENCE_HIGHLIGHT_LINE_LIMIT },
-  ];
-  liveSplits = [{ text, blocks, fence: base.fence }, ...liveSplits.filter((entry) => entry !== base)].slice(0, LIVE_SPLIT_MEMO_MAX);
-  return blocks;
+  const segments = base.segments;
+  const last = segments.at(-1);
+  const fence = last?.fence;
+  if (last && fence) {
+    const closing = new RegExp(`^[\\t ]{0,3}${fence.char}{${fence.size},}[\\t ]*$`, 'm');
+    if (!closing.test(region)) {
+      liveSplitStats.reused += 1;
+      // The fence block ends where the remembered text did, so the added
+      // text is exactly what it grows by.
+      const grown: Segment = {
+        start: last.start,
+        end: text.length,
+        fence: { ...fence, lines: fence.lines + countLines(text, base.text.length) },
+        fingerprint: last.fingerprint ? extendFingerprint(last.fingerprint, text, base.text.length) : undefined,
+      };
+      return { text, kind: 'blocks', segments: [...segments.slice(0, -1), grown] };
+    }
+  }
+
+  const restartIndex = Math.max(0, segments.length - 2);
+  const split = lexSplit(text, segments[restartIndex]?.start ?? 0, segments.slice(0, restartIndex));
+  if (split) liveSplitStats.lexed += 1;
+  return split;
+};
+
+const rememberLiveSplit = (split: Split): void => {
+  if (split.kind !== 'blocks') return;
+  liveSplits = [split, ...liveSplits.filter((entry) => entry.text !== split.text)].slice(0, SPLIT_MEMO_MAX);
+};
+
+/**
+ * Split `text`, extending a remembered split it continues. Only streaming
+ * renders are remembered: settled messages painted alongside a stream would
+ * otherwise push its split out.
+ */
+const splitText = (text: string, remember: boolean): Split => {
+  let base: Extract<Split, { kind: 'blocks' }> | undefined;
+  if (streamTuning.reuseLiveSplit()) {
+    for (const entry of liveSplits) {
+      if (entry.text.length > text.length || (base && base.text.length >= entry.text.length)) continue;
+      if (text.startsWith(entry.text)) base = entry;
+    }
+  }
+  if (base?.text.length === text.length) return base;
+  let split = base ? extendSplit(base, text) : null;
+  if (!split) {
+    liveSplitStats.lexed += 1;
+    split = lexSplit(text, 0, []) ?? { text, kind: 'whole', plainText: false };
+  }
+  if (remember) rememberLiveSplit(split);
+  return split;
+};
+
+const settledSplit = (text: string): Split => {
+  const cached = settledSplits.get(text);
+  if (cached) {
+    settledSplits.delete(text);
+    settledSplits.set(text, cached);
+    return cached;
+  }
+  const split = splitText(text, false);
+  if (text.length <= SETTLED_SPLIT_MAX_CHARS / 4) {
+    while (settledSplits.size >= SETTLED_SPLIT_MAX_ENTRIES || settledSplitChars + text.length > SETTLED_SPLIT_MAX_CHARS) {
+      const oldest = settledSplits.keys().next().value;
+      if (oldest === undefined) break;
+      settledSplits.delete(oldest);
+      settledSplitChars -= oldest.length;
+    }
+    settledSplits.set(text, split);
+    settledSplitChars += text.length;
+  }
+  return split;
 };
 
 /** Test-only: forget remembered splits and read how many were reused. */
 export const resetLiveSplitMemoForTests = (): void => {
   liveSplits = [];
+  settledSplits.clear();
+  settledSplitChars = 0;
   liveSplitStats.reused = 0;
   liveSplitStats.lexed = 0;
 };
-export const __liveSplitStatsForTests = () => ({ ...liveSplitStats });
-export const __streamBlocksForTests = (text: string, live: boolean): Array<Pick<MarkdownBlock, 'raw' | 'src' | 'mode' | 'highlight'>> =>
-  streamBlocks(text, live).map(({ raw, src, mode, highlight }) => ({ raw, src, mode, highlight }));
+export const __liveSplitStatsForTests = () => ({ ...liveSplitStats, settled: settledSplits.size });
+export const __streamBlocksForTests = (
+  text: string,
+  live: boolean,
+): Array<Pick<MarkdownBlock, 'raw' | 'src' | 'mode' | 'highlight'>> =>
+  streamBlocks(text, live, 'escape').map(({ raw, src, mode, highlight }) => ({ raw, src, mode, highlight }));
 
 /**
- * Split markdown into render blocks. When not streaming, returns a single
- * `full` block. While streaming, heals incomplete syntax and isolates an
- * unclosed trailing code fence into its own `live` block so a partial fence
- * does not corrupt the parse of stable content above it.
+ * Split markdown into render blocks, one per top-level token. While
+ * streaming, only the trailing block is `live`: it is healed of incomplete
+ * syntax, and an unclosed trailing code fence stays its own block so a
+ * partial fence does not corrupt the parse of stable content above it. A
+ * settled message renders every block from its own text, so blocks that were
+ * complete while streaming keep their identity when the stream ends.
  */
-const streamBlocks = (text: string, live: boolean): MarkdownBlock[] => {
-  if (!live) return [{ raw: text, src: text, mode: 'full', highlight: true }];
-  const extended = streamTuning.reuseLiveSplit() ? extendOpenFence(text) : null;
-  if (extended) {
-    liveSplitStats.reused += 1;
-    return extended;
-  }
-  liveSplitStats.lexed += 1;
-  const blocks = lexStreamBlocks(text);
-  rememberLiveSplit(text, blocks);
-  return blocks;
-};
+const streamBlocks = (
+  text: string,
+  live: boolean,
+  rawHtml: MarkdownRawHtmlMode = 'escape',
+): MarkdownBlock[] => {
+  // Raw HTML of a document may open in one block and close in another; the
+  // allowlist pass must see it whole.
+  if (!live && rawHtml === 'sanitize') return [{ raw: text, src: text, mode: 'full', highlight: true }];
 
-const lexStreamBlocks = (text: string): MarkdownBlock[] => {
-  // Reference-style links/footnotes span multiple tokens (definition elsewhere);
-  // keep them as a single block so per-block parsing doesn't break the refs.
-  if (hasReferenceDefinitions(text)) {
-    return [{ raw: text, src: heal(text), mode: 'live', highlight: true }];
+  const split = live ? splitText(text, true) : settledSplit(text);
+  if (split.kind === 'whole') {
+    if (split.plainText) return [{ raw: text, src: text, mode: live ? 'live' : 'full', highlight: true, plainText: true }];
+    return [{ raw: text, src: live ? heal(text) : text, mode: live ? 'live' : 'full', highlight: true }];
   }
 
-  let tokens: Tokens.Generic[];
-  try {
-    tokens = inlineImageParser.lexer(text);
-  } catch {
-    return [{ raw: text, src: text, mode: 'live', highlight: true, plainText: true }];
-  }
-
-  let tail = -1;
-  for (let i = tokens.length - 1; i >= 0; i -= 1) {
-    if (tokens[i]?.type !== 'space') {
-      tail = i;
-      break;
-    }
-  }
-  if (tail < 0) return [{ raw: text, src: heal(text), mode: 'live', highlight: true }];
-
-  // Split into per-token blocks. Stable leading blocks become `full` (complete,
-  // cache-stable, not re-healed); only the trailing block is `live` and gets
-  // re-parsed as content streams in. This keeps per-step work proportional to
-  // the last block rather than the whole message.
-  const blocks: MarkdownBlock[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (!token || token.type === 'space') continue;
-    const raw = token.raw ?? '';
-    const isLast = i === tail;
-    const openFence = token.type === 'code' && hasOpenFence(raw);
-    const openFenceHighlight = openFence
-      && raw.split('\n').length <= OPEN_FENCE_HIGHLIGHT_LINE_LIMIT;
-    blocks.push({
+  const lastIndex = split.segments.length - 1;
+  return split.segments.map((segment, index): MarkdownBlock => {
+    const raw = text.slice(segment.start, segment.end);
+    const isLast = index === lastIndex;
+    const openFence = isLast && segment.fence !== undefined;
+    if (!live) return { raw, src: raw, mode: 'full', highlight: true, segment };
+    const block: MarkdownBlock = {
       raw,
       // A finished block renders from its own text, as it will once the
       // message settles: healing it made, say, a ``` mentioned mid-sentence
       // show as code until the stream ended.
       src: openFence || !isLast ? raw : heal(raw),
       mode: isLast ? 'live' : 'full',
-      highlight: !openFence || openFenceHighlight,
-    });
-  }
+      highlight: !openFence || (segment.fence?.lines ?? 0) + 1 <= OPEN_FENCE_HIGHLIGHT_LINE_LIMIT,
+      segment,
+    };
+    if (openFence) block.openFence = true;
+    return block;
+  });
+};
 
-  if (blocks.length === 0) {
-    return [{ raw: text, src: heal(text), mode: 'live', highlight: true }];
+/** Content hash of a block, computed once per segment. */
+const blockFingerprint = (block: MarkdownBlock): string => {
+  const segment = block.segment;
+  if (!segment) {
+    pipelineStats.hashedChars += block.raw.length;
+    return contentFingerprint(block.raw);
   }
-  return blocks;
+  if (!segment.fingerprint) {
+    pipelineStats.hashedChars += block.raw.length;
+    segment.fingerprint = extendFingerprint(EMPTY_FINGERPRINT, block.raw);
+  }
+  return fingerprintKey(segment.fingerprint);
 };
 
 // ---------------------------------------------------------------------------
@@ -626,6 +668,14 @@ const OPENCHAMBER_SESSION_LINK_SCHEMA = {
   validate: (text: string, pos: number): number => OPENCHAMBER_SESSION_LINK_TAIL.exec(text.slice(pos))?.[0].length ?? 0,
 };
 
+// Streamed prose with many bold or emphasis tokens made linkify search the rest
+// of the paragraph at each token on every update (openchamber/openchamber#4648).
+// With fuzzyLink off, linkify only finds links that hold `:`, `/` or `@`: every
+// scheme, `openchamber:` included, ends in `:`, a protocol-relative link starts
+// with `//`, and an email needs `@`. Text without any of them skips the search.
+// Recheck these characters when the options or schemas below change.
+const LINK_MARKER = /[:/@]/;
+
 const boundedLinkify = (): MarkedExtension => ({
   extensions: (markedLinkifyIt({ fuzzyLink: false, schemas: { 'openchamber:': OPENCHAMBER_SESSION_LINK_SCHEMA } }).extensions ?? []).map((extension) => {
     if (!('tokenizer' in extension)) return extension;
@@ -633,12 +683,12 @@ const boundedLinkify = (): MarkedExtension => ({
     return {
       ...extension,
       start(src) {
-        if (src.length > LINKIFY_SOURCE_LIMIT) return undefined;
+        if (src.length > LINKIFY_SOURCE_LIMIT || !LINK_MARKER.test(src)) return undefined;
         scanStats.linkify += src.length;
         return start?.call(this, src);
       },
       tokenizer(src, tokens) {
-        if (src.length > LINKIFY_SOURCE_LIMIT) return undefined;
+        if (src.length > LINKIFY_SOURCE_LIMIT || !LINK_MARKER.test(src)) return undefined;
         scanStats.linkify += src.length;
         return tokenizer.call(this, src, tokens);
       },
@@ -805,7 +855,7 @@ const exceedsLineLimit = (value: string, limit: number): boolean => {
   return false;
 };
 
-const highlightCodeBlocks = async (html: string): Promise<string> => {
+const highlightCodeBlocks = async (html: string, transient = false): Promise<string> => {
   const matches = [...html.matchAll(CODE_BLOCK_RE)];
   if (matches.length === 0) return html;
 
@@ -830,7 +880,7 @@ const highlightCodeBlocks = async (html: string): Promise<string> => {
 
       // Tokenize off the main thread. On failure the worker resolves to null and
       // we keep the original escaped <pre><code> (no main-thread highlight).
-      const highlighted = await highlightCodeInWorker(code, requested);
+      const highlighted = await highlightCodeInWorker(code, requested, { transient });
       if (!highlighted) return null;
       // Stamp the language so the decorate pass can show a header label.
       return { full, next: highlighted.replace(/^<pre/, `<pre data-md-lang="${requested}"`) };
@@ -891,6 +941,8 @@ const ensureSanitizeHook = (): void => {
 
 const sanitize = (html: string): string => {
   if (!DOMPurify.isSupported) return '';
+  pipelineStats.sanitizeCalls += 1;
+  pipelineStats.sanitizedChars += html.length;
   ensureSanitizeHook();
   return DOMPurify.sanitize(html, SANITIZE_CONFIG) as unknown as string;
 };
@@ -951,6 +1003,7 @@ const sanitizeDocumentHtml = (html: string): string => {
 };
 
 const parseMarkdown = (text: string, imageMode: MarkdownImageMode, rawHtml: MarkdownRawHtmlMode): string => {
+  pipelineStats.parsedChars += text.length;
   const parsed = parserFor(imageMode, rawHtml).parse(text, { async: false });
   return rawHtml === 'sanitize' ? sanitizeDocumentHtml(parsed) : parsed;
 };
@@ -989,8 +1042,8 @@ const liveBlockCache = new HighlightResultCache<string>({
   maxBytes: LIVE_CACHE_MAX_BYTES,
 });
 
-const cacheForMode = (mode: MarkdownBlock['mode']): HighlightResultCache<string> =>
-  (mode === 'live' ? liveBlockCache : fullBlockCache);
+const cacheFor = (block: MarkdownBlock): HighlightResultCache<string> =>
+  (block.mode === 'live' ? liveBlockCache : fullBlockCache);
 
 /** Content-addressed cache key for a markdown block. */
 const markdownBlockCacheKey = (
@@ -1005,6 +1058,7 @@ const markdownBlockCacheKey = (
 export const resetMarkdownHtmlCacheForTests = (): void => {
   fullBlockCache.clear();
   liveBlockCache.clear();
+  openFences.reset();
 };
 
 /** Test-only: entry counts per block cache, for churn/eviction assertions. */
@@ -1025,12 +1079,12 @@ export const getCachedMarkdownBlocks = (
 ): RenderedBlock[] | null => {
   if (!text) return [];
 
-  const blocks = streamBlocks(text, false);
+  const blocks = streamBlocks(text, false, rawHtml);
   const rendered: RenderedBlock[] = [];
   for (const block of blocks) {
-    const contentHash = contentFingerprint(block.raw);
+    const contentHash = blockFingerprint(block);
     const id = markdownBlockCacheKey(contentHash, block.mode, block.highlight, imageMode, rawHtml);
-    const html = fullBlockCache.get(id);
+    const html = cacheFor(block).get(id);
     if (html === undefined) return null;
     rendered.push({ id, html });
   }
@@ -1040,22 +1094,91 @@ export const getCachedMarkdownBlocks = (
 const renderPlainText = (text: string): string =>
   `<div class="whitespace-pre-wrap break-words">${escapeRawMarkdownHtml(text)}</div>`;
 
-const parseBlock = async (
+// Whether the highlight pass would change this HTML: it leaves Mermaid
+// fences alone, and HTML without a code block passes through as it is.
+const hasHighlightableCode = (html: string): boolean => {
+  for (const match of html.matchAll(CODE_BLOCK_RE)) {
+    if ((match[1] || 'text').toLowerCase() !== 'mermaid') return true;
+  }
+  return false;
+};
+
+/**
+ * Everything of a block's render that runs synchronously. The HTML is final
+ * (sanitized) unless `pendingHighlight`, in which case it is the unsanitized
+ * input of the highlight pass.
+ */
+type DraftBlock = { html: string; pendingHighlight: boolean };
+
+const draftBlock = (
   block: MarkdownBlock,
   imageMode: MarkdownImageMode,
   rawHtml: MarkdownRawHtmlMode,
-): Promise<string> => {
-  if (block.plainText) return renderPlainText(block.raw);
+): DraftBlock => {
+  if (block.plainText) return { html: renderPlainText(block.raw), pendingHighlight: false };
   let parsed: string;
   try {
     parsed = parseMarkdown(block.src, imageMode, rawHtml);
   } catch {
     // Preserve the original source, not the syntax repaired for streaming.
-    return renderPlainText(block.raw);
+    return { html: renderPlainText(block.raw), pendingHighlight: false };
   }
   const withMath = renderMathExpressions(parsed);
-  const highlighted = block.highlight ? await highlightCodeBlocks(withMath) : withMath;
-  return sanitize(highlighted);
+  if (block.highlight && hasHighlightableCode(withMath)) return { html: withMath, pendingHighlight: true };
+  return { html: sanitize(withMath), pendingHighlight: false };
+};
+
+// Open fences are sanitized by their new lines; see openFenceIncremental.ts.
+const openFences = createOpenFenceRenderer(sanitize);
+
+const parseBlock = async (
+  block: MarkdownBlock,
+  id: string,
+  imageMode: MarkdownImageMode,
+  rawHtml: MarkdownRawHtmlMode,
+): Promise<Omit<RenderedBlock, 'id'>> => {
+  const draft = draftBlock(block, imageMode, rawHtml);
+  if (!draft.pendingHighlight) return { html: draft.html };
+  // A fence that is still open is highlighted again with every new line; its
+  // intermediate results must not evict settled highlights from the cache.
+  const highlighted = await highlightCodeBlocks(draft.html, block.openFence === true);
+  if (!block.openFence) return { html: sanitize(highlighted) };
+  // Before its first content line, a fence's code is just marked's trailing
+  // break, which the first line will take the place of.
+  const unfinished = !block.raw.endsWith('\n') || block.raw.indexOf('\n') === block.raw.length - 1;
+  return openFences.render(highlighted, id, unfinished);
+};
+
+// Marks the id of a block painted before its code was highlighted, so the
+// async render, whose id lacks it, morphs that block in place.
+const UNHIGHLIGHTED_ID_SUFFIX = ':unhighlighted';
+
+/**
+ * Synchronous first paint of `text`, split into exactly the blocks and ids
+ * `renderMarkdownBlocks` produces. Cached blocks are used as they are; a block
+ * without code to highlight is final and cached now; a block with code is
+ * painted uncoloured under an id the async render does not match, so that
+ * render only recolours it in place and leaves the other blocks untouched.
+ */
+export const renderMarkdownBlocksSync = (
+  text: string,
+  streaming: boolean,
+  imageMode: MarkdownImageMode = 'inline',
+  rawHtml: MarkdownRawHtmlMode = 'escape',
+): RenderedBlock[] => {
+  if (!text) return [];
+
+  return streamBlocks(text, streaming, rawHtml).map((block) => {
+    const contentHash = blockFingerprint(block);
+    const id = markdownBlockCacheKey(contentHash, block.mode, block.highlight, imageMode, rawHtml);
+    const cache = cacheFor(block);
+    const cached = cache.get(id);
+    if (cached !== undefined) return { id, html: cached };
+    const draft = draftBlock(block, imageMode, rawHtml);
+    if (draft.pendingHighlight) return { id: `${id}${UNHIGHLIGHTED_ID_SUFFIX}`, html: sanitize(draft.html) };
+    cache.set(id, draft.html, utf16Bytes(id) + utf16Bytes(draft.html));
+    return { id, html: draft.html };
+  });
 };
 
 /**
@@ -1089,6 +1212,9 @@ type RenderedBlock = {
   // block) to re-morph; unchanged leading blocks are skipped entirely.
   id: string;
   html: string;
+  // A still-open code fence: how to bring a block painted from one of its
+  // earlier steps up to this one without rebuilding it.
+  patchFrom?: (paintedId: string) => OpenFencePatch | null;
 };
 
 /**
@@ -1108,19 +1234,19 @@ export const renderMarkdownBlocks = async (
 ): Promise<RenderedBlock[]> => {
   if (!text) return [];
 
-  const blocks = streamBlocks(text, streaming);
+  const blocks = streamBlocks(text, streaming, rawHtml);
   return Promise.all(
     blocks.map(async (block) => {
-      const contentHash = contentFingerprint(block.raw);
+      const contentHash = blockFingerprint(block);
       const id = markdownBlockCacheKey(contentHash, block.mode, block.highlight, imageMode, rawHtml);
-      const cache = cacheForMode(block.mode);
+      const cache = cacheFor(block);
       const cached = cache.get(id);
       if (cached !== undefined) {
         return { id, html: cached };
       }
-      const html = await parseBlock(block, imageMode, rawHtml);
-      cache.set(id, html, utf16Bytes(id) + utf16Bytes(html));
-      return { id, html };
+      const rendered = await parseBlock(block, id, imageMode, rawHtml);
+      cache.set(id, rendered.html, utf16Bytes(id) + utf16Bytes(rendered.html));
+      return { id, ...rendered };
     }),
   );
 };

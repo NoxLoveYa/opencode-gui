@@ -141,12 +141,12 @@ function modifierKeyUpToCombo(event: React.KeyboardEvent<HTMLDivElement>, option
   return parts.length > 0 ? normalizeCombo(parts.join('+')) : null;
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- tested pure recording state transition
+// oxlint-disable-next-line react/only-export-components -- tested pure recording state transition
 export function settleShortcutRecordingState(state: ShortcutRecordingState): ShortcutRecordingState {
   return state.chords.length > 0 ? { ...state, livePreview: null, settled: true } : state;
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- tested pure recording state transition
+// oxlint-disable-next-line react/only-export-components -- tested pure recording state transition
 export function updateShortcutRecordingState(
   state: ShortcutRecordingState,
   event: RecordingKeyboardEvent,
@@ -290,12 +290,12 @@ export const ShortcutRecordingDialog: React.FC<ShortcutRecordingDialogProps> = (
         >
           <div className="flex flex-wrap items-center justify-center gap-2">
             {recording.chords.map((chord, index) => (
-              <kbd key={`${chord}-${index}`} className="rounded-md border border-border bg-muted px-3 py-2 typography-ui-label font-mono text-foreground">
+              <kbd key={`${chord}-${index}`} className="rounded-md border border-border bg-muted px-3 py-2 typography-ui-label text-foreground">
                 {formatShortcutForDisplay(chord)}
               </kbd>
             ))}
             {recording.livePreview ? (
-              <kbd className="rounded-md border border-dashed border-border bg-muted px-3 py-2 typography-ui-label font-mono text-muted-foreground">
+              <kbd className="rounded-md border border-dashed border-border bg-muted px-3 py-2 typography-ui-label text-muted-foreground">
                 {formatShortcutForDisplay(recording.livePreview)}
               </kbd>
             ) : null}

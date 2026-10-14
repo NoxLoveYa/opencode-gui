@@ -49,7 +49,19 @@ type BrowserControlRequestEvent = {
   requestId: string;
   action: string;
   parameters: Record<string, unknown>;
+  context: BrowserControlRequestContext;
 };
+
+/**
+ * The session that called the browser tool and the project it works in, each
+ * null when unknown (an older server, or a caller with no session).
+ */
+const browserControlRequestContextSchema = z.object({
+  directory: z.string().min(1).nullable().catch(null),
+  sessionId: z.string().min(1).nullable().catch(null),
+});
+export type BrowserControlRequestContext = z.infer<typeof browserControlRequestContextSchema>;
+const UNKNOWN_BROWSER_CONTROL_CONTEXT: BrowserControlRequestContext = { directory: null, sessionId: null };
 
 /**
  * The agent asked for a file to be shown in the user's file panel. Every
@@ -61,6 +73,20 @@ const fileOpenRequestSchema = z.object({
   sessionId: z.string().min(1).nullable(),
 });
 type FileOpenRequestEvent = { type: 'file-open-request' } & z.infer<typeof fileOpenRequestSchema>;
+
+/**
+ * The agent asked for a saved plan to be shown. `projectId` is the storage
+ * owner; `directory` is where the asking session works, so the window that
+ * shows that project opens the plan.
+ */
+const planOpenRequestSchema = z.object({
+  projectId: z.string().min(1),
+  planId: z.string().min(1),
+  title: z.string(),
+  directory: z.string().min(1).nullable(),
+  sessionId: z.string().min(1).nullable(),
+});
+type PlanOpenRequestEvent = { type: 'plan-open-request' } & z.infer<typeof planOpenRequestSchema>;
 
 /**
  * The agent changed what it remembers. Carries only which store moved, not the
@@ -165,6 +191,7 @@ type OpenChamberEvent =
   | WorktreeChangedEvent
   | BrowserControlRequestEvent
   | FileOpenRequestEvent
+  | PlanOpenRequestEvent
   | BrowserProviderResetEvent
   | ProjectContextChangedEvent
   | AgentMemoryChangedEvent;
@@ -394,6 +421,12 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
     return;
   }
 
+  if (envelope.type === 'openchamber:plan-open-request') {
+    const parsed = planOpenRequestSchema.safeParse(envelope.properties);
+    if (parsed.success) for (const listener of listeners) listener({ type: 'plan-open-request', ...parsed.data });
+    return;
+  }
+
   if (envelope.type === 'openchamber:file-open-request') {
     const parsed = fileOpenRequestSchema.safeParse(envelope.properties);
     if (parsed.success) for (const listener of listeners) listener({ type: 'file-open-request', ...parsed.data });
@@ -481,6 +514,7 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
       parameters: rawParameters && typeof rawParameters === 'object' && !Array.isArray(rawParameters)
         ? rawParameters as Record<string, unknown>
         : {},
+      context: browserControlRequestContextSchema.safeParse(properties?.context).data ?? UNKNOWN_BROWSER_CONTROL_CONTEXT,
     };
     for (const listener of listeners) {
       listener(nextEvent);

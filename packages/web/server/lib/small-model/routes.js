@@ -2,15 +2,16 @@ export function registerSmallModelRoutes(app, { getSmallModelService }) {
   app.get('/api/small-model', async (req, res) => {
     try {
       const { describeSmallModel, listAuthenticatedProviders } = await getSmallModelService();
+      const directory = typeof req.query.directory === 'string' ? req.query.directory : undefined;
       const resolved = await describeSmallModel({
-        directory: typeof req.query.directory === 'string' ? req.query.directory : undefined,
+        directory,
         preferredProviderID: typeof req.query.providerID === 'string' ? req.query.providerID : undefined,
         preferredModelID: typeof req.query.modelID === 'string' ? req.query.modelID : undefined,
       });
       res.json({
         available: Boolean(resolved),
         model: resolved,
-        authenticatedProviders: await listAuthenticatedProviders(),
+        authenticatedProviders: await listAuthenticatedProviders(directory),
       });
     } catch (error) {
       console.error('Failed to resolve small model:', error);
@@ -21,14 +22,13 @@ export function registerSmallModelRoutes(app, { getSmallModelService }) {
   app.post('/api/small-model/generate', async (req, res) => {
     try {
       const { generateSmallModelText } = await getSmallModelService();
-      const { prompt, system, maxOutputTokens, model, directory, sessionID, preferredProviderID, preferredModelID } = req.body || {};
+      const { prompt, system, maxOutputTokens, model, directory, preferredProviderID, preferredModelID } = req.body || {};
       const result = await generateSmallModelText({
         prompt,
         system,
         maxOutputTokens,
         model,
         directory,
-        sessionID,
         preferredProviderID,
         preferredModelID,
       });

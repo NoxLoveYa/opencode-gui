@@ -20,7 +20,7 @@ export async function searchThemeCatalog(query: string, signal: AbortSignal) {
   return z.object({ items: z.array(extensionSchema).max(24) }).parse(await response.json()).items;
 }
 
-export async function readThemePackage(extension: ThemeExtension, signal: AbortSignal) {
+async function readThemePackage(extension: ThemeExtension, signal: AbortSignal) {
   const response = await runtimeFetch('/api/config/themes/catalog/package', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(extension), signal,
   });

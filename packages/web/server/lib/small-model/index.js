@@ -1,4 +1,5 @@
 import fs from 'fs';
+import net from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import os from 'os';
 import path from 'path';
@@ -218,6 +219,35 @@ const resolveSmallModel = async ({ client, directory, model, preferredProviderID
   return { providerID: fallback.providerID, modelID: fallback.id, source: 'default' };
 };
 
+const LOCAL_NETWORKS = new net.BlockList();
+for (const [address, prefix] of [['0.0.0.0', 32], ['127.0.0.0', 8], ['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16], ['169.254.0.0', 16], ['100.64.0.0', 10]]) {
+  LOCAL_NETWORKS.addSubnet(address, prefix, 'ipv4');
+}
+for (const [address, prefix] of [['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10]]) {
+  LOCAL_NETWORKS.addSubnet(address, prefix, 'ipv6');
+}
+const LOCAL_HOST_SUFFIXES = ['.localhost', '.local', '.lan', '.internal', '.home.arpa'];
+
+/**
+ * Whether the model is served from this machine or the local network, read
+ * from the endpoint OpenCode reports for it (`settings.baseURL`). Covers
+ * loopback, private and CGNAT (Tailscale) ranges, and LAN-style host names.
+ * A model whose endpoint OpenCode does not report is not local.
+ */
+const isLocalModelEndpoint = (modelInfo) => {
+  const endpoint = modelInfo?.settings?.baseURL ?? modelInfo?.settings?.endpoint;
+  if (typeof endpoint !== 'string' || !endpoint) return false;
+  let host;
+  try {
+    host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  } catch {
+    return false;
+  }
+  const family = net.isIP(host);
+  if (family) return LOCAL_NETWORKS.check(host, family === 6 ? 'ipv6' : 'ipv4');
+  return host === 'localhost' || !host.includes('.') || LOCAL_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+};
+
 const JSON_FENCE = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/;
 
 /**
@@ -362,19 +392,21 @@ export async function generateSmallModelText({ prompt, system, maxOutputTokens, 
 /**
  * Provider ids the small model can actually call. A provider counts when
  * OpenCode has at least one enabled model for it — that is the same test
- * OpenCode applies before letting a chat turn use it.
+ * OpenCode applies before letting a chat turn use it. The model list is
+ * directory-scoped, so `directory` scopes this answer the same way
+ * `describeSmallModel` scopes its own; without one the server default applies.
  *
  * The provider list alone is not enough: it comes back empty on setups where
  * models are perfectly usable, so the model list is the authority and the
  * provider list only contributes names.
  */
-export async function listAuthenticatedProviders() {
-  const client = getSmallModelClient();
+export async function listAuthenticatedProviders(directory) {
+  const client = getSmallModelClient(directory);
   if (!client) return [];
   try {
     const [providers, models] = await Promise.all([
       listProviderInfos(client),
-      listModelInfos(client),
+      listModelInfos(client, directory),
     ]);
     const enabled = new Set();
     for (const model of models) {
@@ -446,6 +478,7 @@ export async function describeSmallModel({ directory, preferredProviderID, prefe
   return {
     ...resolved,
     hasLogin,
+    localEndpoint: isLocalModelEndpoint(modelInfo),
     inputCharBudget: maxChars,
     contextTokens,
     contextKnown,

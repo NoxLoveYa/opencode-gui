@@ -607,11 +607,12 @@ export function registerGitHubRoutes(app, options = {}) {
     return 'outcome-unknown';
   };
   // GitHub's own reason for refusing a write (a locked conversation, a review
-  // of your own pull request) is what the user needs to read; the generic
-  // mutation error would hide it.
+  // of your own pull request, a merge blocked by branch protection, an
+  // organization restricting OAuth apps) is what the user needs to read; the
+  // generic mutation error would hide it.
   const providerRejection = (error) => {
     const status = error?.response?.status ?? error?.status;
-    if (![403, 404, 422].includes(status)) return error;
+    if (![403, 404, 405, 409, 422].includes(status)) return error;
     const data = error?.response?.data;
     const first = Array.isArray(data?.errors) ? data.errors[0] : undefined;
     const detail = [first, first?.message, data?.message].find((value) => isProviderString(value) && value.trim());
@@ -681,7 +682,11 @@ export function registerGitHubRoutes(app, options = {}) {
     const code = isProviderString(error?.code) && error.code
       ? error.code
       : 'GITHUB_MUTATION_FAILED';
-    const message = isMutationContextError(error) || code.startsWith('SOURCE_CONTROL_MUTATION_') || code.startsWith('SOURCE_CONTROL_LOCK_')
+    const ownMessage = isMutationContextError(error) || code.startsWith('SOURCE_CONTROL_MUTATION_') || code.startsWith('SOURCE_CONTROL_LOCK_');
+    // The generic answer hides the cause from the user, so the log keeps its
+    // status and code; never the message, which may echo private input.
+    if (!ownMessage && status !== 401) console.warn(`GitHub mutation failed: ${status} ${code} ${error?.name ?? 'unknown'}`);
+    const message = ownMessage
       ? error.message
       : status === 401 ? 'GitHub account is unavailable' : 'GitHub mutation failed';
     const body = { error: message, code };
@@ -1077,7 +1082,10 @@ export function registerGitHubRoutes(app, options = {}) {
       await invalidateCanonicalMutationCaches(context, accountContext, execution.record.target);
       return res.json(changeRequestReceipt(execution.record, execution.replayed, accountContext.providerUserId));
     } catch (error) {
-      return sendCanonicalMutationError(res, error);
+      // A refusal from any GitHub request on the way, the preflight reads as
+      // much as the write, answers with GitHub's reason. The failed record is
+      // already stored with its status and code by then.
+      return sendCanonicalMutationError(res, error?.response ? providerRejection(error) : error);
     }
   };
 
@@ -1107,7 +1115,12 @@ export function registerGitHubRoutes(app, options = {}) {
   };
 
   const isGitHubAuthInvalid = (error) => error?.status === 401;
-  const isGitHubResourceUnavailable = (error) => error?.status === 403 || error?.status === 404;
+  // GitHub's own words for a refusal, without the documentation URL Octokit
+  // appends to the error message.
+  const gitHubRefusalMessage = (error) => {
+    const message = error?.response?.data?.message;
+    return isProviderString(message) && message.trim() ? message : error.message;
+  };
 
   app.get('/api/source-control/github/capabilities', (req, res) => {
     const requestedInstance = typeof req.query?.instance === 'string' ? req.query.instance.trim() : '';
@@ -1737,7 +1750,12 @@ export function registerGitHubRoutes(app, options = {}) {
         }
         return res.status(503).json({ error: wasRateLimited ? 'GitHub rate limited' : 'GitHub request timed out' });
       }
-      if (isGitHubResourceUnavailable(error)) {
+      // A 403 is GitHub refusing this account, such as an organization that
+      // restricts OAuth apps; the user needs its message to fix access.
+      if (error?.status === 403) {
+        return res.status(403).json({ error: gitHubRefusalMessage(error) });
+      }
+      if (error?.status === 404) {
         return res.json({
           connected: true,
           repo: null,

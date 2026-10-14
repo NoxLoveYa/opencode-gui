@@ -15,10 +15,12 @@ import updaterPkg from 'electron-updater';
 import { ElectronSshManager } from './ssh-manager.mjs';
 import { replaceFileWithRetry } from './windows-file-replace.mjs';
 import { createTrayController } from './tray.mjs';
+import { applyDevDockIdentity, applyDockBadge } from './dev-dock-identity.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
 import { stopEmbeddedServer } from './server-shutdown.mjs';
 import { resolveStartupUrlProbePlan } from './startup-url-selection.mjs';
 import { clearAppCache } from './app-cache.mjs';
+import { parseExternalUrl } from './external-url-policy.mjs';
 import {
   BACKGROUND_START_ARG,
   DEEP_LINK_PROTOCOL,
@@ -34,6 +36,7 @@ import {
   installStartupMarkSink,
   isDev,
   isMacMenuBarEnabled,
+  macTrafficLightPosition,
   macosMajorVersion,
   readLoginItemSettings,
   readSettingsRoot,
@@ -58,10 +61,14 @@ import { isSplashColor, redactHostsConfigForRemote } from './remote-page-policy.
 import { connectDefaultSshInstanceAtStartup, resolveDefaultSshInstanceId } from './startup-ssh.mjs';
 import { normalizeNotificationInput, readTrimmedString, resolveHostEntryForRuntimeKey, stampForwardedNotification } from './notification-host-routing.mjs';
 import { isPackagedUiRuntimeRequest } from './packaged-ui-routing.mjs';
+import { RUNTIME_CONFIG_SCRIPT_PATHNAME, claimRuntimeConfigScriptRequest, createRuntimeConfigGate, injectRuntimeConfig } from './packaged-runtime-config.mjs';
+import { settleMainProcessCompileCache } from './compile-cache.mjs';
 import { probeDirectHostWithRetry } from './host-probe-policy.mjs';
 import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { requestRemoteHostUpdate } from './remote-host-update.mjs';
-import { assertUpdaterCapability } from './updater-capability.mjs';
+import { assertUpdaterCapability, readLinuxPackageType } from './updater-capability.mjs';
+import { relaunchAfterExit } from './linux-relaunch.mjs';
+import { installLinuxPackage } from './linux-package-install.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterChannel } from './updater-channel.mjs';
 import { convertShortcutComboToAccelerator, MINI_CHAT_GLOBAL_SHORTCUT_SETTING_KEY, normalizeStoredShortcutCombo, selectMiniChatGlobalShortcutAction } from './mini-chat-global-shortcut.mjs';
@@ -88,6 +95,7 @@ import {
   readLinuxAutostartEnabled,
   setLinuxAutostartEnabled,
 } from './linux-autostart.mjs';
+import { reconcileAppImageDesktopEntry } from './linux-desktop-entry.mjs';
 import { unsupportedAppSpecificOpenError, validateLocalPath } from './path-open-utils.mjs';
 import {
   browserPanelPermissionAuditDetails,
@@ -274,6 +282,9 @@ const state = {
   bootOutcome: null,
   startupResolved: false,
   initScript: null,
+  // { window, url, loaded } while the main window loads the application ahead
+  // of startup resolution (startEarlyMainNavigation).
+  earlyNavigation: null,
   mainWindow: null,
   quitRequested: false,
   quitConfirmed: false,
@@ -412,6 +423,32 @@ const shutdownSshSessions = async () => {
   await state.sshShutdownPromise;
 };
 
+const RENDERER_STORAGE_FLUSH_TIMEOUT_MS = 500;
+
+/**
+ * Quitting ends in app.exit(), which skips Chromium's normal shutdown and the
+ * pages' unload handlers. Pages hold throttled cache writes in memory, and
+ * Chromium holds localStorage writes it has not committed yet; both would be
+ * lost, and the next launch would paint from an older session cache. Ask each
+ * page to write what it holds, then commit storage to disk.
+ */
+const flushRendererStorage = async () => {
+  const pages = BrowserWindow.getAllWindows()
+    .filter((window) => !window.isDestroyed())
+    .map((window) => window.webContents
+      .executeJavaScript("window.dispatchEvent(new Event('openchamber:flush-persisted-state'))", true)
+      .catch(() => undefined));
+  await Promise.race([
+    Promise.all(pages),
+    new Promise((resolve) => setTimeout(resolve, RENDERER_STORAGE_FLUSH_TIMEOUT_MS)),
+  ]);
+  try {
+    session.defaultSession.flushStorageData();
+  } catch (error) {
+    log.warn('[electron] storage flush before quit failed:', error);
+  }
+};
+
 const prepareForQuit = () => {
   state.quitRequested = true;
   state.quitConfirmed = true;
@@ -447,7 +484,18 @@ const prepareForQuit = () => {
 
   setDesktopKeepAwakeActive(false);
 
-  return shutdownBackgroundServices();
+  return Promise.all([flushRendererStorage(), shutdownBackgroundServices()]);
+};
+
+// An installed .deb or .rpm updates through pkexec, which app.relaunch()'s
+// no_new_privs process can no longer run; see linux-relaunch.mjs.
+const isLinuxPackageInstall = () => process.platform === 'linux'
+  && app.isPackaged
+  && ['deb', 'rpm'].includes(readLinuxPackageType());
+
+const relaunchApp = () => {
+  if (isLinuxPackageInstall()) relaunchAfterExit();
+  else app.relaunch();
 };
 
 const performConfirmedQuit = async ({ relaunch = false } = {}) => {
@@ -463,7 +511,7 @@ const performConfirmedQuit = async ({ relaunch = false } = {}) => {
   } catch (error) {
     log.warn('[electron] background shutdown failed:', error);
   } finally {
-    if (relaunch) app.relaunch();
+    if (relaunch) relaunchApp();
     app.exit(0);
   }
 };
@@ -1009,13 +1057,21 @@ const resolveWebDistDir = () => path.join(resourceRoot(), 'web-dist');
 const packagedUiOrigin = () => `${UI_PROTOCOL}://app`;
 const buildPackagedUiUrl = (pathname = '/index.html') => new URL(pathname, `${packagedUiOrigin()}/`).toString();
 
-const injectRuntimeConfigIntoHtml = (html) => {
+// Held while the main window loads the application ahead of the local server;
+// see packaged-runtime-config.mjs.
+const runtimeConfigGate = createRuntimeConfigGate();
+
+const buildRuntimeConfigScript = () => {
   const apiBaseUrl = state.apiBaseUrl || state.sidecarUrl || '';
   const localOrigin = state.localOrigin || state.sidecarUrl || '';
-  const initScript = `<script>if(window.__OPENCHAMBER_LOCAL_ORIGIN__===undefined){window.__OPENCHAMBER_LOCAL_ORIGIN__=${JSON.stringify(localOrigin)};}if(window.__OPENCHAMBER_API_BASE_URL__===undefined){window.__OPENCHAMBER_API_BASE_URL__=${JSON.stringify(apiBaseUrl)};}if(window.__OPENCHAMBER_CLIENT_TOKEN__===undefined&&${JSON.stringify(state.clientToken || '')}){window.__OPENCHAMBER_CLIENT_TOKEN__=${JSON.stringify(state.clientToken || '')};}</script>`;
-  if (html.includes('<head>')) return html.replace('<head>', `<head>${initScript}`);
-  if (html.includes('</head>')) return html.replace('</head>', `${initScript}</head>`);
-  return `${initScript}${html}`;
+  return `if(window.__OPENCHAMBER_LOCAL_ORIGIN__===undefined){window.__OPENCHAMBER_LOCAL_ORIGIN__=${JSON.stringify(localOrigin)};}if(window.__OPENCHAMBER_API_BASE_URL__===undefined){window.__OPENCHAMBER_API_BASE_URL__=${JSON.stringify(apiBaseUrl)};}if(window.__OPENCHAMBER_CLIENT_TOKEN__===undefined&&${JSON.stringify(state.clientToken || '')}){window.__OPENCHAMBER_CLIENT_TOKEN__=${JSON.stringify(state.clientToken || '')};}`;
+};
+
+const injectRuntimeConfigIntoHtml = (html) => {
+  if (runtimeConfigGate.isHeld()) {
+    return injectRuntimeConfig(html, { pending: true, scriptBody: '', nonce: runtimeConfigGate.issueScriptNonce() });
+  }
+  return injectRuntimeConfig(html, { pending: false, scriptBody: buildRuntimeConfigScript() });
 };
 
 /**
@@ -1068,6 +1124,9 @@ const resolveBrowserPanelContents = (rawId) => {
   }
   return target;
 };
+
+/** Panel pages the agent has worked in; their debugger session holds focus emulation. */
+const focusEmulatedPanelContents = new WeakSet();
 
 /**
  * The sessions of the browser panel: the user's persistent one, and one per
@@ -1243,6 +1302,17 @@ const registerPackagedUiProtocol = () => {
         { error: { code: 'runtime_unavailable' } },
         { status: 503, headers: { 'x-openchamber-error': 'runtime-unavailable' } },
       );
+    }
+
+    if (new URL(request.url).pathname === RUNTIME_CONFIG_SCRIPT_PATHNAME) {
+      // Carries the client token: only the document it was issued to gets it.
+      if (!claimRuntimeConfigScriptRequest(runtimeConfigGate, request)) {
+        return new Response('', { status: 404, headers: { 'Cache-Control': 'no-store' } });
+      }
+      await runtimeConfigGate.whenReleased();
+      return new Response(buildRuntimeConfigScript(), {
+        headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
     }
 
     const distPath = resolveWebDistDir();
@@ -1535,11 +1605,18 @@ const spawnLocalServer = async () => {
       apiBaseUrl: state.apiBaseUrl || '',
       requestHeaders: sanitizeRuntimeRequestHeaders(state.requestHeaders || {}),
     }),
+    // Remote clients only. A package install asks for the administrator
+    // password on this machine's screen, so nobody at a phone could answer it
+    // and the server would stay down until someone at the desk did.
     desktopUpdater: {
-      check: () => handleInvoke(null, 'desktop_check_for_updates'),
+      check: async () => {
+        const updateInfo = await handleInvoke(null, 'desktop_check_for_updates');
+        return isLinuxPackageInstall() ? { ...updateInfo, installBlocked: 'desktop-host' } : updateInfo;
+      },
       install: async () => {
         const updateInfo = await handleInvoke(null, 'desktop_check_for_updates');
         if (!updateInfo.available) return updateInfo;
+        if (isLinuxPackageInstall()) return { ...updateInfo, installBlocked: 'desktop-host' };
         await handleInvoke(null, 'desktop_download_and_install_update');
         return updateInfo;
       },
@@ -1665,9 +1742,10 @@ const buildInitScript = (localOrigin, bootOutcome, apiBaseUrl = '', clientToken 
   const packagedOrigin = JSON.stringify(packagedUiOrigin());
   const macVersion = macosMajorVersion();
   const outcome = JSON.stringify(bootOutcome ?? null);
+  const sshForwardedApiUrl = JSON.stringify(sshManager.isForwardedApiUrl(apiBaseUrl) ? apiBaseUrl : '');
   return [
     '(function(){',
-    `try{var __oc_local=${local};var __oc_api=${apiBase};var __oc_headers=${headers};var __oc_packaged=${packagedOrigin};var __oc_origin=window.location&&window.location.origin||'';var __oc_is_packaged=__oc_origin===__oc_packaged;var __oc_is_local=__oc_local&&__oc_origin===new URL(__oc_local).origin;window.__OPENCHAMBER_MACOS_MAJOR__=${macVersion};window.__OPENCHAMBER_LOCAL_ORIGIN__=__oc_local;window.__OPENCHAMBER_API_BASE_URL__=__oc_api;if(__oc_is_local||__oc_is_packaged){window.__OPENCHAMBER_HOME__=${home};window.__OPENCHAMBER_RUNTIME_HEADERS__=__oc_headers;}if((__oc_is_local||__oc_is_packaged)&&${token}){window.__OPENCHAMBER_CLIENT_TOKEN__=${token};}var __oc_bo=${outcome};if(__oc_bo){window.__OPENCHAMBER_DESKTOP_BOOT_OUTCOME__=__oc_bo;}}catch(_e){}`,
+    `try{var __oc_local=${local};var __oc_api=${apiBase};var __oc_headers=${headers};var __oc_packaged=${packagedOrigin};var __oc_origin=window.location&&window.location.origin||'';var __oc_is_packaged=__oc_origin===__oc_packaged;var __oc_is_local=__oc_local&&__oc_origin===new URL(__oc_local).origin;window.__OPENCHAMBER_MACOS_MAJOR__=${macVersion};window.__OPENCHAMBER_LOCAL_ORIGIN__=__oc_local;window.__OPENCHAMBER_API_BASE_URL__=__oc_api;window.__OPENCHAMBER_SSH_FORWARD_API_URL__=${sshForwardedApiUrl};if(__oc_is_local||__oc_is_packaged){window.__OPENCHAMBER_HOME__=${home};window.__OPENCHAMBER_RUNTIME_HEADERS__=__oc_headers;}if((__oc_is_local||__oc_is_packaged)&&${token}){window.__OPENCHAMBER_CLIENT_TOKEN__=${token};}var __oc_bo=${outcome};if(__oc_bo){window.__OPENCHAMBER_DESKTOP_BOOT_OUTCOME__=__oc_bo;}}catch(_e){}`,
     '}())',
   ].join('');
 };
@@ -2494,6 +2572,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {}, 
       requestHeaders: desktopRequestHeaders,
       bootOutcome: state.bootOutcome || null,
       relayHostId: rendererRuntimeConfig.relayHostId || '',
+      explicitRuntime: runtimeConfig.explicitRuntime === true,
       trayEnabled: isMacMenuBarEnabled(),
     }),
   }));
@@ -2527,7 +2606,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {}, 
       if (browserWindow.isDestroyed()) return;
       try {
         browserWindow.setWindowButtonVisibility(true);
-        browserWindow.setTrafficLightPosition({ x: 16, y: 17 });
+        browserWindow.setTrafficLightPosition(macTrafficLightPosition());
       } catch {}
     };
     browserWindow.on('minimize', () => {
@@ -2763,6 +2842,19 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {}, 
   return browserWindow;
 };
 
+// Starts loading the packaged application in the main window before the local
+// server is up. The document's runtime values wait behind runtimeConfigGate
+// until activateMainWindow has them; the renderer loads its scripts meanwhile.
+const startEarlyMainNavigation = (url) => {
+  const mainWindow = state.mainWindow;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  runtimeConfigGate.hold();
+  const loaded = navigateWindow(mainWindow, url, { allowAbort: true });
+  // Awaited by activateMainWindow; a startup that fails first exits the app.
+  loaded.catch(() => {});
+  state.earlyNavigation = { window: mainWindow, url, loaded };
+};
+
 // Bounded so a renderer that never reports ready-to-show cannot hold the
 // backend: the splash is a courtesy, the server is the product.
 const SPLASH_SHOW_WAIT_MS = 500;
@@ -2814,10 +2906,20 @@ const activateMainWindow = async (url, localOrigin, bootOutcome, runtimeConfig =
   syncMainWindowInitScript(state.initScript);
 
   const mainWindow = state.mainWindow;
+  const earlyNavigation = state.earlyNavigation;
+  state.earlyNavigation = null;
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.__ocRuntimeConfig = rendererRuntimeConfig;
     mainWindow.__ocInitScript = state.initScript;
-    await navigateWindow(mainWindow, url, { allowAbort: true });
+  }
+  // The runtime is in state now: the document loading ahead of startup gets it.
+  runtimeConfigGate.release();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (earlyNavigation?.window === mainWindow && earlyNavigation.url === url) {
+      await earlyNavigation.loaded;
+    } else {
+      await navigateWindow(mainWindow, url, { allowAbort: true });
+    }
     mainWindow.show();
     mainWindow.focus();
     return mainWindow;
@@ -2908,6 +3010,9 @@ const findConfiguredHostForUrl = (raw) => {
   } catch {
     return null;
   }
+  // Custom schemes (vscode://, relay://) have the opaque origin "null", which
+  // would match any relay-only host and open it instead of the app link.
+  if (origin === 'null') return null;
   const hosts = readDesktopHostsConfig()?.hosts || [];
   return hosts.find((entry) => [entry?.url, entry?.apiUrl].some((candidate) => {
     if (typeof candidate !== 'string' || !candidate) return false;
@@ -2965,7 +3070,7 @@ const openHostWindow = async (host, route = null, { reuseOpenWindow = false } = 
       requestHeaders: sanitizeRuntimeRequestHeaders(host.requestHeaders || {}),
     };
   }
-  const browserWindow = await createAdditionalWindow(withSessionRoute(windowUrl, route), runtimeConfig);
+  const browserWindow = await createAdditionalWindow(withSessionRoute(windowUrl, route), { ...runtimeConfig, explicitRuntime: true });
   if (browserWindow) {
     browserWindow.__ocHostWindowId = host.id;
     browserWindow.__ocHostWindowBaseUrl = windowUrl;
@@ -3002,7 +3107,9 @@ const buildMiniChatUrl = ({ mode, sessionId, directory, projectId }) => {
 };
 
 const miniChatSessionWindowKey = (runtimeConfig, sessionId) => {
-  const runtimeKey = normalizeHostUrl(runtimeConfig?.apiBaseUrl || state.apiBaseUrl || state.localOrigin || state.sidecarUrl || '') || 'local';
+  const runtimeKey = runtimeConfig?.relayHostId
+    ? `host:${runtimeConfig.relayHostId}`
+    : normalizeHostUrl(runtimeConfig?.apiBaseUrl || state.apiBaseUrl || state.localOrigin || state.sidecarUrl || '') || 'local';
   return `${runtimeKey}\n${sessionId}`;
 };
 
@@ -3022,11 +3129,22 @@ const getWindowRuntimeConfig = (browserWindow) => {
 };
 
 const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', projectId = '', runtimeConfig = {} } = {}) => {
-  const effectiveRuntimeConfig = {
-    apiBaseUrl: normalizeHostUrl(runtimeConfig.apiBaseUrl || state.apiBaseUrl || state.localOrigin || state.sidecarUrl || ''),
-    clientToken: sanitizeClientTokenForStorage(runtimeConfig.clientToken || state.clientToken || ''),
-    requestHeaders: sanitizeRuntimeRequestHeaders(runtimeConfig.requestHeaders || state.requestHeaders || {}),
-  };
+  const relayHostId = typeof runtimeConfig.relayHostId === 'string' ? runtimeConfig.relayHostId : '';
+  // A relay-target window resolves its own transport from the host id, so the
+  // app's startup runtime (another instance) must not stand in for any of it.
+  const effectiveRuntimeConfig = relayHostId
+    ? {
+      apiBaseUrl: '',
+      clientToken: sanitizeClientTokenForStorage(runtimeConfig.clientToken || ''),
+      requestHeaders: sanitizeRuntimeRequestHeaders(runtimeConfig.requestHeaders || {}),
+      relayHostId,
+    }
+    : {
+      apiBaseUrl: normalizeHostUrl(runtimeConfig.apiBaseUrl || state.apiBaseUrl || state.localOrigin || state.sidecarUrl || ''),
+      clientToken: sanitizeClientTokenForStorage(runtimeConfig.clientToken || state.clientToken || ''),
+      requestHeaders: sanitizeRuntimeRequestHeaders(runtimeConfig.requestHeaders || state.requestHeaders || {}),
+      relayHostId: '',
+    };
   const sessionWindowKey = mode === 'session' && sessionId ? miniChatSessionWindowKey(effectiveRuntimeConfig, sessionId) : '';
   if (mode === 'session' && sessionId) {
     const existing = state.miniChatWindowsBySession.get(sessionWindowKey);
@@ -3055,13 +3173,15 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
     frame: usesFramelessChrome() ? false : undefined,
     autoHideMenuBar: process.platform !== 'darwin',
     titleBarStyle: process.platform === 'darwin' || usesFramelessChrome() ? 'hidden' : 'default',
-    trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 17 } : undefined,
+    trafficLightPosition: process.platform === 'darwin' ? macTrafficLightPosition() : undefined,
     webPreferences: {
       additionalArguments: buildRendererAdditionalArguments({
         localOrigin: desktopLocalOrigin,
         apiBaseUrl: desktopApiBaseUrl,
         clientToken: desktopClientToken,
         requestHeaders: desktopRequestHeaders,
+        relayHostId: effectiveRuntimeConfig.relayHostId || '',
+        explicitRuntime: true,
       }),
       preload: resolvePreloadPath(),
       backgroundThrottling: false,
@@ -3077,7 +3197,9 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
   browserWindow.__ocInitScript = buildInitScript(desktopLocalOrigin, state.bootOutcome, desktopApiBaseUrl, desktopClientToken, desktopRequestHeaders);
   browserWindow.__ocMiniChat = true;
   browserWindow.__ocMiniChatSessionId = sessionWindowKey;
-  browserWindow.__ocPinned = false;
+  // A mini chat is for keeping a chat in view while working elsewhere, so it
+  // opens on top of other windows; the pin button unpins this window only.
+  setMiniChatPinned(browserWindow, true);
 
   attachRendererRecovery(browserWindow, { log, label: 'mini chat' });
 
@@ -3099,7 +3221,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
       if (browserWindow.isDestroyed()) return;
       try {
         browserWindow.setWindowButtonVisibility(true);
-        browserWindow.setTrafficLightPosition({ x: 16, y: 17 });
+        browserWindow.setTrafficLightPosition(macTrafficLightPosition());
       } catch {}
     };
     browserWindow.on('show', refreshTrafficLights);
@@ -3160,6 +3282,26 @@ const resolveMiniChatRuntimeConfig = (browserWindow, args = {}) => {
   const windowConfig = getWindowRuntimeConfig(browserWindow);
   const argApiBaseUrl = typeof args.apiBaseUrl === 'string' ? args.apiBaseUrl : '';
   const targetUrl = normalizeHostUrl(argApiBaseUrl || windowConfig.apiBaseUrl || state.apiBaseUrl || state.localOrigin || state.sidecarUrl || '');
+
+  // The parent window's runtime key names the instance it is on. A relay-capable
+  // host has no injectable HTTP base (its base is the window origin on the
+  // tunnel, and the direct leg can move), so the mini chat reopens that host's
+  // own transport: the restore probes direct first and falls back to the
+  // tunnel, instead of pinning one leg or the renderer's default-host restore.
+  const runtimeKey = typeof args.runtimeKey === 'string' ? args.runtimeKey.trim() : '';
+  const hostId = runtimeKey.startsWith('host:') ? runtimeKey.slice('host:'.length) : '';
+  const relayHost = hostId
+    ? (readDesktopHostsConfig().hosts || []).find((entry) => entry.id === hostId && entry.relay) || null
+    : null;
+  if (relayHost) {
+    return {
+      apiBaseUrl: '',
+      clientToken: sanitizeClientTokenForStorage(relayHost.clientToken) || '',
+      requestHeaders: sanitizeRuntimeRequestHeaders(relayHost.requestHeaders || {}),
+      relayHostId: relayHost.id,
+    };
+  }
+
   const providedToken = sanitizeClientTokenForStorage(args.clientToken);
   const storedToken = targetUrl ? resolveStoredClientTokenForUrl(targetUrl) : '';
   const windowToken = targetUrl && sameOrigin(windowConfig.apiBaseUrl, targetUrl) ? windowConfig.clientToken : '';
@@ -3168,6 +3310,7 @@ const resolveMiniChatRuntimeConfig = (browserWindow, args = {}) => {
     apiBaseUrl: targetUrl,
     clientToken: providedToken || windowToken || storedToken || '',
     requestHeaders: sanitizeRuntimeRequestHeaders(args.requestHeaders || windowHeaders || {}),
+    relayHostId: '',
   };
 };
 
@@ -3203,7 +3346,16 @@ const showSplashConnecting = (hostLabel) => {
   showSplashStatus(menuLabel(normalizeMenuLocale(readPreferredLocale()), 'splash.connectingTo').replace('{host}', hostLabel));
 };
 
-const resolveInitialUrl = async () => {
+// A launch that will open on the local server: no server URL from the
+// environment and no remote or SSH default instance. Those keep the splash
+// until resolved, because it reports the connection attempt.
+const isPlainLocalBoot = () => {
+  if (normalizeHostUrl(process.env.OPENCHAMBER_SERVER_URL || '')) return false;
+  const { defaultHostId } = readDesktopHostsConfig();
+  return !defaultHostId || defaultHostId === LOCAL_HOST_ID;
+};
+
+const resolveInitialUrl = async ({ onPlainLocalBoot = null } = {}) => {
   const hmrApiPort = process.env.OPENCHAMBER_HMR_API_PORT || '3901';
   const hmrUiPort = process.env.OPENCHAMBER_HMR_UI_PORT || '5173';
   const hmrApiUrl = `http://127.0.0.1:${hmrApiPort}`;
@@ -3215,6 +3367,9 @@ const resolveInitialUrl = async () => {
     packagedUi: usePackagedUi,
     skipLocalServer,
   });
+  if (onPlainLocalBoot && usePackagedUi && !skipLocalServer && isPlainLocalBoot()) {
+    onPlainLocalBoot(buildPackagedUiUrl('/index.html'));
+  }
   const localUrl = skipLocalServer
     ? null
     : startupProbePlan.probeHmrApi && await waitForHealth(hmrApiUrl, 5_000, 100)
@@ -3399,6 +3554,7 @@ const setupAutoUpdater = () => {
     setTaskbarProgress(-1);
     if (state.pendingUpdate) {
       state.pendingUpdate.downloaded = true;
+      if (info?.downloadedFile) state.pendingUpdate.downloadedFile = info.downloadedFile;
     }
   });
 
@@ -3429,6 +3585,7 @@ const UPDATE_SHUTDOWN_TIMEOUT_MS = 40_000;
 const installDownloadedUpdate = () => new Promise((resolve, reject) => {
   let settled = false;
   let graceTimer;
+  let backendStopped = false;
 
   // Hold the process from here until the installer has control. Every quit
   // path checks this, so closing the last window during shutdown can no longer
@@ -3449,6 +3606,13 @@ const installDownloadedUpdate = () => new Promise((resolve, reject) => {
     rollbackQuitState();
     log.error('[electron] update install failed', error);
     reject(error instanceof Error ? error : new Error(String(error)));
+    // The backend is gone and does not restart in place, so a failure from
+    // here on (a cancelled Linux password prompt is the common one) would
+    // leave a window that reaches no server. Come back on the current version.
+    if (backendStopped) {
+      log.info('[electron] relaunching on the current version after the failed install');
+      void performConfirmedQuit({ relaunch: true });
+    }
   };
 
   autoUpdater.on('error', fail);
@@ -3462,6 +3626,7 @@ const installDownloadedUpdate = () => new Promise((resolve, reject) => {
       // The flags exist only to let the installer's own quit through the
       // hide-on-close and confirmation guards, so nothing sets them while the
       // app is still doing work that can fail.
+      backendStopped = true;
       await Promise.race([
         shutdownBackgroundServices(),
         new Promise((resolveTimeout) => {
@@ -3472,6 +3637,26 @@ const installDownloadedUpdate = () => new Promise((resolve, reject) => {
         }),
       ]);
       if (settled) return;
+      if (isLinuxPackageInstall()) {
+        // Our own async install: the window keeps drawing through the
+        // password prompt, and a rejection lands in fail() like any other.
+        log.info('[electron] installing the downloaded package');
+        // The prompt can stay open for minutes, and a background update check
+        // failing meanwhile must not relaunch the app under a running install.
+        // This install reports its own failure through the await.
+        autoUpdater.off('error', fail);
+        await installLinuxPackage({
+          packageType: readLinuxPackageType(),
+          file: state.pendingUpdate?.downloadedFile,
+        });
+        settled = true;
+        autoUpdater.off('error', fail);
+        resolve(null);
+        log.info('[electron] package installed; restarting into the new version');
+        state.updateInstallPending = false;
+        void performConfirmedQuit({ relaunch: true });
+        return;
+      }
       // Start the installer error window after terminal cleanup, which can
       // legitimately take longer than UPDATE_INSTALL_GRACE_MS.
       graceTimer = setTimeout(() => {
@@ -4425,11 +4610,41 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         ? { features: [] }
         : { features: [{ name: 'prefers-color-scheme', value: scheme }] });
 
-      if (scheme === 'system') {
+      if (scheme === 'system' && !focusEmulatedPanelContents.has(target)) {
         // Nothing left to emulate; give the session back so DevTools can attach.
         try { target.debugger.detach(); } catch { /* already gone */ }
       }
       return { scheme };
+    }
+
+    /**
+     * Keeps a page the agent works in believing it has focus.
+     *
+     * Keyboard focus stays with the user while the agent clicks and types, and
+     * a page that sees itself blurred closes what the click opened (custom
+     * selects shut on blur) and is refused the clipboard. With focus emulated
+     * the page keeps its own focus while the user's keystrokes still go to the
+     * app; the pane gives the page real focus only when this fails. Sent before every
+     * focusing action, so a page that navigated since gets it again; emulation
+     * lives in the debugger session, which therefore stays attached.
+     */
+    case 'desktop_browser_keep_page_focused': {
+      const target = resolveBrowserPanelContents(args.webContentsId);
+      if (!target.debugger.isAttached()) {
+        try {
+          target.debugger.attach('1.3');
+        } catch {
+          // DevTools holds the session; the page then behaves as it always did.
+          return { focused: false };
+        }
+      }
+      await target.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+      if (!focusEmulatedPanelContents.has(target)) {
+        focusEmulatedPanelContents.add(target);
+        // DevTools taking the session ends the emulation with it.
+        target.debugger.once('detach', () => focusEmulatedPanelContents.delete(target));
+      }
+      return { focused: true };
     }
 
     /**
@@ -4635,13 +4850,12 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         }
       }
       // Dock badge: count of chats with unseen activity (0 = cleared, also when
-      // the user disabled the badge). setBadgeCount drives the macOS dock badge.
+      // the user disabled the badge). A dev copy on a numbered branch shows
+      // that number instead (dev-dock-identity.mjs).
       try {
         const rawCount = args && typeof args.dockBadgeCount === 'number' ? args.dockBadgeCount : 0;
         const badgeCount = Number.isFinite(rawCount) ? Math.max(0, Math.floor(rawCount)) : 0;
-        if (typeof app.setBadgeCount === 'function') {
-          app.setBadgeCount(badgeCount);
-        }
+        applyDockBadge(app, badgeCount);
       } catch (error) {
         log.warn('[electron] dock badge update failed', error);
       }
@@ -4674,10 +4888,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const target = typeof args.url === 'string' ? args.url.trim() : '';
       if (!target) throw new Error('URL is required');
 
-      const parsed = new URL(target);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new Error('Only HTTP URLs can be opened externally');
-      }
+      const parsed = parseExternalUrl(target);
 
       // A saved instance opens in the app, like the window.open path above.
       const host = findConfiguredHostForUrl(parsed.toString());
@@ -4851,11 +5062,16 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return { apps: cachedApps, hasCache, isCacheStale };
     }
 
-    case 'desktop_hosts_get':
+    case 'desktop_hosts_get': {
+      const config = readDesktopHostsConfig();
       return {
-        ...readDesktopHostsConfig(),
+        ...config,
+        hosts: config.hosts.map((host) => sshManager.isForwardedApiUrl(host.apiUrl || host.url, host.id)
+          ? { ...host, sshForwarded: true }
+          : host),
         localOrigin: state.localOrigin || state.sidecarUrl || null,
       };
+    }
 
     case 'desktop_hosts_set': {
       const nextConfigInput = args.input || args.config || {};
@@ -4878,6 +5094,21 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
 
     case 'desktop_local_client_token_get':
       return readDesktopLocalClientToken();
+
+    // A page that another instance served cannot switch to Local in place. The
+    // local server answers only this app's own origins, and the local token
+    // stays with local pages. For such a page the main window loads the Local
+    // UI, the same way openchamber://host/local does. The app's own pages get
+    // false and switch in place.
+    case 'desktop_switch_to_local': {
+      if (!browserWindow || browserWindow.id !== state.mainWindow?.id) return false;
+      if (!state.sidecarUrl || isLocalSender(browserWindow.webContents)) return false;
+      // Not awaited, because the navigation replaces the page that waits for this answer.
+      void switchToHostById(LOCAL_HOST_ID).catch((error) => {
+        log.warn('[electron] failed to switch the main window to Local:', error);
+      });
+      return true;
+    }
 
     case 'desktop_install_id_get':
       return getOrCreateDesktopInstallId();
@@ -5046,7 +5277,11 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
             // event left this promise pending and its listeners attached on
             // every retry.
             Promise.resolve(autoUpdater.downloadUpdate())
-              .then(() => finish(resolve, null))
+              .then((files) => {
+                // The installer comes first; Linux packages install from it.
+                if (state.pendingUpdate && files?.[0]) state.pendingUpdate.downloadedFile = files[0];
+                finish(resolve, null);
+              })
               .catch((error) => finish(reject, error));
           });
         }
@@ -5163,7 +5398,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (shouldUsePackagedUi()) {
         windowUrl = buildPackagedUiUrl('/index.html');
       }
-      await createAdditionalWindow(windowUrl, runtimeConfig);
+      await createAdditionalWindow(windowUrl, { ...runtimeConfig, explicitRuntime: true });
       return null;
     }
 
@@ -5650,6 +5885,7 @@ const isLocalSender = (webContents) => {
 const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_hosts_get',
   'desktop_host_probe',
+  'desktop_switch_to_local',
   'desktop_new_window',
   'desktop_new_window_at_url',
   'desktop_new_window_for_host',
@@ -6048,6 +6284,15 @@ app.on('activate', async () => {
   targetWindow.focus();
 });
 
+// Off the startup path: the flush writes the cache synchronously.
+const COMPILE_CACHE_SETTLE_DELAY_MS = 5_000;
+const scheduleCompileCacheSettle = () => {
+  const timer = setTimeout(() => {
+    void settleMainProcessCompileCache({ userDataDir: app.getPath('userData') });
+  }, COMPILE_CACHE_SETTLE_DELAY_MS);
+  timer.unref?.();
+};
+
 app.whenReady().then(async () => {
   if (wasEarlyWindowClosed()) return;
   const loginItemSettings = readLoginItemSettings();
@@ -6073,6 +6318,7 @@ app.whenReady().then(async () => {
 
   if (process.platform === 'darwin') {
     Menu.setApplicationMenu(buildMacMenu());
+    void applyDevDockIdentity({ app, electronDir: __dirname, log });
   } else {
     Menu.setApplicationMenu(buildAutoHiddenMenu());
   }
@@ -6102,6 +6348,9 @@ app.whenReady().then(async () => {
     } catch (error) {
       log.warn('[electron] failed to reconcile Linux autostart entry', error);
     }
+    void reconcileAppImageDesktopEntry()
+      .then((result) => log.info('[electron] AppImage launcher entry', result))
+      .catch((error) => log.warn('[electron] failed to reconcile AppImage launcher entry', error));
   }
 
   if (isBackgroundStart) {
@@ -6117,6 +6366,7 @@ app.whenReady().then(async () => {
     state.initScript = buildInitScript(localOrigin, state.bootOutcome, apiBaseUrl, clientToken, state.requestHeaders);
     log.info('[electron] started in background without window');
     replayDeferredAppEvents();
+    scheduleCompileCacheSettle();
     return;
   }
 
@@ -6124,9 +6374,12 @@ app.whenReady().then(async () => {
   if (initial.length > 0) handleDeepLinks(initial);
 
   await mainWindowShown;
-  const { initialUrl, localOrigin, bootOutcome, apiBaseUrl, clientToken, requestHeaders } = await resolveInitialUrl();
+  const { initialUrl, localOrigin, bootOutcome, apiBaseUrl, clientToken, requestHeaders } = await resolveInitialUrl({
+    onPlainLocalBoot: startEarlyMainNavigation,
+  });
   await activateMainWindow(initialUrl, localOrigin, bootOutcome, { apiBaseUrl, clientToken, requestHeaders });
   replayDeferredAppEvents();
+  scheduleCompileCacheSettle();
 
   // Notify renderer on OS wake-from-sleep so the SSE event pipeline can
   // reconnect immediately instead of waiting for the heartbeat watchdog.

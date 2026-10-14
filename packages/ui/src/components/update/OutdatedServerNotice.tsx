@@ -26,7 +26,7 @@ export function OutdatedServerNotice({ version }: { version: string }) {
     setOffer({ kind: 'checking' });
     try {
       const info = await checkConnectedServerForUpdates();
-      setOffer(info.available && info.installBlocked !== 'service-manager'
+      setOffer(info.available && !info.installBlocked
         ? { kind: 'available', info }
         : { kind: 'manual', info, error: null });
     } catch (error) {
@@ -48,13 +48,21 @@ export function OutdatedServerNotice({ version }: { version: string }) {
         {offer.kind === 'checking' ? t('startup.serverOutdated.checking') : t('onboarding.desktopRecovery.remoteIncompatible.updateServer')}
       </Button>
       {manual && (
-        <div className="w-full space-y-2 text-left">
+        <div className="w-full space-y-2 text-start">
           {!manual.info?.available && (
             <p className="typography-meta text-[var(--status-error)]">{t('startup.serverOutdated.noUpdate')}</p>
           )}
           {manual.error && <p className="typography-meta text-muted-foreground">{manual.error}</p>}
-          <p className="typography-meta text-muted-foreground">{t('onboarding.desktopRecovery.remoteIncompatible.manualUpdate')}</p>
-          <code className="block select-text rounded-md bg-[var(--surface-muted)] px-3 py-2 font-mono text-sm text-foreground">{manualCommand}</code>
+          {manual.info?.installBlocked === 'desktop-host' ? (
+            <p className="typography-meta text-muted-foreground">
+              {t('updateDialog.desktopHostInstall', { version: manual.info.version || '' })}
+            </p>
+          ) : (
+            <>
+              <p className="typography-meta text-muted-foreground">{t('onboarding.desktopRecovery.remoteIncompatible.manualUpdate')}</p>
+              <code className="block select-text rounded-md bg-[var(--surface-muted)] px-3 py-2 font-mono text-sm text-foreground">{manualCommand}</code>
+            </>
+          )}
         </div>
       )}
       <UpdateDialog

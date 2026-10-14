@@ -16,6 +16,7 @@ export const OPENCHAMBER_CONTROL_ACTION_DEFINITIONS = Object.freeze([
   { action: 'session.fork', title: 'Fork a session', description: 'Fork sessionId; messageId selects the boundary; prompt is optional' },
   { action: 'session.status', title: 'Check session status', description: 'Check sessionId status; directory defaults to the current session' },
   { action: 'session.messages', title: 'Read session messages', description: 'Read text-only messages and current sessionStatus for sessionId; directory and limit 10 are defaults' },
+  { action: 'session.moveToWorktree', title: 'Move a session into a new worktree', description: 'Move sessionId (default: this session) into a new worktree of its repository and continue there: the worktree is made the way the New worktree dialog makes one, branching from startRef (default: the repository\'s default branch), every uncommitted change in the checkout travels with the session, and nothing moves when those changes cannot be carried over. The changes always come from where the session lives; directory is ignored. Requires worktree, a short folder name for the task; branch defaults to it' },
   { action: 'session.link', title: 'Link a change or issue to a session', description: 'Link a change under review (pull or merge request) or an issue, on any service, to a session; requires link, sessionId defaults to the current session. Each link is added beside the others; linking one that is already there updates its title instead of adding it twice. Links are only added; the user removes them' },
   { action: 'schedule.status', title: 'Check scheduler status', description: 'Check scheduler status; no parameters', agentExposed: false },
   { action: 'schedule.list', title: 'List scheduled tasks', description: 'List tasks and scheduler status; scope with projectId or directory' },
@@ -41,7 +42,7 @@ export const OPENCHAMBER_AGENT_TOOL_ACTIONS = Object.freeze(
 
 export const OPENCHAMBER_WEB_ACTION_DEFINITIONS = Object.freeze([
   { action: 'browser.open', title: 'Open a page in the browser panel', description: 'Open url in the in-app browser panel; use it to look at the running app. Without tabId it opens a new background tab and answers with its tabId: pass that tabId to the following actions to keep working there. With tabId it loads url in that tab. Set viewport to mobile, tablet or desktop to lay the page out at that size. The result says whether this client can drive the page: drivable false means display-only, so later browser actions cannot run there' },
-  { action: 'browser.snapshot', title: 'Read the open page', description: 'Read the open page: url, title, visible text, and interactive elements with the selectors the other browser actions accept. Pass selector to read only that part of a long page. Reports any errors the page logged, and lists the open tabs with the ids tabId accepts' },
+  { action: 'browser.snapshot', title: 'Read the open page', description: 'Read the open page: url, title, visible text, and interactive elements with the selectors the other browser actions accept. Pass selector to read only that part of a long page. Reports any errors the page logged, and lists the open tabs with the ids tabId accepts and who opened each: you, the user, or another session' },
   { action: 'browser.click', title: 'Click on the open page', description: 'Click an element; give selector, or text to match a link or button by its visible label' },
   { action: 'browser.type', title: 'Type into the open page', description: 'Type value into the field matched by selector; set submit to press Enter afterwards' },
   { action: 'browser.scroll', title: 'Scroll the open page', description: 'Scroll the page; direction is up, down, top, or bottom, or pass selector to bring one element into view' },
@@ -79,6 +80,25 @@ export const OPENCHAMBER_MEMORY_ACTIONS = Object.freeze(
 );
 
 /**
+ * Project knowledge is its own tool: keeping the Notes, Todos and Plans the
+ * user sees in the panel is a distinct intent from running sessions, and the
+ * user switches it off on its own without losing session control. One small
+ * vocabulary with `kind` keeps the bare verbs unambiguous, the way memory's are.
+ * Plans are markdown files, so reading one and small edits use the agent's
+ * own file tools on the path list gives.
+ */
+export const OPENCHAMBER_KNOWLEDGE_ACTION_DEFINITIONS = Object.freeze([
+  { action: 'knowledge.list', title: 'List project knowledge', description: 'Everything the project keeps in one answer: notes with their text, todos with their state, plans by title with the path of their markdown file. List before you add something, so you do not add it twice' },
+  { action: 'knowledge.save', title: 'Save project knowledge', description: 'Create (no id) or replace (with id) a note, todo or plan; requires kind and body. A plan body is the whole markdown document and starts with a # title line; the answer gives its path. A todo takes completed too, and a todo update may send completed alone. Pass expected when replacing a note or plan' },
+  { action: 'knowledge.delete', title: 'Delete project knowledge', description: 'Delete one note, todo or plan; requires kind and id' },
+  { action: 'knowledge.show', title: 'Show a plan to the user', description: 'Open a plan in front of the user in OpenChamber, where they read it, comment on lines and send it to a session; requires kind plan and id' },
+]);
+
+export const OPENCHAMBER_KNOWLEDGE_ACTIONS = Object.freeze(
+  OPENCHAMBER_KNOWLEDGE_ACTION_DEFINITIONS.map(({ action }) => action),
+);
+
+/**
  * Notify is its own tool so it can stay off by default and disappear
  * completely: an agent that can page the user is a choice the user makes.
  */
@@ -104,6 +124,7 @@ const ACTIONS_BY_TOOL = Object.freeze({
   openchamber: OPENCHAMBER_AGENT_TOOL_ACTIONS,
   openchamber_web: OPENCHAMBER_WEB_ACTIONS,
   openchamber_memory: OPENCHAMBER_MEMORY_ACTIONS,
+  openchamber_knowledge: OPENCHAMBER_KNOWLEDGE_ACTIONS,
   openchamber_notify: OPENCHAMBER_NOTIFY_ACTIONS,
 });
 
@@ -151,5 +172,6 @@ export const OPENCHAMBER_ALL_ACTIONS = Object.freeze([
   ...OPENCHAMBER_CONTROL_ACTIONS,
   ...OPENCHAMBER_WEB_ACTIONS,
   ...OPENCHAMBER_MEMORY_ACTIONS,
+  ...OPENCHAMBER_KNOWLEDGE_ACTIONS,
   ...OPENCHAMBER_NOTIFY_ACTIONS,
 ]);

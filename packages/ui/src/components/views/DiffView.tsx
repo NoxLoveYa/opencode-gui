@@ -9,12 +9,15 @@ import { CommitComparisonSelector } from '@/components/views/git/CommitCompariso
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useNestedGitDirectory } from '@/hooks/useNestedGitDirectory';
 import { NestedRepoPicker } from '@/components/views/git/NestedRepoPicker';
+import { ContextPanelHeaderToolbar } from '@/components/layout/contextPanelHeaderSlot';
+import { useInContextPanelHeader } from '@/components/layout/contextPanelHeaderSlotContext';
 import { BranchComparisonSelector } from '@/components/views/git/BranchComparisonSelector';
-import { branchRefLabel, qualifyBaseRef } from '@/components/views/git/baseBranch';
+import { branchRefLabel } from '@/components/views/git/baseBranch';
 import { useGitStore, useGitStatus, useIsGitRepo, useGitLoadingStatus } from '@/stores/useGitStore';
 import { useGitBaseBranchStore } from '@/stores/useGitBaseBranchStore';
 import { useBranchComparisonBase } from '@/hooks/useBranchComparisonBase';
-import { coerceDiffScope, isBranchScopeAvailable, isBranchScopeDefinitelyUnavailable, useRangeKeyedCache, useBoundedDirectoryRetry } from './branchDiffScope';
+import { useDiffToolbarFit } from '@/components/views/useDiffToolbarFit';
+import { branchPathRevisions, coerceDiffScope, isBranchScopeAvailable, isBranchScopeDefinitelyUnavailable, useRangeKeyedCache, useBoundedDirectoryRetry } from './branchDiffScope';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { cn } from '@/lib/utils';
 import { normalizePath } from '@/lib/pathNormalization';
@@ -36,25 +39,35 @@ import { getLanguageFromExtension, isImageFile } from '@/lib/toolHelpers';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { DiffViewToggle } from '@/components/chat/message/DiffViewToggle';
 import type { DiffViewMode } from '@/components/chat/message/types';
-import { ReviewFlowDialog, type ReviewFlowExecution } from '@/components/session/ReviewFlowDialog';
+import { ReviewFlowDialog } from '@/components/session/ReviewFlowDialog';
+import { useReviewFlowStart } from '@/components/session/useReviewFlowStart';
 import { PierreDiffViewer, type ContextExpansionRequest, type DiffHunkActions } from './PierreDiffViewer';
 import { HunkActions, type HunkBusyState, type HunkDiffAction } from './git/HunkActions';
 import { describeChange } from './git/changeStatus';
+import {
+    FileTreeChevron,
+    FileTreeIndentGuides,
+    FileTreeStatusLetter,
+} from './files/FileTreeRowParts';
+import {
+    fileTreeRowPaddingLeft,
+    fileTreeRowStateClassName,
+} from './files/fileTreeRow';
 import { useDeviceInfo } from '@/lib/device';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
+import { WhitespaceToggleIcon } from './WhitespaceToggleIcon';
 import { getContextFileOpenFailureMessage, validateContextFileOpen } from '@/lib/contextFileOpenGuard';
 import { toAbsoluteFilePath } from '@/lib/path-utils';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { findDiffScrollAnchor, getRestoredDiffScrollTop, type DiffScrollAnchor } from './diffScrollAnchor';
-import { useI18n } from '@/lib/i18n';
+import { isRightToLeft, useI18n } from '@/lib/i18n';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { changeRequestCopy } from '@/lib/source-control/changeRequestCopy';
 import type { SourceControlProvider } from '@/lib/api/types';
 import { buildDiffTreeRows } from './diffFileTree';
 import { fileDiffFromPatch, isBinaryPatch, extractHunkPatch, haveMatchingPatchVersions, getPatchHunkAnchors } from '@/lib/diff/patchFileDiff';
 import { isVSCodeRuntime } from '@/lib/desktop';
-import { startReviewFlow } from '@/lib/reviewFlow';
 import { WALKTHROUGH_ACTION_CLASS } from '@/components/views/walkthrough/walkthroughAction';
 import type { WalkthroughTarget } from '@/lib/walkthrough/types';
 import { useWalkthroughStore } from '@/stores/useWalkthroughStore';
@@ -354,7 +367,7 @@ const FileList = React.memo<FileListProps>(({
                                 type="button"
                                 onClick={() => onSelectFile(file.path)}
                                 className={cn(
-                                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
+                                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start transition-colors',
                                     isActive
                                         ? 'bg-interactive-selection text-interactive-selection-foreground'
                                         : 'text-muted-foreground hover:bg-interactive-hover hover:text-foreground'
@@ -370,8 +383,8 @@ const FileList = React.memo<FileListProps>(({
                                     {descriptor.code}
                                 </span>
                                 <span
-                                    className="min-w-0 flex-1 truncate typography-meta"
-                                    style={{ direction: 'rtl', textAlign: 'left', unicodeBidi: 'plaintext' }}
+                                    className="oc-ui-start-align min-w-0 flex-1 truncate typography-meta"
+                                    style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}
                                     title={file.path}
                                 >
                                     {file.path}
@@ -386,8 +399,6 @@ const FileList = React.memo<FileListProps>(({
     );
 });
 
-const TREE_ROW_INDENT_PX = 12;
-const TREE_ROW_BASE_PADDING_PX = 8;
 const FILE_TREE_MIN_WIDTH = 160;
 const FILE_TREE_MAX_FRACTION = 0.5;
 
@@ -425,26 +436,16 @@ const FileTree = React.memo<FileListProps>(({
         });
     }, []);
 
-    // One faint vertical guide per ancestor level, centred under its chevron.
-    const renderIndentGuides = (depth: number) => Array.from({ length: depth }, (_, level) => (
-        <span
-            key={level}
-            aria-hidden
-            className="pointer-events-none absolute inset-y-0 w-px bg-border/50"
-            style={{ left: `${TREE_ROW_BASE_PADDING_PX + level * TREE_ROW_INDENT_PX + 7}px` }}
-        />
-    ));
-
     return (
         <ScrollableOverlay outerClassName="flex-1 min-h-0" className="px-1.5 py-1.5">
             <ul className="flex flex-col">
                 {rows.map((row) => {
-                    const paddingLeft = `${TREE_ROW_BASE_PADDING_PX + row.depth * TREE_ROW_INDENT_PX}px`;
+                    const paddingLeft = fileTreeRowPaddingLeft(row.depth);
 
                     if (row.kind === 'directory') {
                         return (
                             <li key={row.key} className="relative">
-                                {renderIndentGuides(row.depth)}
+                                <FileTreeIndentGuides depth={row.depth} />
                                 <button
                                     type="button"
                                     onClick={() => toggleDirectory(row.path)}
@@ -452,14 +453,11 @@ const FileTree = React.memo<FileListProps>(({
                                     aria-label={row.expanded
                                         ? t('diffView.fileTree.collapseDirectoryAria', { path: row.path })
                                         : t('diffView.fileTree.expandDirectoryAria', { path: row.path })}
-                                    className="flex w-full items-center gap-1 rounded-md py-1 pr-2 text-left text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground"
-                                    style={{ paddingLeft }}
+                                    className="flex w-full items-center gap-1 rounded-md py-1 pe-2 text-start text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground"
+                                    style={{ paddingInlineStart: paddingLeft }}
                                     title={row.path}
                                 >
-                                    <Icon
-                                        name="arrow-right-s"
-                                        className={cn('size-3.5 flex-shrink-0 transition-transform', row.expanded && 'rotate-90')}
-                                    />
+                                    <FileTreeChevron expanded={row.expanded} />
                                     <span className="min-w-0 flex-1 truncate typography-meta">{row.label}</span>
                                 </button>
                             </li>
@@ -470,30 +468,25 @@ const FileTree = React.memo<FileListProps>(({
                     const isActive = selectedFile === row.file.path;
                     return (
                         <li key={row.key} className="relative">
-                            {renderIndentGuides(row.depth)}
+                            <FileTreeIndentGuides depth={row.depth} />
                             <button
                                 type="button"
                                 onClick={() => onSelectFile(row.file.path)}
                                 aria-current={isActive ? 'true' : undefined}
                                 className={cn(
-                                    'flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left transition-colors',
-                                    isActive
-                                        ? 'bg-interactive-selection text-interactive-selection-foreground'
-                                        : 'text-foreground/90 hover:bg-interactive-hover hover:text-foreground'
+                                    'flex w-full items-center gap-1.5 rounded-md py-1 pe-2 text-start transition-colors',
+                                    fileTreeRowStateClassName(isActive)
                                 )}
-                                style={{ paddingLeft }}
+                                style={{ paddingInlineStart: paddingLeft }}
                                 title={row.file.path}
                             >
-                                <FileTypeIcon filePath={row.file.path} className="ml-0.5 size-3.5 flex-shrink-0" />
+                                <FileTypeIcon filePath={row.file.path} className="ms-0.5 size-3.5 flex-shrink-0" />
                                 <span className="min-w-0 flex-1 truncate typography-meta">{row.name}</span>
-                                <span
-                                    className="typography-micro font-semibold w-3 text-center uppercase"
-                                    style={{ color: descriptor.color }}
-                                    title={t(descriptor.descriptionKey)}
-                                    aria-label={t(descriptor.descriptionKey)}
-                                >
-                                    {descriptor.code}
-                                </span>
+                                <FileTreeStatusLetter
+                                    code={descriptor.code}
+                                    color={descriptor.color}
+                                    label={t(descriptor.descriptionKey)}
+                                />
                             </button>
                         </li>
                     );
@@ -1031,8 +1024,8 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                                     if (lastSlash === -1) {
                                         return (
                                             <span
-                                                className="block min-w-0 truncate typography-ui-label text-foreground"
-                                                style={{ direction: 'rtl', textAlign: 'left', unicodeBidi: 'plaintext' }}
+                                                className="oc-ui-start-align block min-w-0 truncate typography-ui-label text-foreground"
+                                                style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}
                                             >
                                                 {file.path}
                                             </span>
@@ -1043,10 +1036,10 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                                     const name = file.path.slice(lastSlash + 1);
 
                                     return (
-                                        <span className="flex min-w-0 items-baseline overflow-hidden">
+                                        <span dir="ltr" className="flex min-w-0 items-baseline overflow-hidden">
                                             <span
-                                                className="min-w-0 truncate typography-ui-label text-muted-foreground"
-                                                style={{ direction: 'rtl', textAlign: 'left', unicodeBidi: 'plaintext' }}
+                                                className="oc-ui-start-align min-w-0 truncate typography-ui-label text-muted-foreground"
+                                                style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}
                                             >
                                                 {dir}
                                             </span>
@@ -1194,7 +1187,11 @@ interface DiffViewProps {
     stackedDefaultCollapsedAll?: boolean;
     pinSelectedFileHeaderToTopOnNavigate?: boolean;
     showOpenInEditorAction?: boolean;
-    diffScope?: DiffScope;
+    /**
+     * Null opens on the default: Branch on a branch that has one, else the
+     * working tree. A scope the person picks is reported and passed back.
+     */
+    diffScope?: DiffScope | null;
     onDiffScopeChange?: (scope: PendingDiffScope) => void;
     targetFilePath?: string | null;
     /** Render diff content flush with the container edges (no outer padding). */
@@ -1213,6 +1210,9 @@ export const DiffView: React.FC<DiffViewProps> = ({
     flushContent = false,
 }) => {
     const { t } = useI18n();
+    const inPanelHeader = useInContextPanelHeader();
+    const toolbarRef = React.useRef<HTMLDivElement | null>(null);
+    useDiffToolbarFit(toolbarRef);
     const { git, files, sourceControl } = useRuntimeAPIs();
     const rootDirectory = useEffectiveDirectory();
     const runtimeKey = useGitStore((state) => state.runtimeKey);
@@ -1248,11 +1248,10 @@ export const DiffView: React.FC<DiffViewProps> = ({
     // status row it hangs off did not move.
     const [workingTreeRevision, setWorkingTreeRevision] = React.useState(0);
     const [reviewDialogOpen, setReviewDialogOpen] = React.useState(false);
-    const [reviewFlowSubmitting, setReviewFlowSubmitting] = React.useState(false);
-    const [activeDiffScope, setActiveDiffScope] = React.useState(diffScope);
+    const [activeDiffScope, setActiveDiffScope] = React.useState<DiffScope>(diffScope ?? 'working');
 
     React.useEffect(() => {
-        setActiveDiffScope(diffScope);
+        if (diffScope !== null) setActiveDiffScope(diffScope);
     }, [diffScope]);
 
     const pendingDiffFile = useUIStore((state) => state.pendingDiffFile);
@@ -1261,7 +1260,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
     const setPendingDiffFile = useUIStore((state) => state.setPendingDiffFile);
     const diffLayoutPreference = useUIStore((state) => state.diffLayoutPreference);
     const diffFileLayout = useUIStore((state) => state.diffFileLayout);
-    const setDiffFileLayout = useUIStore((state) => state.setDiffFileLayout);
+    const setDiffLayoutForAllFiles = useUIStore((state) => state.setDiffLayoutForAllFiles);
     const diffWrapLinesStore = useUIStore((state) => state.diffWrapLines);
     const setDiffWrapLines = useUIStore((state) => state.setDiffWrapLines);
     const diffHideWhitespace = useUIStore((state) => state.diffHideWhitespace);
@@ -1430,19 +1429,35 @@ export const DiffView: React.FC<DiffViewProps> = ({
         BRANCH_METADATA_MAX_ATTEMPTS
     );
 
-    const repositoryDefaultBranch = React.useMemo(() => {
-        const primaryRemote = binding.contexts[0]?.primaryRemote;
-        return primaryRemote ? branches?.defaultBranches?.[primaryRemote] ?? null : null;
-    }, [binding.contexts, branches]);
-    // Offered only while the default branch is known and the current branch is
-    // not it (an unknown default must not flash the option on a guess), and
-    // only outside VS Code (the extension has no context diff panel).
-    const showBranchOption = !isVSCodeRuntime() && isBranchScopeAvailable(currentBranch, repositoryDefaultBranch);
+    const setBaseOverride = useGitBaseBranchStore((state) => state.setOverride);
+    const clearBaseOverride = useGitBaseBranchStore((state) => state.clearOverride);
+    const remoteNames = React.useMemo(
+        () => new Set(binding.read?.repository.remotes.map((remote) => remote.name) ?? []),
+        [binding.read]
+    );
+    // Chosen, else the open pull request's base, else the reflog, else the
+    // default branch, qualified to the bound remote's copy where it has one.
+    // Resolved in every scope: whether a base exists decides whether the
+    // Branch scope is offered at all. VS Code has no context diff panel.
+    const { base: qualifiedBranchBase, source: branchBaseSource, resolved: isBranchBaseResolved, revision: branchRevision } = useBranchComparisonBase(
+        effectiveDirectory ?? null,
+        currentBranch,
+        visible && !isVSCodeRuntime() && isGitRepo !== false,
+        { branches, remoteNames, primaryRemote: binding.contexts[0]?.primaryRemote, readContext: binding.contexts[0] ?? null },
+    );
+    const showBranchOption = !isVSCodeRuntime() && isBranchScopeAvailable(currentBranch, qualifiedBranchBase);
+    // On a branch with a base, the default view is the whole branch against
+    // it, uncommitted work included: what its pull request will merge. It
+    // follows the branch until the person picks a view.
+    React.useEffect(() => {
+        if (diffScope === null) setActiveDiffScope(showBranchOption ? 'branch' : 'working');
+    }, [diffScope, showBranchOption]);
     // Coercion acts only on CONFIRMED unavailability: the runtime has no branch
-    // scope at all, a settled status has no branch (detached HEAD), the default
-    // branch is known and we are on it, or metadata retries were exhausted.
-    // While status/metadata are still loading a persisted branch scope must
-    // survive instead of being rewritten to working on the first render.
+    // scope at all, a settled status has no branch (detached HEAD), every base
+    // candidate answered without a base (the default branch, or a repository
+    // with nothing to compare against), or metadata retries were exhausted.
+    // While status and the base are still loading a persisted branch scope
+    // must survive instead of being rewritten to working on the first render.
     // `status !== null` is the settled test: before the first status request
     // even starts, status is null with loading still false, and that must not
     // read as "settled without a branch".
@@ -1451,17 +1466,10 @@ export const DiffView: React.FC<DiffViewProps> = ({
         || branchMetadataExhausted
         || isBranchScopeDefinitelyUnavailable(
             currentBranch,
-            repositoryDefaultBranch,
+            qualifiedBranchBase,
             isBranchStatusResolved,
-            branches !== null && binding.status === 'ready'
+            isBranchBaseResolved && binding.status === 'ready'
         );
-
-    const setBaseOverride = useGitBaseBranchStore((state) => state.setOverride);
-    const { base: branchBase, resolved: isBranchBaseResolved, revision: branchRevision } = useBranchComparisonBase(
-        effectiveDirectory ?? null,
-        currentBranch,
-        visible && showBranchOption && activeDiffScope === 'branch',
-    );
     const [comparisonRetryRevision, setComparisonRetryRevision] = React.useState(0);
 
     // A context tab persists its scope across branch checkouts and runtime
@@ -1476,28 +1484,14 @@ export const DiffView: React.FC<DiffViewProps> = ({
         if (coercedScope !== activeDiffScope) {
             setActiveDiffScope(coercedScope);
             // The only coercion is 'branch' -> 'working', so the persisted
-            // value always fits the callback domain.
-            if (coercedScope === 'working') {
+            // value always fits the callback domain. A default view is not
+            // persisted: it follows the branch on its own.
+            if (coercedScope === 'working' && diffScope !== null) {
                 onDiffScopeChange?.('working');
             }
         }
-    }, [activeDiffScope, branchScopeDefinitelyUnavailable, onDiffScopeChange]);
+    }, [activeDiffScope, branchScopeDefinitelyUnavailable, diffScope, onDiffScopeChange]);
 
-    // A base is named literally by the range API and must belong to the remote
-    // this repository is bound to, so the chosen or detected one is qualified
-    // before it becomes a comparison.
-    const qualifiedBranchBase = React.useMemo(() => {
-        // A branch is never its own base, checked before the ref is qualified:
-        // afterwards `refs/heads/main` never equals a plain `main`.
-        if (!branchBase || branchBase === currentBranch) return null;
-        const all = branches?.all ?? [];
-        return qualifyBaseRef(branchBase, {
-            localBranches: all.filter((name) => !name.startsWith('remotes/')),
-            remoteBranches: all.filter((name) => name.startsWith('remotes/')).map((name) => name.slice('remotes/'.length)),
-            remoteNames: new Set(binding.read?.repository.remotes.map((remote) => remote.name) ?? []),
-            primaryRemote: binding.contexts[0]?.primaryRemote,
-        });
-    }, [binding.contexts, binding.read, branchBase, branches, currentBranch]);
     const comparisonSource = React.useMemo<GitComparisonSource | null>(() => {
         if (activeDiffScope === 'pr') return selectedPr;
         if (activeDiffScope === 'commit' && selectedCommitHash) return { kind: 'commit', hash: selectedCommitHash };
@@ -1562,12 +1556,19 @@ export const DiffView: React.FC<DiffViewProps> = ({
         [activeDiffScope, fetchComparisonDiffEntry, fetchComparisonFullFileEntry]
     );
 
+    // A status read re-reads the Branch file list; each expanded file then
+    // re-reads its patch only when its own revision moved.
+    const branchDiffRevisions = React.useMemo(
+        () => activeDiffScope === 'branch' ? branchPathRevisions(branchFiles, branchRevision) : undefined,
+        [activeDiffScope, branchFiles, branchRevision]
+    );
     const comparisonDiffData = useRangeKeyedCache<ComparisonDiffResult>(
         comparisonRangeKey,
         visible ? comparisonPathsKey : '',
         comparisonRangeKey ? fetchComparisonDiffEntry : null,
         EMPTY_COMPARISON_DIFF,
-        JSON.stringify([activeDiffScope === 'branch' ? branchRevision : '', activeDiffScope === 'pr' ? comparison.revision : 0, comparisonRetryRevision])
+        JSON.stringify([activeDiffScope === 'pr' ? comparison.revision : 0, comparisonRetryRevision]),
+        branchDiffRevisions
     );
 
     const branchFileCount = branchFiles?.length ?? null;
@@ -1958,35 +1959,8 @@ export const DiffView: React.FC<DiffViewProps> = ({
         queueVisibleStackedFilesSync();
     }, [cancelPendingScrollAlignment, changedFiles, queueVisibleStackedFilesSync]);
 
-    const handleStartReviewFlow = React.useCallback(async (execution: ReviewFlowExecution) => {
-        if (!currentSessionId) return;
-        const directory = useSessionUIStore.getState().getDirectoryForSession(currentSessionId) || rootDirectory || '';
-        if (!directory) {
-            toast.error(t('diffView.reviewDialog.toast.noSessionDirectory'));
-            return;
-        }
-
-        setReviewFlowSubmitting(true);
-        try {
-            await startReviewFlow({
-                originalSessionID: currentSessionId,
-                directory,
-                providerID: execution.providerID,
-                modelID: execution.modelID,
-                agent: execution.agent || undefined,
-                variant: execution.variant || undefined,
-                generateHandoff: execution.generateHandoff,
-                returnAfterHandoffRequest: execution.generateHandoff,
-                autoReview: execution.autoReview,
-            });
-            setReviewDialogOpen(false);
-        } catch (error) {
-            console.error('[review-flow] failed to start review flow', error);
-            toast.error(error instanceof Error ? error.message : t('diffView.reviewDialog.toast.startFailed'));
-        } finally {
-            setReviewFlowSubmitting(false);
-        }
-    }, [currentSessionId, rootDirectory, t]);
+    const closeReviewDialog = React.useCallback(() => setReviewDialogOpen(false), []);
+    const { submitting: reviewFlowSubmitting, start: handleStartReviewFlow } = useReviewFlowStart(currentSessionId, rootDirectory, closeReviewDialog);
 
     const scrollToFile = React.useCallback((path: string): boolean => {
         const node = fileSectionRefs.current.get(path);
@@ -2087,10 +2061,12 @@ export const DiffView: React.FC<DiffViewProps> = ({
         event.preventDefault();
         const startX = event.clientX;
         const startWidth = fileTreeWidth;
+        // The tree sits at the start; in RTL that is the right, so dragging left widens it.
+        const sign = isRightToLeft(event.currentTarget) ? -1 : 1;
         setDraggingFileTree(true);
 
         const onMove = (moveEvent: PointerEvent) => {
-            setStoredFileTreeWidth(clampFileTreeWidth(startWidth + moveEvent.clientX - startX));
+            setStoredFileTreeWidth(clampFileTreeWidth(startWidth + (moveEvent.clientX - startX) * sign));
         };
         const onUp = () => {
             setDraggingFileTree(false);
@@ -2106,7 +2082,8 @@ export const DiffView: React.FC<DiffViewProps> = ({
 
     const handleFileTreeResizeKey = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
         const step = event.shiftKey ? 40 : 10;
-        const delta = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+        const sign = isRightToLeft(event.currentTarget) ? -1 : 1;
+        const delta = (event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0) * sign;
         if (delta === 0) return;
         event.preventDefault();
         setStoredFileTreeWidth(clampFileTreeWidth(fileTreeWidth + delta));
@@ -2188,14 +2165,11 @@ export const DiffView: React.FC<DiffViewProps> = ({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [displayFile, handleSelectFileAndScroll, isTreeMode, navigationFiles, treeSelectedFile, visible]);
 
+    // The header toggle picks the layout for every diff from now on: it writes
+    // the Appearance setting and drops the per-file choices.
     const handleHeaderLayoutChange = React.useCallback((mode: DiffViewMode) => {
-        const nextLayout: 'inline' | 'side-by-side' =
-            mode === 'side-by-side' ? 'side-by-side' : 'inline';
-
-        changedFiles.forEach((file) => {
-            setDiffFileLayout(file.path, nextLayout);
-        });
-    }, [changedFiles, setDiffFileLayout]);
+        setDiffLayoutForAllFiles(mode === 'side-by-side' ? 'side-by-side' : 'inline');
+    }, [setDiffLayoutForAllFiles]);
 
     const [openingEditorFilePath, setOpeningEditorFilePath] = React.useState<string | null>(null);
 
@@ -2336,7 +2310,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                             onKeyDown={handleFileTreeResizeKey}
                             className={cn(
                                 'relative w-px shrink-0 cursor-col-resize bg-[var(--interactive-border)]/40',
-                                'before:absolute before:inset-y-0 before:-left-1 before:-right-1 before:content-[\'\']',
+                                'before:absolute before:inset-y-0 before:-inset-s-1 before:-inset-e-1 before:content-[\'\']',
                                 'hover:bg-interactive-selection focus-visible:bg-interactive-selection focus-visible:outline-none',
                                 draggingFileTree && 'bg-interactive-selection'
                             )}
@@ -2505,7 +2479,8 @@ export const DiffView: React.FC<DiffViewProps> = ({
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background">
-            <div className="@container/diff-toolbar flex min-w-0 items-center gap-2 px-3 py-2 bg-transparent">
+            <ContextPanelHeaderToolbar>
+            <div ref={toolbarRef} className={cn('flex min-w-0 items-center gap-2', inPanelHeader ? 'flex-1 py-1 pe-1' : 'px-3 py-2 bg-transparent')}>
                 {rootIsGitRepo === false && Array.isArray(nestedRepoOptions) && nestedRepoOptions.length > 0 ? (
                     <NestedRepoPicker
                         repositories={nestedRepoOptions}
@@ -2551,9 +2526,13 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         key={JSON.stringify([effectiveDirectory, currentBranch])}
                         branches={branches?.all ?? []}
                         currentBranch={currentBranch}
-                        base={branchBase}
+                        base={qualifiedBranchBase}
+                        automatic={branchBaseSource !== 'chosen'}
                         onSelect={(base) => {
                             if (effectiveDirectory && currentBranch) setBaseOverride(effectiveDirectory, currentBranch, base);
+                        }}
+                        onSelectAutomatic={() => {
+                            if (effectiveDirectory && currentBranch) clearBaseOverride(effectiveDirectory, currentBranch);
                         }}
                     />
                 )}
@@ -2581,7 +2560,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         onClick={handleExpandOrCollapseAll}
                         className={cn(
                             'diff-toolbar__expand-button h-7 flex-shrink-0 gap-1 px-1.5 text-muted-foreground hover:text-foreground',
-                            'ml-auto',
+                            'ms-auto',
                         )}
                         title={expandedFiles.size > 0 ? t('diffView.actions.collapseAll') : t('diffView.actions.expandAll')}
                     >
@@ -2657,7 +2636,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         onClick={() => setDiffFileListMode(diffFileListMode === 'tree' ? 'flat' : 'tree')}
                         aria-pressed={diffFileListMode === 'tree'}
                         className={cn(
-                            'h-5 w-5 p-0 transition-opacity',
+                            'h-5 w-5 flex-shrink-0 p-0 transition-opacity',
                             diffFileListMode === 'tree' ? 'text-foreground opacity-100' : 'text-muted-foreground opacity-60 hover:opacity-100'
                         )}
                         title={diffFileListMode === 'tree' ? t('diffView.fileTree.showAsList') : t('diffView.fileTree.showAsTree')}
@@ -2671,7 +2650,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         size="sm"
                         onClick={() => setDiffWrapLines(!diffWrapLinesStore)}
                         className={cn(
-                            'h-5 w-5 p-0 transition-opacity',
+                            'h-5 w-5 flex-shrink-0 p-0 transition-opacity',
                             diffWrapLines ? 'text-foreground opacity-100' : 'text-muted-foreground opacity-60 hover:opacity-100'
                         )}
                         title={diffWrapLines ? t('diffView.actions.disableLineWrap') : t('diffView.actions.enableLineWrap')}
@@ -2686,22 +2665,24 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         onClick={() => setDiffHideWhitespace(!diffHideWhitespace)}
                         aria-pressed={diffHideWhitespace}
                         className={cn(
-                            'h-5 w-5 p-0 transition-opacity',
+                            'h-5 w-5 flex-shrink-0 p-0 transition-opacity',
                             diffHideWhitespace ? 'text-foreground opacity-100' : 'text-muted-foreground opacity-60 hover:opacity-100'
                         )}
-                        title={diffHideWhitespace ? t('diffView.actions.showWhitespace') : t('diffView.actions.hideWhitespace')}
-                        aria-label={diffHideWhitespace ? t('diffView.actions.showWhitespace') : t('diffView.actions.hideWhitespace')}
+                        title={diffHideWhitespace ? t('diffView.whitespace.hidden') : t('diffView.whitespace.shown')}
+                        aria-label={t('diffView.actions.hideWhitespace')}
                     >
-                        <Icon name="space" className="size-4" />
+                        <WhitespaceToggleIcon hidden={diffHideWhitespace} className="size-4" />
                     </Button>
                 )}
                 {currentLayoutForAllFiles && (
                     <DiffViewToggle
                         mode={currentLayoutForAllFiles === 'side-by-side' ? 'side-by-side' : 'unified'}
                         onModeChange={handleHeaderLayoutChange}
+                        className="flex-shrink-0"
                     />
                 )}
             </div>
+            </ContextPanelHeaderToolbar>
 
             <ReviewFlowDialog
                 open={reviewDialogOpen}

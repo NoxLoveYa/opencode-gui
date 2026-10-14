@@ -266,14 +266,18 @@ mock.module('@/stores/useUIStore', () => ({ useUIStore: fakeUseUIStore }));
 mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => null }));
 mock.module('@/hooks/useRuntimeAPIs', () => ({ useRuntimeAPIs: () => ({ editor: undefined, runtime: { isVSCode: false } }) }));
 mock.module('@/lib/desktop', () => ({ isDesktopLocalOriginActive: () => false, isDesktopShell: () => false, isVSCodeRuntime: () => false, openDesktopPath: async () => false }));
+mock.module('./useOpenChatLink', () => ({ useOpenChatLink: () => () => undefined }));
 mock.module('@/lib/runtimeSurface', () => ({ isMobileSurfaceRuntime: () => false }));
 mock.module('@/lib/path-utils', () => ({ getDirectoryForFilePath: () => '', isFilePathWithinDirectory: () => true, toAbsoluteFilePath: () => '' }));
 mock.module('./markdown/markdownCore', () => ({
     getCachedMarkdownBlocks: () => cachedRendererBlocks,
     renderMarkdownBlocks: () => renderMarkdownBlocksForTest(),
-    renderMarkdownSync: () => {
+    // Like the real module: cached blocks are returned as they are, and only
+    // a cache miss parses.
+    renderMarkdownBlocksSync: () => {
+        if (cachedRendererBlocks) return cachedRendererBlocks;
         syncRenderCalls += 1;
-        return '<p>cold</p>';
+        return [{ id: 'full:cold:unhighlighted', html: '<p>cold</p>' }];
     },
 }));
 mock.module('./markdown/markdownTheme', () => ({ ensureMarkdownShikiTheme: () => undefined }));
@@ -304,7 +308,6 @@ mock.module('./markdown/decorate', () => ({
             `${ctx.labels.copy}|${ctx.codeBlockLineWrap}|${ctx.renderMermaid('test').svg ?? ''}`,
         );
     },
-    getMarkdownCodeText: () => '',
     stabilizeMarkdownTableWidths: () => undefined,
 }));
 mock.module('./markdown/textPosition', () => ({ findTextPosition: () => null }));
