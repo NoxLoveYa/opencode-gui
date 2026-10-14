@@ -14,7 +14,7 @@ import type { TerminalShell } from '@/lib/api/types';
 import type { PermissionMode } from './utils/permissionAutoAccept';
 import { directoryMayHaveActiveProjectAction, useTerminalStore } from '@/stores/useTerminalStore';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
-import { DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY, isVSCodeRuntime, normalizeDesktopWindowMaterial, normalizeDesktopWindowMaterialOpacity, type DesktopWindowMaterial } from '@/lib/desktop';
+import { DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY, desktopWindowMaterialOpacitySchema, desktopWindowMaterialSchema, isVSCodeRuntime, type DesktopWindowMaterial } from '@/lib/desktop';
 import { rebaseMovedPath } from '@/lib/filePathMoves';
 import { noteBrowserTabOpenedWithAddress, requestBrowserTabLoad } from '@/lib/browser/devServerWait';
 import { isContextPanelMode, type ContextPanelMode } from '@/lib/surfaces/modes';
@@ -3192,10 +3192,10 @@ export const useUIStore = create<UIStore>()(
           set({ desktopWindowControlsStyle: value === 'traffic-lights' ? 'traffic-lights' : 'classic' });
         },
         setDesktopWindowMaterial: (value) => {
-          set({ desktopWindowMaterial: normalizeDesktopWindowMaterial(value) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL });
+          set({ desktopWindowMaterial: desktopWindowMaterialSchema.parse(value) });
         },
         setDesktopWindowMaterialOpacity: (value) => {
-          set({ desktopWindowMaterialOpacity: normalizeDesktopWindowMaterialOpacity(value) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY });
+          set({ desktopWindowMaterialOpacity: desktopWindowMaterialOpacitySchema.parse(value) });
         },
         setMermaidRenderingMode: (value) => {
           set({ mermaidRenderingMode: value });
@@ -3281,14 +3281,10 @@ export const useUIStore = create<UIStore>()(
 
           // Window-material fields: fill defaults and drop garbage. Runs for
           // every state below v23 (it first shipped as v22, a number upstream
-          // took for another bump); it only rewrites invalid values.
+          // took for another bump); valid values come back unchanged.
           if (version < 23) {
-            if (normalizeDesktopWindowMaterial(state.desktopWindowMaterial) === undefined) {
-              state.desktopWindowMaterial = DEFAULT_DESKTOP_WINDOW_MATERIAL;
-            }
-            if (normalizeDesktopWindowMaterialOpacity(state.desktopWindowMaterialOpacity) === undefined) {
-              state.desktopWindowMaterialOpacity = DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY;
-            }
+            state.desktopWindowMaterial = desktopWindowMaterialSchema.parse(state.desktopWindowMaterial);
+            state.desktopWindowMaterialOpacity = desktopWindowMaterialOpacitySchema.parse(state.desktopWindowMaterialOpacity);
           }
 
           // v20 -> v21: enable telemetry by default; preserve explicit choices.

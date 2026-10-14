@@ -444,7 +444,6 @@ export const buildMainWindowOptions = ({ bounds, backgroundColor, additionalArgu
     icon: getWindowIconPath(),
     show: false,
     backgroundColor,
-    ...(process.platform === 'win32' ? { backgroundMaterial: resolveWindowMaterial() } : {}),
     frame: frameless ? false : undefined,
     autoHideMenuBar: process.platform !== 'darwin',
     // Electron's hiddenInset adds its own extra inset, which leaves the controls
@@ -466,6 +465,7 @@ export const buildMainWindowOptions = ({ bounds, backgroundColor, additionalArgu
       sandbox: false,
     },
   };
+  if (process.platform === 'win32') options.backgroundMaterial = resolveWindowMaterial();
   // Without a saved position Electron centers the window on the primary display.
   if (Number.isFinite(bounds?.x) && Number.isFinite(bounds?.y)) {
     options.x = bounds.x;

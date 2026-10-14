@@ -458,6 +458,19 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsStyle: 'auto' })).toEqual({});
   });
 
+  it('sanitizes the window material, its opacity and the widget corners', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowMaterial: 'acrylic', desktopWindowMaterialOpacity: 100 })).toEqual({
+      desktopWindowMaterial: 'acrylic',
+      desktopWindowMaterialOpacity: 100,
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowMaterialOpacity: 1 })).toEqual({ desktopWindowMaterialOpacity: 5 });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowMaterial: 'glass', desktopWindowMaterialOpacity: '50' })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ widgetCorners: 'square' })).toEqual({ widgetCorners: 'square' });
+    expect(helpers.sanitizeSettingsUpdate({ widgetCorners: 'hexagon' })).toEqual({});
+  });
+
   it('sanitizes the persisted permission auto-accept policy', () => {
     const helpers = createTestHelpers();
 

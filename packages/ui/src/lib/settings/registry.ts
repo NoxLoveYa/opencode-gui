@@ -621,7 +621,7 @@ export const SETTINGS_REGISTRY = {
   desktopWindowMaterialOpacity: field({
     scope: 'device',
     surfaces: ['desktop'],
-    parse: parseIntegerInRange(5, 95),
+    parse: parseIntegerInRange(5, 100),
     ui: uiStore('desktopWindowMaterialOpacity', (v) => useUIStore.getState().setDesktopWindowMaterialOpacity(v)),
   }),
   inputBarOffset: field({ scope: 'device', surfaces: ['mobile', 'web'], parse: parseFiniteNumber, ui: uiStore('inputBarOffset', (v) => useUIStore.getState().setInputBarOffset(v)) }),

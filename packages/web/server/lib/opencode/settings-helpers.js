@@ -306,14 +306,11 @@ export const createSettingsHelpers = (dependencies) => {
         result.desktopWindowControlsStyle = style;
       }
     }
-    if (typeof candidate.desktopWindowMaterial === 'string') {
-      const material = candidate.desktopWindowMaterial.trim().toLowerCase();
-      if (material === 'off' || material === 'mica' || material === 'acrylic') {
-        result.desktopWindowMaterial = material;
-      }
+    if (candidate.desktopWindowMaterial === 'off' || candidate.desktopWindowMaterial === 'mica' || candidate.desktopWindowMaterial === 'acrylic') {
+      result.desktopWindowMaterial = candidate.desktopWindowMaterial;
     }
-    if (typeof candidate.desktopWindowMaterialOpacity === 'number' && Number.isFinite(candidate.desktopWindowMaterialOpacity)) {
-      result.desktopWindowMaterialOpacity = Math.max(5, Math.min(95, Math.round(candidate.desktopWindowMaterialOpacity)));
+    if (Number.isFinite(candidate.desktopWindowMaterialOpacity)) {
+      result.desktopWindowMaterialOpacity = Math.max(5, Math.min(100, Math.round(candidate.desktopWindowMaterialOpacity)));
     }
     if (candidate.permissionAutoAccept && typeof candidate.permissionAutoAccept === 'object' && !Array.isArray(candidate.permissionAutoAccept)) {
       const sessions = {};
@@ -852,9 +849,8 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.cornerRadius === 'number' && Number.isFinite(candidate.cornerRadius)) {
       result.cornerRadius = Math.max(0, Math.min(32, Math.round(candidate.cornerRadius)));
     }
-    if (typeof candidate.widgetCorners === 'string') {
-      const corners = candidate.widgetCorners.trim();
-      if (corners === 'round' || corners === 'square') result.widgetCorners = corners;
+    if (candidate.widgetCorners === 'round' || candidate.widgetCorners === 'square') {
+      result.widgetCorners = candidate.widgetCorners;
     }
     if (typeof candidate.inputBarOffset === 'number' && Number.isFinite(candidate.inputBarOffset)) {
       result.inputBarOffset = Math.max(0, Math.min(100, Math.round(candidate.inputBarOffset)));

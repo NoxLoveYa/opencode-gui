@@ -5197,10 +5197,9 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     // window chrome. The choice is persisted as a shell-owned boot hint so
     // the next cold start paints it before the renderer loads.
     case 'desktop_set_window_material': {
-      const raw = typeof args.material === 'string' ? args.material.trim().toLowerCase() : '';
-      const native = raw === 'mica' || raw === 'acrylic' ? raw : 'none';
+      const native = args.material === 'mica' || args.material === 'acrylic' ? args.material : 'none';
       const target = state.mainWindow && !state.mainWindow.isDestroyed() ? state.mainWindow : null;
-      if (process.platform === 'win32' && target && typeof target.setBackgroundMaterial === 'function') {
+      if (process.platform === 'win32' && target) {
         try {
           target.setBackgroundMaterial(native);
         } catch (error) {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { DEFAULT_DESKTOP_WINDOW_MATERIAL, DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY, isDesktopLocalOriginActive, isWindowsDesktopShell, normalizeDesktopWindowMaterial, normalizeDesktopWindowMaterialOpacity } from '@/lib/desktop';
+import { desktopWindowMaterialOpacitySchema, desktopWindowMaterialSchema, isDesktopLocalOriginActive, isWindowsDesktopShell } from '@/lib/desktop';
 import { setDesktopWindowMaterial } from '@/lib/desktopNative';
 import { useUIStore } from '@/stores/useUIStore';
 
@@ -16,12 +16,9 @@ export function useWindowMaterialEffect(): void {
   const opacity = useUIStore((state) => state.desktopWindowMaterialOpacity);
 
   React.useEffect(() => {
-    if (typeof document === 'undefined') {
-      return;
-    }
     const root = document.documentElement;
-    const normalized = normalizeDesktopWindowMaterial(material) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL;
-    const clamped = normalizeDesktopWindowMaterialOpacity(opacity) ?? DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY;
+    const normalized = desktopWindowMaterialSchema.parse(material);
+    const clamped = desktopWindowMaterialOpacitySchema.parse(opacity);
     const active = isWindowsDesktopShell() && isDesktopLocalOriginActive() && normalized !== 'off';
 
     if (!active) {

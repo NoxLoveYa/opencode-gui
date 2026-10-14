@@ -91,25 +91,20 @@ const getElectronPlatform = (): string | null => {
   return typeof platform === 'string' ? platform : null;
 };
 
-/** Normalize a stored preference; unknown values map to the opaque default. */
-export const normalizeDesktopWindowMaterial = (
-  value: unknown,
-): DesktopWindowMaterial | undefined => {
-  if (value === 'off' || value === 'mica' || value === 'acrylic') {
-    return value;
-  }
-  return undefined;
-};
+/** Parses a stored material choice; anything else falls back to the opaque default. */
+export const desktopWindowMaterialSchema = z
+  .enum(['off', 'mica', 'acrylic'])
+  .catch(DEFAULT_DESKTOP_WINDOW_MATERIAL);
 
-export const normalizeDesktopWindowMaterialOpacity = (value: unknown): number | undefined => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return undefined;
-  }
-  return Math.max(
+/** Parses a stored opacity: a finite number clamped to the slider range, else the default. */
+export const desktopWindowMaterialOpacitySchema = z
+  .number()
+  .refine(Number.isFinite)
+  .transform((value) => Math.max(
     MIN_DESKTOP_WINDOW_MATERIAL_OPACITY,
     Math.min(MAX_DESKTOP_WINDOW_MATERIAL_OPACITY, Math.round(value)),
-  );
-};
+  ))
+  .catch(DEFAULT_DESKTOP_WINDOW_MATERIAL_OPACITY);
 
 /** True on the Windows desktop shell, the only place Mica/Acrylic exists. */
 export const isWindowsDesktopShell = (): boolean => {
