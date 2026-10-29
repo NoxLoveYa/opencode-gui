@@ -50,7 +50,7 @@ export const createApnsRuntime = (deps) => {
   let persistLock = Promise.resolve();
   let legacyKeysScrubQueued = false;
   let cachedJwt = null; // { token, issuedAtMs, keyId }
-  let cachedRelayKey = null; // { privateKey, publicJwk }
+  let cachedRelayKey = null; // { generation, keypair: { privateKey, publicJwk } }
   let warnedUnconfigured = false;
 
   // ---------------------------------------------------------------------------
@@ -62,10 +62,13 @@ export const createApnsRuntime = (deps) => {
 
   // Key access lives in lib/relay/signing-key.js now (shared with the private
   // relay identity — same keypair, same storage, same serverId derivation).
+  // Keyed by the store generation: resetting the relay identity mints a new key.
   const getOrCreateRelayKeypair = async () => {
-    if (cachedRelayKey) return cachedRelayKey;
-    cachedRelayKey = await getOrCreateRelaySigningKeypair({ crypto, relayKeyStore });
-    return cachedRelayKey;
+    const generation = relayKeyStore.generation();
+    if (cachedRelayKey?.generation === generation) return cachedRelayKey.keypair;
+    const keypair = await getOrCreateRelaySigningKeypair({ crypto, relayKeyStore });
+    cachedRelayKey = { generation, keypair };
+    return keypair;
   };
 
   const signRelayMessage = (privateKey, message) => signRelayMessageShared({ crypto }, privateKey, message);
@@ -137,13 +140,15 @@ export const createApnsRuntime = (deps) => {
   };
 
   const persistTokenUpdate = async (mutate) => {
-    persistLock = persistLock.then(async () => {
+    const result = persistLock.then(async () => {
       const current = await readTokensFromDisk();
       const next = mutate({ version: APNS_TOKENS_VERSION, tokensBySession: current.tokensBySession || {} });
       await writeTokensToDisk(next);
       return next;
     });
-    return persistLock;
+    // Only this caller sees a failed write; the next registration still writes.
+    persistLock = result.catch(() => {});
+    return result;
   };
 
   const normalizeTokens = (record) => {
@@ -507,7 +512,10 @@ export const createApnsRuntime = (deps) => {
   // background push for short responses. Instead we always send, and rely on iOS to NOT
   // display the alert while the app is foreground (presentationOptions: [] in
   // capacitor.config) — so there is no notification when the app is active, with no race.
-  const sendApnsToAllUiSessions = async (payload, _options = {}) => {
+  // `sealed` is the `{ title, body }` a phone with a key shows; without it the
+  // phone opens the same text an app without a key gets in the clear.
+  const sendApnsToAllUiSessions = async ({ sealed, ...payload } = {}, _options = {}) => {
+    const sealedContent = sealed ?? { title: payload.title, body: payload.body };
     const store = await readTokensFromDisk();
     // Tokens are grouped by their registered APNs environment so each batch goes to the
     // endpoint that actually knows the token (Xcode builds → sandbox, TestFlight/App Store
@@ -538,25 +546,25 @@ export const createApnsRuntime = (deps) => {
         await sendViaRelay(deviceTokens, payload, relay, relay.environment ?? environment);
       }
       for (const entry of sealedDevices) {
-        await sendViaRelay([entry.deviceToken], sealedPayloadFor(payload, entry.pushKey), relay, relay.environment ?? entry.environment);
+        await sendViaRelay([entry.deviceToken], sealedPayloadFor(payload, sealedContent, entry.pushKey), relay, relay.environment ?? entry.environment);
       }
       return;
     }
     await sendViaDirectApns(tokensByEnvironment, payload);
     for (const entry of sealedDevices) {
-      await sendViaDirectApns(new Map([[entry.environment, [entry.deviceToken]]]), sealedPayloadFor(payload, entry.pushKey));
+      await sendViaDirectApns(new Map([[entry.environment, [entry.deviceToken]]]), sealedPayloadFor(payload, sealedContent, entry.pushKey));
     }
   };
 
   // What the relay and the push service see for a device with a key: the
   // generic scenario title and an empty body, with the real title and body
   // sealed in `data.enc` for the phone to open.
-  const sealedPayloadFor = (payload, pushKey) => ({
+  const sealedPayloadFor = (payload, content, pushKey) => ({
     ...payload,
     body: '',
     data: {
       ...(payload?.data && typeof payload.data === 'object' ? payload.data : {}),
-      enc: sealPushContent(pushKey, { title: payload?.title, body: payload?.body }),
+      enc: sealPushContent(pushKey, { title: content.title, body: content.body }),
     },
   });
 

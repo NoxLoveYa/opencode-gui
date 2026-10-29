@@ -172,7 +172,7 @@ const GenericFormCard: React.FC<FormCardProps> = ({ form }) => {
                                     onClick={() => void handleCopy('markdown')}
                                     title={t('chat.questionCard.copyMarkdown')}
                                     aria-label={t('chat.questionCard.copyMarkdown')}
-                                    className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-interactive-hover/30 hover:text-foreground"
+                                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-interactive-hover/30 hover:text-foreground"
                                 >
                                     <Icon name="file-text" className="h-3 w-3" />
                                 </button>
@@ -181,7 +181,7 @@ const GenericFormCard: React.FC<FormCardProps> = ({ form }) => {
                                     onClick={() => void handleCopy('json')}
                                     title={t('chat.questionCard.copyJson')}
                                     aria-label={t('chat.questionCard.copyJson')}
-                                    className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-interactive-hover/30 hover:text-foreground"
+                                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-interactive-hover/30 hover:text-foreground"
                                 >
                                     <Icon name="code" className="h-3 w-3" />
                                 </button>
@@ -198,7 +198,7 @@ const GenericFormCard: React.FC<FormCardProps> = ({ form }) => {
                             disabled={isResponding}
                             className={cn(
                                 'flex items-center gap-1 px-2 py-1 typography-meta font-medium rounded transition-colors',
-                                'bg-[rgb(var(--status-success)/0.1)] text-[var(--status-success)] hover:bg-[rgb(var(--status-success)/0.2)]',
+                                'bg-[var(--status-success)]/10 text-[var(--status-success)] hover:bg-[var(--status-success)]/20',
                                 'disabled:opacity-50 disabled:cursor-not-allowed',
                             )}
                         >
@@ -212,7 +212,7 @@ const GenericFormCard: React.FC<FormCardProps> = ({ form }) => {
                             disabled={isResponding}
                             className={cn(
                                 'flex items-center gap-1 px-2 py-1 typography-meta font-medium rounded transition-colors',
-                                'bg-[rgb(var(--status-error)/0.1)] text-[var(--status-error)] hover:bg-[rgb(var(--status-error)/0.2)]',
+                                'bg-[var(--status-error)]/10 text-[var(--status-error)] hover:bg-[var(--status-error)]/20',
                                 'disabled:opacity-50 disabled:cursor-not-allowed',
                             )}
                         >

@@ -20,7 +20,7 @@
 
 import { z } from "zod"
 
-import type { Metadata, ToolInput } from "./model"
+import type { JsonValue, Metadata, ToolInput, ToolState } from "./model"
 
 /** Built-in tool names as the server reports them. */
 export const OPENCODE_TOOLS = {
@@ -197,6 +197,34 @@ type ParsedInput = z.infer<typeof inputSchema>
 
 const readInput = (input: ToolInput | undefined): ParsedInput => inputSchema.parse(input ?? {})
 
+const renderPageFields = z.object({
+  html: z.string().optional().catch(undefined),
+  title: optionalText,
+  awaitAnswer: z.boolean().optional().catch(undefined),
+})
+
+// The plugin accepts the inputs inside `parameters` or beside `action`, and an
+// explicit `parameters` object wins, so the page is read the same way.
+const renderPageInputSchema = renderPageFields
+  .extend({ parameters: renderPageFields.optional().catch(undefined) })
+  .catch({})
+
+// What the user answered on a page that waited (render.page with
+// awaitAnswer), as the plugin records it in the call's metadata.
+const pageAnswerSchema = z.union([
+  z.object({ answered: z.literal(true), summary: z.string(), data: z.json().catch(null) }),
+  z.object({ answered: z.literal(false), reason: z.string().optional().catch(undefined) }),
+])
+
+const openChamberResultSchema = z
+  .object({
+    openchamber: z.object({
+      ok: z.boolean().optional().catch(undefined),
+      answer: pageAnswerSchema.optional().catch(undefined),
+    }).optional().catch(undefined),
+  })
+  .catch({})
+
 /** One entry of a tool's `metadata.files` (`FileDiff.Info` on the wire). */
 export type ToolFileDiff = z.infer<typeof fileDiffSchema> & { file: string }
 
@@ -266,6 +294,25 @@ export function executeToolCalls(metadata: Metadata | undefined): ExecuteToolCal
   return parsed
 }
 
+const executeRawCallSchema = z
+  .object({
+    toolCalls: z
+      .array(z.object({ tool: optionalText, input: z.json().optional().catch(undefined) }).nullable().catch(null))
+      .optional()
+      .catch(undefined),
+  })
+  .catch({})
+
+/** The newest call an `execute` script made, with its arguments as the script passed them. */
+export function lastExecuteToolCall(metadata: Metadata | undefined): { tool: string; input?: JsonValue } | undefined {
+  const calls = executeRawCallSchema.parse(metadata ?? {}).toolCalls ?? []
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const call = calls[index]
+    if (call?.tool) return { tool: call.tool, input: call.input }
+  }
+  return undefined
+}
+
 /** `JSON.stringify` that answers `undefined` for anything it cannot serialize. */
 function stringifyOrUndefined(value: ExecuteToolCallInput): string | undefined {
   if (value === undefined || value === null) return undefined
@@ -293,6 +340,68 @@ export function executeScript(input: ToolInput | undefined): string | undefined 
 }
 
 /** The agent a `subagent` call runs (`input.agent`). */
+const isRenderTool = (toolName: ToolName): boolean => toolName === OPENCHAMBER_RENDER_TOOL
+
+/** Where a page stands on the user's answer. */
+export type RenderedPageAsk =
+  | { kind: "show" }
+  | { kind: "waiting" }
+  | { kind: "answered"; summary: string; data: JsonValue }
+  | { kind: "answered-in-chat" }
+  /** The user had written in the chat before the page appeared, so it did not wait. */
+  | { kind: "chat-sent-earlier" }
+  | { kind: "unanswered" }
+
+// A page sent without a title is named after its own <title>, else its first
+// h1 to h3: the server accepts such a call and names it with the same rule
+// (renderPageTitleFromHtml in
+// packages/web/server/lib/openchamber-control/render-page.js); change both
+// together. The server's last resort, "Page", is the chat's own localized word.
+const TITLE_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: "\"", "#39": "'", apos: "'", nbsp: " " } as const
+const RENDER_PAGE_MAX_TITLE_LENGTH = 120
+const elementText = (html: string, pattern: RegExp): string => (pattern.exec(html)?.[1] ?? "")
+  .replace(/<[^>]*>/g, " ")
+  .replace(/&(amp|lt|gt|quot|#39|apos|nbsp);/g, (_, entity: keyof typeof TITLE_ENTITIES) => TITLE_ENTITIES[entity])
+  .replace(/\s+/g, " ")
+  .trim()
+const pageTitleFromHtml = (html: string): string => (
+  elementText(html, /<title\b[^>]*>([\s\S]*?)<\/title>/i)
+  || elementText(html, /<h[1-3]\b[^>]*>([\s\S]*?)<\/h[1-3]>/i)
+).slice(0, RENDER_PAGE_MAX_TITLE_LENGTH).trim()
+
+/**
+ * The page an `openchamber_render` call showed: present once OpenChamber
+ * accepted the call, so a refused or unfinished call keeps its tool row. A
+ * page that waits for the user's answer shows while its call runs, since the
+ * call runs until the user answers, and after a call that failed while waiting.
+ */
+export function renderedPage(
+  toolName: ToolName,
+  state: ToolState,
+): { html: string; title: string; ask: RenderedPageAsk } | null {
+  if (!isRenderTool(toolName)) return null
+  const parsed = renderPageInputSchema.parse(state.input ?? {})
+  const html = parsed.parameters?.html ?? parsed.html
+  if (!html?.trim()) return null
+  // Empty when neither the call nor the page names it; the chat shows its own word then.
+  const title = (parsed.parameters?.title ?? parsed.title)?.trim() || pageTitleFromHtml(html)
+  // A page that waited stays in the chat when its call ends without an
+  // answer (the user stopped the turn), so the question it asked is still there.
+  if ((parsed.parameters?.awaitAnswer ?? parsed.awaitAnswer) === true) {
+    if (state.status === "running") return { html, title, ask: { kind: "waiting" } }
+    if (state.status === "error") return { html, title, ask: { kind: "unanswered" } }
+  }
+  if (state.status !== "completed") return null
+  const result = openChamberResultSchema.parse(state.metadata ?? {}).openchamber
+  if (result?.ok !== true) return null
+  const answer = result.answer
+  if (answer?.answered === true) return { html, title, ask: { kind: "answered", summary: answer.summary, data: answer.data } }
+  if (answer?.answered === false) {
+    return { html, title, ask: { kind: answer.reason === "chat-sent-earlier" ? "chat-sent-earlier" : "answered-in-chat" } }
+  }
+  return { html, title, ask: { kind: "show" } }
+}
+
 export function subagentAgent(input: ToolInput | undefined): string | undefined {
   return readInput(input).agent
 }
@@ -336,8 +445,129 @@ const MAX_COMMAND_LENGTH = 100
 const MAX_DESCRIBED_TOOL_CALLS = 4
 const MAX_TEXT_LENGTH = 120
 
-/** The control, browser, memory, knowledge and notify tools OpenChamber gives every session. */
-const OPENCHAMBER_TOOLS = new Set(["openchamber", "openchamber_web", "openchamber_memory", "openchamber_knowledge", "openchamber_notify"])
+const OPENCHAMBER_RENDER_TOOL = "openchamber_render"
+const OPENCHAMBER_WORKFLOW_TOOL = "openchamber_workflow"
+const OPENCHAMBER_IMAGE_TOOL = "openchamber_image"
+
+/** The control, schedule, browser, memory, knowledge, notify, render, image and workflow tools OpenChamber gives a session. */
+const OPENCHAMBER_TOOLS = new Set(["openchamber", "openchamber_schedule", "openchamber_web", "openchamber_memory", "openchamber_knowledge", "openchamber_notify", OPENCHAMBER_RENDER_TOOL, OPENCHAMBER_IMAGE_TOOL, OPENCHAMBER_WORKFLOW_TOOL])
+
+// The result envelope the agent tool returns as text (`agent-tool/runtime.js`).
+const proposedWorkflowResultSchema = z.object({
+  ok: z.literal(true),
+  action: z.literal("workflow.run"),
+  data: z.object({ runId: z.string().min(1) }),
+})
+
+/**
+ * The workflow run an `openchamber_workflow` call proposed with `workflow.run`,
+ * or null for any other part. The chat draws that run's card in place of the
+ * call's row, so the user approves the plan where the agent asked.
+ */
+export function proposedWorkflowRunId(toolName: ToolName, state: ToolState): string | null {
+  if (toolName !== OPENCHAMBER_WORKFLOW_TOOL || state.status !== "completed") return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(state.output)
+  } catch {
+    return null
+  }
+  const result = proposedWorkflowResultSchema.safeParse(parsed)
+  return result.success ? result.data.data.runId : null
+}
+
+// The result envelope of a finished `image.generate` call (`openchamber-control/generate-image.js`).
+const generatedImagesResultSchema = z.object({
+  ok: z.literal(true),
+  action: z.literal("image.generate"),
+  data: z.object({ images: z.array(z.object({ path: z.string().min(1) })).min(1) }),
+})
+
+/** The files an `openchamber_image` call saved, in order; none for any other part. */
+export function generatedImagePaths(toolName: ToolName, state: ToolState): string[] {
+  if (toolName !== OPENCHAMBER_IMAGE_TOOL || state.status !== "completed") return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(state.output)
+  } catch {
+    return []
+  }
+  const result = generatedImagesResultSchema.safeParse(parsed)
+  return result.success ? result.data.data.images.map((image) => image.path) : []
+}
+
+/**
+ * Whether the chat draws what a call showed instead of its tool row: a page
+ * from `openchamber_render`, the run a `workflow.run` call proposed, or the
+ * images `image.generate` made. The user is meant to see all three, so they
+ * are hoisted to the answer when Activity is collapsed.
+ */
+export const isShownInPlace = (toolName: ToolName, state: ToolState): boolean => (
+  renderedPage(toolName, state) !== null
+  || proposedWorkflowRunId(toolName, state) !== null
+  || generatedImagePaths(toolName, state).length > 0
+)
+
+const openChamberCallSchema = z
+  .object({
+    action: optionalText,
+    awaitAnswer: z.boolean().optional().catch(undefined),
+    parameters: z.object({ awaitAnswer: z.boolean().optional().catch(undefined) }).optional().catch(undefined),
+  })
+  .catch({})
+
+/** A call to one of OpenChamber's own tools: which tool, the `action` it ran, and whether its page waits for the user. */
+export type OpenChamberToolCall = { tool: string; action?: string; awaitsAnswer: boolean }
+
+/**
+ * The tools of OpenCode's `opencode` namespace, which manage OpenCode itself.
+ * They run inside Code Mode, which names them by registry id
+ * (`opencode_session_rename`); the dotted form is how the namespace is written.
+ */
+const OPENCODE_NAMESPACE_TOOLS = new Set([
+  "session_rename",
+  "session_move",
+  "worktree_create",
+  "worktree_list",
+  "worktree_remove",
+  "models",
+  "list_mcp_resources",
+  "read_mcp_resource",
+])
+const OPENCODE_NAMESPACE_PREFIX = "opencode_"
+
+/** The bare name (`session_rename`) of a tool in the `opencode` namespace, else `undefined`. */
+export function opencodeNamespaceTool(toolName: ToolName): string | undefined {
+  const trimmed = toolName?.trim().toLowerCase() ?? ""
+  const name = trimmed.startsWith(OPENCODE_NAMESPACE_PREFIX)
+    ? trimmed.slice(OPENCODE_NAMESPACE_PREFIX.length)
+    : normalizeToolName(trimmed)
+  return OPENCODE_NAMESPACE_TOOLS.has(name) ? name : undefined
+}
+
+/**
+ * The MCP server a tool comes from. OpenCode names an MCP tool
+ * `<server>_<tool>`, with every character of the server name outside
+ * `[A-Za-z0-9_-]` replaced by `_`. A server name may hold `_` itself, so only
+ * the known server names can split the tool name; the longest match wins.
+ */
+export function mcpToolServer(toolName: ToolName, servers: readonly string[]): string | undefined {
+  const trimmed = toolName?.trim() ?? ""
+  let match: string | undefined
+  for (const server of servers) {
+    const prefix = `${server.replace(/[^a-zA-Z0-9_-]/g, "_")}_`
+    if (trimmed.length > prefix.length && trimmed.startsWith(prefix) && server.length > (match?.length ?? 0)) match = server
+  }
+  return match
+}
+
+/** `null` for every tool that is not OpenChamber's own. */
+export function openChamberToolCall(toolName: ToolName, input: JsonValue | undefined): OpenChamberToolCall | null {
+  const tool = normalizeToolName(toolName)
+  if (!OPENCHAMBER_TOOLS.has(tool)) return null
+  const parsed = openChamberCallSchema.parse(input ?? {})
+  return { tool, action: parsed.action, awaitsAnswer: (parsed.parameters?.awaitAnswer ?? parsed.awaitAnswer) === true }
+}
 
 /**
  * The action an OpenChamber tool call ran and the one detail that tells calls

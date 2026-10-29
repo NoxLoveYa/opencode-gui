@@ -58,7 +58,7 @@ const ProjectActionsButtonComponent = () => {
               : t('projectActions.actions.runNamedAria', { name: shown.name })}
           >
             <Icon name={resolveProjectActionIconName(shown)} className="size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-[13px]">{shown.name}</span>
+            <span className="min-w-0 flex-1 truncate text-[0.8125rem]">{shown.name}</span>
             {/* The state is the trailing value: what pressing the row does next. */}
             <ProjectActionRunIndicator run={shownRun} showIdle />
           </button>
@@ -88,7 +88,7 @@ const ProjectActionsButtonComponent = () => {
             <Icon name="arrow-down-s" className="size-4" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-60 max-h-[70vh] overflow-y-auto">
+        <DropdownMenuContent data-work-status-popup align="end" className="w-60 max-h-[70vh] overflow-y-auto">
           <DropdownMenuItem className="flex items-center gap-2" onClick={runner.openSettings}>
             <Icon name="add" className="h-4 w-4" />
             <span className="typography-ui-label text-foreground">{t('projectActions.actions.addNewAction')}</span>

@@ -161,8 +161,8 @@ delivered. Everything it reports is therefore work the app performs while the
 user is doing nothing — the class of regression users notice as fan noise,
 battery drain, and a permanently busy tab.
 
-Reports per second of idle time: main-thread busy time, script, style
-recalculation and layout time and counts, DOM node / document / frame /
+Reports per second of idle time: frames the display compositor drew,
+main-thread busy time, script, style recalculation and layout time and counts, DOM node / document / frame /
 listener growth, heap trajectory including a least-squares growth rate, a CPU
 sampling profile with self time per function, and attribution of timer,
 animation-frame and observer work to the call site that scheduled it.
@@ -171,6 +171,16 @@ animation-frame and observer work to the call site that scheduled it.
 # Baseline, then compare a change against it and fail on a budget.
 bun run profile:idle -- --url http://127.0.0.1:4599 --output artifacts/before
 bun run profile:idle -- --url http://127.0.0.1:4599 --baseline artifacts/before --budget-cpu 5
+```
+
+Frames drawn come from a `viz`-only trace of `Display::DrawAndSwap`
+(`frame-count.mjs`) and are the metric that sees motion: a composited spinner
+or pulse costs the main thread nothing and draws 60 frames a second. A still
+app draws about 0, the shared 1 s waiting tick 1. `--budget-frames <n>` fails
+the run above `n`; prove the gate with the positive control, which must fail:
+
+```bash
+bun run profile:idle -- --url http://127.0.0.1:4799 --budget-frames 3 --inject-script scripts/perf/controls/pulse-dot.js
 ```
 
 Scenario options reach a specific mounted state, because idle cost depends on
@@ -240,6 +250,11 @@ One run is never a result: repeat a scenario and aggregate with
 `node scripts/perf/aggregate-runs.mjs <run directories…>`.
 `perf/code-300cps` and `perf/code-1200cps` stream one 240-line code block,
 because what a growing fence costs does not show in fences of five lines.
+`perf/showcase-20000cps` answers with one of every Markdown construct the chat
+renders (headings, lists, tasks, quotes, a table, inline and display math,
+a disclosure, a Mermaid diagram, fenced code with and without a language,
+raw HTML that must stay text). It is not a timing stimulus: open its session
+on two builds and compare screenshots when a change touches the renderer.
 `perf/think-30s` stays silent for thirty seconds and then answers in one word:
 it holds the app in its working state with nothing streaming, which is what an
 agent thinking or running a tool looks like to the UI.
@@ -248,6 +263,13 @@ each step says a line and calls the `glob` tool, OpenCode runs the tool for
 real, and after the last step the document streams. The turn on screen then
 carries twenty tool parts while the text arrives, which is the shape of a long
 agentic turn and what the cost of re-rendering a turn per delta depends on.
+Each turn counts its calls from its own prompt, so every turn of a long
+session is agentic. `agent-20reads-300cps` reads 1,500-line files instead of
+globbing (`isolated-server.mjs` writes them into the project under
+`perf-read/`), so each step carries the full output a real agent's reads do.
+`agent-100tools-x5-300cps` makes its hundred calls five at a time: twenty
+steps whose messages hold five tool parts each, the turn that windowing by
+messages left fully mounted.
 `perf/unicode-300cps` (and `unicode-1200cps`) streams prose with em dashes,
 curly quotes and whole Cyrillic paragraphs, and a 150-line TypeScript fence
 whose comments and strings carry the same characters. V8 stores a string with
@@ -261,6 +283,21 @@ session with a hundred turns of realistic history in minutes:
 ```bash
 node scripts/perf/seed-long-session.mjs --port 4599 --dir <project directory> --turns 120 --title "perf: long 120"
 ```
+
+A seeded session opens with only its last ten turns in memory, the
+cold-navigation window, so streaming into it measures a short history however
+long the session is. Someone working in one chat holds every turn since they
+opened it. `--grow <turns>` reproduces that: before recording it sends that
+many turns with the page showing the session (`--grow-model`, by default
+`agent-20tools-20000cps`, and the `agent-*-20000cps` models grow agentic
+history in about three seconds a turn), scrolling to the end after each one as
+a reader who follows the chat. The summary reports the message records held
+before and after (`historyRecordsBefore`/`After`). What scales with history is
+small on a fast machine: one agentic turn cost 4.9% of the main thread with 10
+turns held and 6.2% with 100. `--cpu-throttle <rate>` slows the page's CPU
+(`Emulation.setCPUThrottlingRate`) to approximate a slower machine; at 4 the
+same turns cost 14% and 26%, with 28 long tasks instead of 5. The `grow` and
+`grow-short` scenarios of `profile:compare` are those two, throttled.
 
 Run-to-run spread on an unchanged build is one to two points of renderer CPU,
 so a smaller difference is noise.
@@ -373,7 +410,23 @@ Measured on this repository's fixture, at any element count from 1 to 32:
 
 Animate `transform` and `opacity`. Anything else recalculates style on every
 frame for as long as the animation runs, and geometry properties add layout on
-top. Note that `rotate: 360deg` is *not* equivalent to
+top.
+
+Every variant also reports frames drawn per second. Measured headed under
+Xvfb (software GL), two runs each, CPU of one core across Chrome's processes:
+
+| Variant | Frames/sec | CPU % |
+|---|---|---|
+| `none` (still page) | 0.1 | 0.9-1.2 |
+| `blink-timer` (1 s JS toggle, `useWaitingBlink`) | 1.0 | 0.9-1.0 |
+| `caret-css` (CodeMirror's `steps(1)` caret) | 1.7 | 4.1-4.4 |
+| `caret-timer` (600 ms JS toggle) | 1.7 | 1.2-1.5 |
+| `opacity` (smooth pulse) | 59-60 | 7.3-7.6 |
+| `transform-rotate` (spinner) | 60 | 7.7-8.2 |
+
+A stepped animation draws few frames and still keeps the compositor ticking
+every vsync, so `caret-css` costs three times `caret-timer` for the same
+frames. Note that `rotate: 360deg` is *not* equivalent to
 `transform: rotate(360deg)` in cost.
 
 Composited does not mean free. With `--headed` the command also reports process
@@ -382,11 +435,13 @@ the compositor and the GPU process draw every frame: the three pulsing dots of
 the chat status row (`busy-dots`) cost about 3% renderer plus 6.5% GPU process
 on an otherwise still page, against 0.2% with no animation. An infinite
 animation is paid for as long as it is on screen, so give it a bounded lifetime
-or step it. Stepping halves the cost only when staggered elements share their
+or stop it. Stepping halves the cost only when staggered elements share their
 frames: `busy-dots-steps-aligned` makes one step equal to the stagger and
 measures 4.7% against 10.3%. A running animation has a floor of its own, so
-fewer steps do not approach zero, and a timer that writes the same frames
-(`busy-dots-timer`) measured no cheaper.
+fewer steps do not approach zero. At five changes a second a timer that writes
+the same frames (`busy-dots-timer`) measured no cheaper; at one or two changes
+a second a timer drops below the animation's floor (`blink-timer`,
+`caret-timer` in the table above).
 
 VS Code uses `steps(30)` over 1.5 seconds specifically to reduce CPU usage.
 Local repeated 32-element runs showed median main-thread busy 0.04% smooth vs
@@ -401,7 +456,8 @@ that is not listed.
 Clicks sidebar session rows with real mouse input and measures, per click:
 
 - `ack`: the clicked row is highlighted as active (the first visible reaction);
-- `content`: messages that were not in the DOM before are in it. They may still
+- `content`: messages that were not rendered before are rendered (a timeline kept
+  in the DOM under `display: none` counts as not rendered). They may still
   be invisible: a freshly opened timeline stays at opacity 0 while renderers
   hold their provisional first paint (`data-timeline-reveal="pending"`), then
   fades in;
@@ -554,6 +610,29 @@ The next known cost: `getLoginShellEnvSnapshot` in
 synchronously on the Electron main thread during OpenCode bootstrap, although
 Desktop already merged the same probe into `process.env`, so the user's shell
 startup is paid twice.
+
+## JSON tree layout regression
+
+`json-tree-view.browser.test.mjs` loads the real JSON view and UI stylesheet in an isolated Vite fixture. It checks a Files-height container around the 200-row virtualization boundary and at 26,000 entries, tail reachability, collapse/expand, resize, hide/show, toolbar focus, and chat's absolute height caps. Both the fixture server and Chrome's debugging port stay on loopback. It reads no application state and stops the processes it started.
+
+```bash
+node --test scripts/perf/json-tree-view.browser.test.mjs
+# When Chrome is outside the standard locations:
+OPENCHAMBER_TEST_CHROME=/path/to/chrome node --test scripts/perf/json-tree-view.browser.test.mjs
+```
+
+The test reports a skip if Chrome is unavailable. An explicit invalid Chrome path fails. This is layout correctness coverage; measure Files performance in the built app.
+
+## Quote comment popover regression
+
+`chat-quote-popover.browser.test.mjs` renders the real `ChatQuoteMarkPopover` with the UI stylesheet in an isolated Vite fixture that has its own optimizer cache, so it can run next to the JSON tree test. A short saved comment sits on a quote at the left and right edges, at 320, 390 and 1024 px, in both text directions. The test opens the editor and saves twice, and after every step it checks that the popover and its controls stay 12 px inside the viewport. Like the JSON tree test, it stays on loopback and stops what it started.
+
+```bash
+node --test scripts/perf/chat-quote-popover.browser.test.mjs
+OPENCHAMBER_TEST_CHROME=/path/to/chrome node --test scripts/perf/chat-quote-popover.browser.test.mjs
+```
+
+It skips without Chrome and fails on an explicit invalid Chrome path, the same as the JSON tree test.
 
 ## profile:heap
 
@@ -731,6 +810,7 @@ What it does, in order:
 | `stream`, `code`, `unicode`, `agent` | `profile:session` on the `-300cps` fixture (`agent`: `agent-40tools-300cps`) | a new session per run |
 | `long` | `profile:session` streaming into the 120-turn session | the streaming path at scale |
 | `quiet` | `profile:session --quiet 20` on the 120-turn session | the floor `long` stands on |
+| `grow`, `grow-short` | `profile:session --grow 100` / `--grow 10` with `agent-20reads` turns, `--cpu-throttle 4` | a chat worked in for a long time; slow, about ten minutes a run |
 | `cpu` | `profile:session --process-cpu-only --headed` | the process CPU a user sees; opens a visible window |
 | `switch` | `profile:switch` over long, short A and short B, `--cold-reload --repeat <runs>` | one invocation per round |
 | `idle` | `profile:idle`, 30 s with the long session open | |
@@ -962,20 +1042,7 @@ be a measurement, never a disabled instrument.
 
 ## Methodology Rules
 
-- **Never report an "after" without a "before" on the identical scenario and
-  build.** Rebuild the unchanged version and re-run it, however inconvenient:
-  `profile:compare` does exactly that. Expect plausible fixes to change nothing.
-- **A sampling profiler cannot explain native work.** Self time in `(program)`
-  only means the time was not in interpreted JavaScript. Use the trace
-  breakdown, which names parsing, style, layout, layerization, paint and raster.
-- **Normalise when the workload varies.** Assistant responses differ in length
-  between runs, so per-second totals are not comparable; `profile:session`
-  reports output-normalised metrics for this reason.
-- **Revert what you cannot measure.** A change that does not move its target
-  metric is unvalidated complexity, not a small win.
-- **Reproduction may need production scale you do not have.** A threshold effect
-  is invisible below its threshold. Compare the reporter's scale against yours
-  on the dimension the code keys on before concluding a bug is absent.
+The measurement rules are in `.agents/skills/performance-engineering/SKILL.md`, *Workflow* steps 0 and 1. This tooling encodes two of them: `profile:compare` reruns the unchanged build for every before/after, and `profile:session` reports output-normalised metrics because response lengths vary between runs.
 
 ## Module Layout
 

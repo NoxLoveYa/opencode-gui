@@ -13,6 +13,11 @@
     line-height: round(1.45em, 1px);
   }
 
+  .typography-ui-section {
+    font-size: var(--text-ui-section);
+    line-height: round(1.45em, 1px);
+  }
+
   .typography-ui-label {
     font-size: var(--text-ui-label);
     line-height: round(1.45em, 1px);
@@ -58,13 +63,13 @@
 
   .typography-settings-field-label {
     font-size: var(--text-ui-label);
-    font-weight: 400;
+    font-weight: var(--ui-regular-font-weight, 400);
     line-height: 1.2;
   }
 
   .typography-settings-description {
     font-size: var(--text-meta);
-    font-weight: 400;
+    font-weight: var(--ui-regular-font-weight, 400);
     line-height: 1.5;
   }
 
@@ -113,17 +118,21 @@
     width: 100%;
   }
 
+  /* On a wide window the side padding follows the chat's own width (a
+     percentage padding resolves against the parent's width), so a chat
+     squeezed beside an expanded context panel takes 1rem instead of the
+     1.5rem a full-width chat gets. */
   @media (min-width: 1024px) {
     .chat-column {
-      padding-inline: calc(clamp(1rem, 2.5vw, 1.5rem) * var(--padding-scale, 1));
+      padding-inline: calc(clamp(1rem, 3%, 1.5rem) * var(--padding-scale, 1));
     }
 
     .chat-input-column {
-      padding-inline: calc(clamp(1rem, 2.5vw, 1.5rem) * var(--padding-scale, 1));
+      padding-inline: calc(clamp(1rem, 3%, 1.5rem) * var(--padding-scale, 1));
     }
 
     .chat-message-column {
-      padding-inline: calc(clamp(1rem, 2.5vw, 1.5rem) * var(--padding-scale, 1));
+      padding-inline: calc(clamp(1rem, 3%, 1.5rem) * var(--padding-scale, 1));
     }
   }
 

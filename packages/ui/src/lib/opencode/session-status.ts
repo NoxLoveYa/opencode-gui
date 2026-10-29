@@ -20,6 +20,8 @@ const hostFormRequestSchema = z.object({
   sessionID: z.string().min(1),
   title: z.string(),
 })
+// A page an agent showed that waits for the user's answer: same projection.
+const hostPageRequestSchema = hostFormRequestSchema
 
 // Cross-project status kept by the OpenChamber host (web server or VS Code
 // extension host) from its single upstream event stream. Entries carry the
@@ -28,12 +30,18 @@ export const hostSessionStatusSnapshotSchema = z.object({
   sessions: z.record(z.string().min(1), z.object({
     status: z.string(),
     lastUpdateAt: z.number(),
+    // When the session's latest turn began, on the host's clock (`serverTime`
+    // gives "now" on the same clock). Hosts predating the field omit it. The
+    // VS Code shim sets it only for a turn its extension host saw begin.
+    turnStartedAt: z.number().optional(),
   })),
   // Permission requests and forms the host still sees unanswered, keyed by
   // session. Optional: hosts predating the field, and the VS Code shim, omit it.
   pending: z.record(z.string().min(1), z.object({
     permissions: z.array(hostPermissionRequestSchema),
     forms: z.array(hostFormRequestSchema),
+    // Hosts predating waiting pages, and the VS Code shim, omit it.
+    pages: z.array(hostPageRequestSchema).optional().default([]),
   })).optional(),
   serverTime: z.number(),
 })

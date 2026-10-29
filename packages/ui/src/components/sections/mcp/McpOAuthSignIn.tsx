@@ -1,8 +1,7 @@
 import React from 'react';
-import type { IntegrationInfo } from '@opencode/client';
-import { opencodeClient } from '@/lib/opencode/client';
 import { ProviderOAuthMethods } from '@/components/sections/providers/ProviderOAuthMethods';
-import { findMcpIntegration, getMcpOAuthMethods } from './mcpOAuthIntegration';
+import { getMcpOAuthMethods } from './mcpOAuthIntegration';
+import { useMcpOAuthIntegration } from './useMcpOAuthIntegration';
 
 interface McpOAuthSignInProps {
   serverName: string;
@@ -10,6 +9,12 @@ interface McpOAuthSignInProps {
   directory: string | null;
   /** Runs after OpenCode has stored the credential, so the caller can reconnect. */
   onConnected: () => void | Promise<void>;
+  /** Start the sign-in as soon as the integration shows up. */
+  autoStart?: boolean;
+  /** The start button's text; "Connect" when absent. */
+  connectLabel?: string;
+  /** Off when the caller starts the sign-in from its own button (with `autoStart`). */
+  showStartButton?: boolean;
 }
 
 /**
@@ -19,37 +24,27 @@ interface McpOAuthSignInProps {
  * (by server name, in the server's Location) is MCP-specific. Renders nothing
  * while the integration is unknown.
  */
-export const McpOAuthSignIn: React.FC<McpOAuthSignInProps> = ({ serverName, directory, onConnected }) => {
-  const [integration, setIntegration] = React.useState<IntegrationInfo | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setIntegration(null);
-    const sdk = directory ? opencodeClient.getScopedSdkClient(directory) : opencodeClient.getSdkClient();
-    const load = async () => {
-      try {
-        const { data } = await sdk.integration.list();
-        if (!cancelled) setIntegration(findMcpIntegration(data, serverName) ?? null);
-      } catch (error) {
-        console.error('Failed to load MCP integrations:', error);
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [directory, serverName]);
-
-  const methods = getMcpOAuthMethods(integration ?? undefined);
-  if (!integration || methods.length === 0) return null;
+export const McpOAuthSignIn: React.FC<McpOAuthSignInProps> = ({
+  serverName,
+  directory,
+  onConnected,
+  autoStart,
+  connectLabel,
+  showStartButton,
+}) => {
+  const integration = useMcpOAuthIntegration(serverName, directory);
+  if (!integration) return null;
 
   return (
     <ProviderOAuthMethods
       key={integration.id}
       integrationId={integration.id}
-      methods={methods}
+      methods={getMcpOAuthMethods(integration)}
       directory={directory}
       onConnected={onConnected}
+      autoStart={autoStart}
+      connectLabel={connectLabel}
+      showStartButton={showStartButton}
     />
   );
 };

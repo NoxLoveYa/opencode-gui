@@ -37,7 +37,8 @@ import { z } from 'zod';
  *   routes and stays allowed.
  * - Jev classification is off, unless the administrator pinned their own
  *   endpoint (`routing/runtime.js`).
- * - External tunnels are refused: their provider sees plain text (`tunnels`).
+ * - External tunnels are refused: Cloudflare and ngrok see plain text, and
+ *   Tailscale opens this machine to other devices (`tunnels`).
  * - The private relay runs only on a pinned self-hosted endpoint
  *   (`relay/service.js`).
  * - Speech and transcription go only to servers on this machine (`tts`,
@@ -52,6 +53,16 @@ import { z } from 'zod';
  *   crossing happens in the browser, so the UI is where it is held back.
  * - Web fonts that load from a public CDN fall back to the system fonts
  *   (`packages/ui` useFontPreferences); the stored choice is kept.
+ * - The integrations catalog, a bundled list of outside services to install,
+ *   is hidden (`packages/ui` SidebarHeader); administrator-curated sources for
+ *   it do not exist yet. MCP, plugin and skill entry in Settings is unchanged.
+ * - The agent image tool (`openchamber-control/generate-image.js`) is not
+ *   gated: it reaches an image model through OpenCode, so `provider.use`
+ *   covers it like any other provider (maintainer decision, 2026-10-27).
+ * - The Settings card that installs the Claude Code plugin, a model provider,
+ *   is hidden (`packages/ui` IntegrationsPage). The plugin itself is not
+ *   refused: OpenCode's `provider.use` policy covers `claude-code` like any
+ *   other provider.
  * - The server listens only on this machine unless network access is allowed
  *   (`allowNetworkAccess` / `OPENCHAMBER_ALLOW_NETWORK_ACCESS`): it refuses
  *   to start on a network address and drops connections from other machines

@@ -2,6 +2,7 @@ import React from 'react';
 
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
+import { SettingsChipGroup } from '@/components/sections/shared/SettingsSection';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -13,6 +14,7 @@ import { formatDateTimeForPreference, formatTimeForPreference } from '@/lib/time
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useProjectsInSidebarOrder } from '@/components/session/sidebar/list/useProjectsInSidebarOrder';
 import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
 
 import {
@@ -93,7 +95,7 @@ export function UsageStatsView({ className }: { className?: string }): React.Rea
   const { t } = useI18n();
   // Read during render: a locale change re-renders through useI18n.
   const intlLocale = getCurrentIntlLocale();
-  const projects = useProjectsStore((store) => store.projects);
+  const projects = useProjectsInSidebarOrder(useProjectsStore((store) => store.projects));
   const [range, setRange] = React.useState<UsageRange>('30d');
   const [projectChoice, setProjectChoice] = React.useState<string>(ALL_PROJECTS);
   // A project removed from the list while chosen falls back to all projects.
@@ -122,13 +124,12 @@ export function UsageStatsView({ className }: { className?: string }): React.Rea
     <div className={cn('h-full overflow-y-auto', className)}>
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 py-4 sm:px-6">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <div role="group" aria-label={t('usageStats.range.label')} className="flex flex-wrap items-center gap-1">
-            {USAGE_RANGES.map((option) => (
-              <Button key={option} type="button" variant="chip" size="xs" aria-pressed={range === option} onClick={() => setRange(option)}>
-                {t(RANGE_LABEL_KEYS[option])}
-              </Button>
-            ))}
-          </div>
+          <SettingsChipGroup
+            value={range}
+            onChange={setRange}
+            aria-label={t('usageStats.range.label')}
+            options={USAGE_RANGES.map((option) => ({ value: option, label: t(RANGE_LABEL_KEYS[option]) }))}
+          />
           <Select value={selectedProject ? selectedProject.id : ALL_PROJECTS} onValueChange={setProjectChoice}>
             <SelectTrigger className="w-fit min-w-[140px] max-w-64" aria-label={t('usageStats.scope.label')}>
               <SelectValue>
@@ -268,7 +269,7 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
     <div className="flex min-w-0 flex-col gap-0.5 rounded-lg border border-border/60 bg-[var(--surface-elevated)] px-3 py-2.5">
       <span className="truncate typography-micro text-muted-foreground">{label}</span>
       <span className="truncate text-xl font-semibold tabular-nums text-foreground">{value}</span>
-      {hint ? <span className="truncate typography-micro text-muted-foreground/80" title={hint}>{hint}</span> : null}
+      {hint ? <span className="truncate typography-micro text-muted-foreground" title={hint}>{hint}</span> : null}
     </div>
   );
 }
@@ -575,20 +576,12 @@ function ModelUsage({ models, formats }: { models: UsageModel[]; formats: Format
       title={t('usageStats.models.title')}
       actions={
         models.length > 0 ? (
-          <div role="group" aria-label={t('usageStats.models.compareBy')} className="flex flex-wrap items-center gap-1">
-            {MODEL_DIMENSIONS.map((option) => (
-              <Button
-                key={option}
-                type="button"
-                variant="chip"
-                size="xs"
-                aria-pressed={dimension === option}
-                onClick={() => setDimension(option)}
-              >
-                {t(MODEL_DIMENSION_LABEL_KEYS[option])}
-              </Button>
-            ))}
-          </div>
+          <SettingsChipGroup
+            value={dimension}
+            onChange={setDimension}
+            aria-label={t('usageStats.models.compareBy')}
+            options={MODEL_DIMENSIONS.map((option) => ({ value: option, label: t(MODEL_DIMENSION_LABEL_KEYS[option]) }))}
+          />
         ) : undefined
       }
     >
@@ -609,7 +602,7 @@ function ModelUsage({ models, formats }: { models: UsageModel[]; formats: Format
                     <span className="truncate typography-ui-label text-foreground">{name}</span>
                     {model.variant ? <span className="shrink-0 typography-micro text-muted-foreground">{model.variant}</span> : null}
                     {/* Phones keep the row for the model name; the logo names the provider there. */}
-                    <span className="hidden shrink-0 typography-micro text-muted-foreground/80 sm:inline">{providerName}</span>
+                    <span className="hidden shrink-0 typography-micro text-muted-foreground sm:inline">{providerName}</span>
                   </span>
                   <span className="shrink-0 typography-micro tabular-nums text-muted-foreground">
                     {dimension === 'steps'

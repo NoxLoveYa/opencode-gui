@@ -21,7 +21,6 @@ import {
   SettingsSection,
   SettingsFieldRow,
   SettingsStackedField,
-  SettingsCheckboxRow,
   SETTINGS_FIELD_LABEL_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
@@ -41,8 +40,9 @@ import {
 } from '@/components/ui/dialog';
 import { Icon } from "@/components/icon/Icon";
 import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
-import { PreviewToggleButton } from '@/components/views/PreviewToggleButton';
+import { ToolbarTooltipButton } from '@/components/ui/action-toolbar';
 import { SkillsCatalogPage } from './catalog/SkillsCatalogPage';
+import { SkillUseField } from './SkillUseField';
 import {
   SKILL_LOCATION_OPTIONS,
   locationPartsFrom,
@@ -52,8 +52,8 @@ import {
 import { useI18n } from '@/lib/i18n';
 import { languageByExtension } from '@/lib/codemirror/languageByExtension';
 import { createFlexokiCodeMirrorTheme } from '@/lib/codemirror/flexokiTheme';
-import { shikiHighlightExtension } from '@/lib/codemirror/shikiHighlight';
-import { getResolvedShikiTheme } from '@/lib/shiki/appThemeRegistry';
+import { codeHighlightExtension } from '@/lib/codemirror/codeHighlight';
+import { getCodeTokenTheme } from '@/lib/shiki/appThemeRegistry';
 import { getLanguageFromExtension } from '@/lib/toolHelpers';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useUIStore } from '@/stores/useUIStore';
@@ -304,7 +304,7 @@ const SkillsInstalledPage: React.FC = () => {
 
   const supportingFileEditorExtensions = React.useMemo<Extension[]>(() => {
     const filePath = newFileName.trim() || 'supporting-file.md';
-    // Shiki token colors for code supporting files; markdown stays on lezer.
+    // File-view token colors for code supporting files; markdown stays on lezer.
     const shikiLanguage = getLanguageFromExtension(filePath);
     const useShiki = Boolean(shikiLanguage) && shikiLanguage !== 'markdown';
     const extensions: Extension[] = [createFlexokiCodeMirrorTheme(currentTheme, useShiki ? { syntaxColors: false, fontSize: editorFontSize } : { fontSize: editorFontSize })];
@@ -313,10 +313,10 @@ const SkillsInstalledPage: React.FC = () => {
       extensions.push(languageExtension);
     }
     if (useShiki && shikiLanguage) {
-      extensions.push(shikiHighlightExtension({
+      extensions.push(codeHighlightExtension({
         language: shikiLanguage,
         themeName: currentTheme.metadata.id,
-        theme: getResolvedShikiTheme(currentTheme),
+        theme: getCodeTokenTheme(currentTheme),
       }));
     }
     extensions.push(EditorView.lineWrapping);
@@ -583,7 +583,7 @@ const SkillsInstalledPage: React.FC = () => {
       <div className="flex h-full items-center justify-center px-4">
         <div className="text-center text-muted-foreground">
           <Icon name="book-open" className="mx-auto mb-3 h-10 w-10 sm:h-12 sm:w-12 opacity-50" />
-          <p className="typography-body">{t('settings.skills.page.empty.title')}</p>
+          <p className="typography-ui-label">{t('settings.skills.page.empty.title')}</p>
           <p className="typography-meta mt-1 opacity-75">{t('settings.skills.page.empty.description')}</p>
         </div>
       </div>
@@ -594,7 +594,7 @@ const SkillsInstalledPage: React.FC = () => {
     return (
       <div className="flex h-full items-center justify-center px-4">
         <div className="text-center text-muted-foreground">
-          <p className="typography-body">{t('settings.skills.page.loading.details')}</p>
+          <p className="typography-ui-label">{t('settings.skills.page.loading.details')}</p>
         </div>
       </div>
     );
@@ -681,18 +681,17 @@ const SkillsInstalledPage: React.FC = () => {
                 onChange={(e) => handleDescriptionChange(e.target.value)}
                 placeholder={t('settings.skills.page.field.descriptionPlaceholder')}
                 rows={2}
-                className="w-full resize-none min-h-[60px] max-h-32 bg-transparent"
+                className="w-full resize-none min-h-[60px] bg-transparent"
                 disabled={isReadOnlySkill}
               />
             </SettingsStackedField>
 
-            <SettingsCheckboxRow
-              checked={disableModelInvocation}
-              onChange={handleDisableModelInvocationChange}
-              label={t('settings.skills.page.field.disableModelInvocation')}
-              info={t('settings.skills.page.field.disableModelInvocationHint')}
-              disabled={isReadOnlySkill}
-              className="pt-2"
+            <SkillUseField
+              skill={isNewSkill ? null : selectedSkill ?? null}
+              directory={settingsDirectory}
+              manual={disableModelInvocation}
+              onManualChange={handleDisableModelInvocationChange}
+              manualLocked={isReadOnlySkill}
             />
 
         </SettingsSection>
@@ -700,9 +699,11 @@ const SkillsInstalledPage: React.FC = () => {
         <SettingsSection
           title={t('settings.skills.page.section.instructions')}
           headerAction={(
-            <PreviewToggleButton
-              currentMode={skillEditorMode === 'preview' ? 'preview' : 'edit'}
-              onToggle={() => setSkillEditorMode((mode) => mode === 'preview' ? 'edit' : 'preview')}
+            <ToolbarTooltipButton
+              label={t('documentToolbar.preview')}
+              icon="eye"
+              pressed={skillEditorMode === 'preview'}
+              onClick={() => setSkillEditorMode((mode) => mode === 'preview' ? 'edit' : 'preview')}
             />
           )}
           settingsItem="skills.instructions"
@@ -727,7 +728,7 @@ const SkillsInstalledPage: React.FC = () => {
                     <SimpleMarkdownRenderer
                       content={skillMarkdown}
                       className="typography-markdown-body"
-                      stripFrontmatter
+                      frontmatter="hide"
                       enableFileReferences={false}
                     />
                   </div>

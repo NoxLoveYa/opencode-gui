@@ -2,7 +2,10 @@ import { z } from 'zod';
 import { createRequire } from 'node:module';
 
 import { isAgentMemoryFeatureAvailable } from '../agent-memory/feature-flag.js';
+import { isWorkflowFeatureAvailable } from '../workflows/feature-flag.js';
+import { isOverviewFeatureAvailable } from '../overview/feature-flag.js';
 import { isPermissionMode } from '../permission-auto-accept/modes.js';
+import { asNonEmptyString } from '../shared/guards.js';
 import { idleStopSchema } from '../spaces/idle-stop.js';
 import { sshHostSchema } from '../spaces/places/ssh-host.js';
 
@@ -87,14 +90,15 @@ export const createSettingsHelpers = (dependencies) => {
   const SHORTCUT_OVERRIDE_VALUE_MAX_LENGTH = 128;
   const PWA_ORIENTATION_VALUES = new Set(['system', 'portrait', 'landscape']);
   const MOBILE_KEYBOARD_MODE_VALUES = new Set(['native', 'resize-content']);
+  const UI_FONT_WEIGHT_VALUES = new Set(['regular', 'balanced', 'strong']);
   const TERMINAL_SHELL_VALUES = new Set(['auto', 'bash', 'zsh', 'sh', 'fish', 'pwsh', 'powershell', 'cmd', 'dash', 'ksh', 'nu']);
   const SIDEBAR_PROJECT_DISPLAY_MODE_VALUES = new Set(['all', 'single']);
   const SIDEBAR_VIEW_MODE_VALUES = new Set(['projects', 'timeline']);
+  const SIDEBAR_LIST_SESSION_GROUPING_VALUES = new Set(['project', 'time']);
   // The interface languages (`LOCALES` in packages/ui/src/lib/i18n/runtime.ts);
   // settings-helpers.test.js fails when the two lists drift apart.
   const UI_LOCALE_VALUES = new Set(['en', 'de', 'fr', 'nl', 'zh-CN', 'zh-TW', 'uk', 'es', 'pt-BR', 'ko', 'pl', 'ja', 'tr', 'ar', 'he']);
   const SIDEBAR_PROJECT_SORT_ORDER_VALUES = new Set(['manual', 'a-z', 'z-a', 'date-added', 'recent']);
-  const SIDEBAR_WORKTREE_SORT_ORDER_VALUES = new Set(['recent', 'manual', 'a-z']);
   const HIDDEN_MODELS_MAX = 1024;
   const RECENT_EFFORTS_MAX_KEYS = 128;
   const RECENT_EFFORTS_MAX_VARIANTS_PER_KEY = 5;
@@ -357,11 +361,17 @@ export const createSettingsHelpers = (dependencies) => {
     if (SIDEBAR_VIEW_MODE_VALUES.has(candidate.sidebarViewMode)) {
       result.sidebarViewMode = candidate.sidebarViewMode;
     }
+    if (SIDEBAR_LIST_SESSION_GROUPING_VALUES.has(candidate.sidebarListSessionGrouping)) {
+      result.sidebarListSessionGrouping = candidate.sidebarListSessionGrouping;
+    }
+    if (SIDEBAR_LIST_SESSION_GROUPING_VALUES.has(candidate.sidebarGrouping)) {
+      result.sidebarGrouping = candidate.sidebarGrouping;
+    }
+    if (typeof candidate.sidebarKeepWorkInPlace === 'boolean') {
+      result.sidebarKeepWorkInPlace = candidate.sidebarKeepWorkInPlace;
+    }
     if (SIDEBAR_PROJECT_SORT_ORDER_VALUES.has(candidate.sidebarProjectSortOrder)) {
       result.sidebarProjectSortOrder = candidate.sidebarProjectSortOrder;
-    }
-    if (SIDEBAR_WORKTREE_SORT_ORDER_VALUES.has(candidate.sidebarWorktreeSortOrder)) {
-      result.sidebarWorktreeSortOrder = candidate.sidebarWorktreeSortOrder;
     }
     if (typeof candidate.sidebarShowChatsSection === 'boolean') {
       result.sidebarShowChatsSection = candidate.sidebarShowChatsSection;
@@ -374,6 +384,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (candidate.sidebarDetailedZoneRows === true || candidate.sidebarDetailedZoneRows === false) {
       result.sidebarDetailedZoneRows = candidate.sidebarDetailedZoneRows;
+    }
+    if (candidate.sidebarWorktreeNameByBranch === true || candidate.sidebarWorktreeNameByBranch === false) {
+      result.sidebarWorktreeNameByBranch = candidate.sidebarWorktreeNameByBranch;
     }
 
     if (Array.isArray(candidate.securityScopedBookmarks)) {
@@ -425,6 +438,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.customMonoFont === 'string') {
       result.customMonoFont = candidate.customMonoFont.slice(0, 100);
     }
+    if (UI_FONT_WEIGHT_VALUES.has(candidate.uiFontWeight)) {
+      result.uiFontWeight = candidate.uiFontWeight;
+    }
     if (typeof candidate.githubClientId === 'string') {
       const trimmed = candidate.githubClientId.trim();
       if (trimmed.length > 0) {
@@ -473,6 +489,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (candidate.openLinksInBrowserPanel === true || candidate.openLinksInBrowserPanel === false) {
       result.openLinksInBrowserPanel = candidate.openLinksInBrowserPanel;
     }
+    if (Number.isInteger(candidate.liveBrowserTabLimit) && candidate.liveBrowserTabLimit >= 1 && candidate.liveBrowserTabLimit <= 20) {
+      result.liveBrowserTabLimit = candidate.liveBrowserTabLimit;
+    }
     if (candidate.openTrackerLinksOnBoard === true || candidate.openTrackerLinksOnBoard === false) {
       result.openTrackerLinksOnBoard = candidate.openTrackerLinksOnBoard;
     }
@@ -485,17 +504,23 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.diffHideWhitespace === 'boolean') {
       result.diffHideWhitespace = candidate.diffHideWhitespace;
     }
-    if (typeof candidate.persistChatDraft === 'boolean') {
-      result.persistChatDraft = candidate.persistChatDraft;
-    }
     if (typeof candidate.allowPromptingSubagentSessions === 'boolean') {
       result.allowPromptingSubagentSessions = candidate.allowPromptingSubagentSessions;
+    }
+    if (candidate.savePastedImagesAsFiles === true || candidate.savePastedImagesAsFiles === false) {
+      result.savePastedImagesAsFiles = candidate.savePastedImagesAsFiles;
     }
     if (typeof candidate.showOpenCodeRestartConfirm === 'boolean') {
       result.showOpenCodeRestartConfirm = candidate.showOpenCodeRestartConfirm;
     }
     if (typeof candidate.sessionTabsEnabled === 'boolean') {
       result.sessionTabsEnabled = candidate.sessionTabsEnabled;
+    }
+    if (candidate.sessionTabsPerWorkspace === true || candidate.sessionTabsPerWorkspace === false) {
+      result.sessionTabsPerWorkspace = candidate.sessionTabsPerWorkspace;
+    }
+    if (candidate.terminalCloseOnExit === true || candidate.terminalCloseOnExit === false) {
+      result.terminalCloseOnExit = candidate.terminalCloseOnExit;
     }
     if (typeof candidate.largeTextPasteBehavior === 'string') {
       const mode = candidate.largeTextPasteBehavior.trim();
@@ -609,6 +634,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.mergedWorktreeCleanupEnabled === 'boolean') {
       result.mergedWorktreeCleanupEnabled = candidate.mergedWorktreeCleanupEnabled;
     }
+    if (candidate.worktreeArchiveOnDoneEnabled === true || candidate.worktreeArchiveOnDoneEnabled === false) {
+      result.worktreeArchiveOnDoneEnabled = candidate.worktreeArchiveOnDoneEnabled;
+    }
     if (candidate.tunnelBootstrapTtlMs === null) {
       result.tunnelBootstrapTtlMs = null;
     } else if (typeof candidate.tunnelBootstrapTtlMs === 'number' && Number.isFinite(candidate.tunnelBootstrapTtlMs)) {
@@ -625,6 +653,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.tunnelMode === 'string') {
       result.tunnelMode = normalizeTunnelMode(candidate.tunnelMode);
+    }
+    if (Number.isInteger(candidate.tunnelHttpsPort) && candidate.tunnelHttpsPort >= 1 && candidate.tunnelHttpsPort <= 65535) {
+      result.tunnelHttpsPort = candidate.tunnelHttpsPort;
     }
     if (candidate.managedLocalTunnelConfigPath === null) {
       result.managedLocalTunnelConfigPath = null;
@@ -677,9 +708,22 @@ export const createSettingsHelpers = (dependencies) => {
       const trimmed = candidate.smallModelOverride.trim();
       result.smallModelOverride = trimmed.length > 0 ? trimmed : undefined;
     }
+    if (candidate.smallModelVariant !== undefined) {
+      result.smallModelVariant = asNonEmptyString(candidate.smallModelVariant) ?? undefined;
+    }
     if (typeof candidate.walkthroughModelOverride === 'string') {
       const trimmed = candidate.walkthroughModelOverride.trim();
       result.walkthroughModelOverride = trimmed.length > 0 ? trimmed : undefined;
+    }
+    if (candidate.walkthroughModelVariant !== undefined) {
+      result.walkthroughModelVariant = asNonEmptyString(candidate.walkthroughModelVariant) ?? undefined;
+    }
+    for (const key of ['fallbackModel', 'fallbackVariant']) {
+      const value = z.string().trim().safeParse(candidate[key]);
+      if (value.success) result[key] = value.data.length > 0 ? value.data : undefined;
+    }
+    if (Array.isArray(candidate.accountSwitchProviders)) {
+      result.accountSwitchProviders = normalizeStringArray(candidate.accountSwitchProviders);
     }
     if (typeof candidate.defaultGitIdentityId === 'string') {
       const trimmed = candidate.defaultGitIdentityId.trim();
@@ -724,6 +768,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (candidate.enterToSendConfigured === true || candidate.enterToSendConfigured === false) {
       result.enterToSendConfigured = candidate.enterToSendConfigured;
     }
+    if (candidate.mobileReturnKeySends === true || candidate.mobileReturnKeySends === false) {
+      result.mobileReturnKeySends = candidate.mobileReturnKeySends;
+    }
     if (typeof candidate.showOpenCodeUpdateNotifications === 'boolean') {
       result.showOpenCodeUpdateNotifications = candidate.showOpenCodeUpdateNotifications;
     }
@@ -736,20 +783,34 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.agentControlToolEnabled === 'boolean') {
       result.agentControlToolEnabled = candidate.agentControlToolEnabled;
     }
+    if (candidate.agentScheduleToolEnabled === true || candidate.agentScheduleToolEnabled === false) {
+      result.agentScheduleToolEnabled = candidate.agentScheduleToolEnabled;
+    }
     if (typeof candidate.agentMemoryToolEnabled === 'boolean') {
       result.agentMemoryToolEnabled = candidate.agentMemoryToolEnabled;
     }
     if (candidate.agentKnowledgeToolEnabled === true || candidate.agentKnowledgeToolEnabled === false) {
       result.agentKnowledgeToolEnabled = candidate.agentKnowledgeToolEnabled;
     }
+    if (candidate.agentWorkflowToolEnabled === true || candidate.agentWorkflowToolEnabled === false) {
+      result.agentWorkflowToolEnabled = candidate.agentWorkflowToolEnabled;
+    }
     if (typeof candidate.agentNotifyToolEnabled === 'boolean') {
       result.agentNotifyToolEnabled = candidate.agentNotifyToolEnabled;
     }
+    if (candidate.agentRenderToolEnabled === true || candidate.agentRenderToolEnabled === false) {
+      result.agentRenderToolEnabled = candidate.agentRenderToolEnabled;
+    }
+    if (candidate.agentImageToolEnabled === true || candidate.agentImageToolEnabled === false) {
+      result.agentImageToolEnabled = candidate.agentImageToolEnabled;
+    }
+    // `provider/model`; the model id may hold slashes of its own (OpenRouter's `openai/gpt-image-2`).
+    const agentImageModel = asNonEmptyString(candidate.agentImageModel);
+    if (agentImageModel && /^[^/\s]+\/\S+$/.test(agentImageModel)) {
+      result.agentImageModel = agentImageModel;
+    }
     if (typeof candidate.agentToolsCodeMode === 'boolean') {
       result.agentToolsCodeMode = candidate.agentToolsCodeMode;
-    }
-    if (candidate.agentWorktreeMoveWithoutAsking === true || candidate.agentWorktreeMoveWithoutAsking === false) {
-      result.agentWorktreeMoveWithoutAsking = candidate.agentWorktreeMoveWithoutAsking;
     }
     if (typeof candidate.isolatedSpacesEnabled === 'boolean') {
       result.isolatedSpacesEnabled = candidate.isolatedSpacesEnabled;
@@ -814,6 +875,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.collapsibleUserMessages === 'boolean') {
       result.collapsibleUserMessages = candidate.collapsibleUserMessages;
+    }
+    if (candidate.stickyUserHeader === true || candidate.stickyUserHeader === false) {
+      result.stickyUserHeader = candidate.stickyUserHeader;
     }
     if (typeof candidate.promptNavigatorEnabled === 'boolean') {
       result.promptNavigatorEnabled = candidate.promptNavigatorEnabled;
@@ -1113,6 +1177,9 @@ export const createSettingsHelpers = (dependencies) => {
         result.sttLanguage = trimmed;
       }
     }
+    if (candidate.sttCorrectTranscript === true || candidate.sttCorrectTranscript === false) {
+      result.sttCorrectTranscript = candidate.sttCorrectTranscript;
+    }
 
     // The registry is the last word on what a client may persist: a key the
     // code above still names but the registry no longer lists is dropped here,
@@ -1168,6 +1235,10 @@ export const createSettingsHelpers = (dependencies) => {
       // Tells the client whether agent memory exists in this build at all, so
       // its settings row and panel tab can be absent rather than merely off.
       agentMemoryFeatureAvailable: isAgentMemoryFeatureAvailable(),
+      // The same for agent workflows (`OPENCHAMBER_WORKFLOWS_ENABLE`).
+      agentWorkflowFeatureAvailable: isWorkflowFeatureAvailable(),
+      // The overview page ships dark until `OPENCHAMBER_OVERVIEW_ENABLED` is set.
+      overviewFeatureAvailable: isOverviewFeatureAvailable(),
       // Jev routing needs the OpenChamber server, so it is present here and
       // absent wherever this payload does not come from one (VS Code).
       routingFeatureAvailable: true,

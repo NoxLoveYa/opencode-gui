@@ -9,18 +9,18 @@ import { ChatInput } from './ChatInput';
 import { CHAT_INPUT_EDITOR_SELECTOR } from './composer/editor/dom';
 import {
     ChatColumnActionsContext,
-    ChatColumnExpandedInputContext,
     ChatColumnSessionContext,
     useChatColumnActions,
     type ChatColumnActions,
-    type ChatColumnExpandedInput,
     type ChatColumnSession,
 } from './chatColumnSession';
 import { MobileCommentComposerContext, useMobileCommentComposerOwner } from './composer/comment/MobileCommentComposerContext';
 import { DraftPresetChips } from './DraftPresetChips';
 import { useInputStore } from '@/sync/input-store';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { Skeleton } from '@/components/ui/skeleton';
+import { KeepAlive } from '@/components/ui/KeepAlive';
 import ChatEmptyState from './ChatEmptyState';
 import { useGlobalSyncStore } from '@/sync/global-sync-store';
 import MessageList, { type MessageListHandle } from './MessageList';
@@ -38,6 +38,10 @@ const TIMELINE_SETTLE_STABLE_FRAMES = 2;
 const TIMELINE_SETTLE_CAP_MS = 300;
 // Mirrors the oc-chat-hydration-reveal duration in index.css.
 const TIMELINE_REVEAL_FADE_MS = 100;
+// After a turn starts or ends, how long the transcript settles before an
+// overgrown history is cut back: past the scroll hook's 2 s send glide and
+// 1 s turn-end glide windows.
+const HISTORY_TRIM_DELAY_MS = 3000;
 import { hasActiveFormToolInCurrentTurn, recoverPendingFormWithRetry } from '@/sync/form-recovery';
 import { toast } from '@/components/ui';
 import { StatusRowContainer } from './StatusRowContainer';
@@ -66,6 +70,9 @@ import { useChatTurnNavigation } from './hooks/useChatTurnNavigation';
 import { ChatQuoteHighlightContext, useChatQuoteHighlightStore } from './hooks/chatQuoteHighlightStore';
 import { ChatQuoteHighlightLayer } from './message/ChatQuoteHighlightLayer';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
+import { useMessageTTS } from '@/hooks/useMessageTTS';
+import { useAutoReadAloud } from '@/hooks/useAutoReadAloud';
+import { findLatestCompletedReply } from '@/lib/messages/latestReply';
 import { useDeviceInfo } from '@/lib/device';
 import { Button } from '@/components/ui/button';
 import { StopIcon } from '@/components/icons/StopIcon';
@@ -73,6 +80,7 @@ import { abortCurrentOperation } from '@/sync/session-actions';
 import { OverlayScrollbar } from '@/components/ui/OverlayScrollbar';
 import { Icon } from "@/components/icon/Icon";
 import { cn, formatDirectoryName } from '@/lib/utils';
+import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 
 // New sync system imports
@@ -90,23 +98,28 @@ import {
     useScopedBlockingForms,
     useParentSession,
     useSession,
-    useSessions,
+    useSessionStartTimes,
 } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { useI18n } from '@/lib/i18n';
+import { useDraftHeading } from './useDraftHeading';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 import { ChatSearchBar } from './search/ChatSearchBar';
 import { WorkStatusPanel } from './work-status/WorkStatusPanel';
 import { useWorkStatusVisibility } from './work-status/useWorkStatusVisibility';
 import { useShownSessionSelection } from './useShownSessionSelection';
+import { usePinnedSessionDirectory } from './usePinnedSessionDirectory';
 import { useRightSlotStore } from '@/components/layout/rightSlot';
-import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
+import { buildPromptPreviewsByTurnId } from './lib/promptPreviews';
 import { resolveChatPromptReadOnly } from './chatPromptReadOnly';
 import { PermissionDock } from './PermissionDock';
 import { FormDock } from './FormDock';
 import { ensureSpaceArchives, useSpaceArchiveOf } from '@/lib/spaces/space-archives';
+import { useSpaceDirectoryStopped } from '@/lib/spaces/spaces-store';
+import { SpaceChatPlaceholder } from '@/components/session/spaces/SpaceChatPlaceholder';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 import { createFirstVisibleSessionPerformanceTracker } from '@/sync/session-load-performance';
 import { isChatDirectoryPath } from '@/lib/chatDirectories';
 
@@ -197,6 +210,8 @@ type HydratingToolSkeletonRow = {
 };
 
 type ChatViewportProps = {
+    /** Loading, error, draft or empty content; undefined shows the transcript. */
+    placeholder: React.ReactNode;
     currentSessionId: string;
     currentSessionKey: string;
     isDesktopExpandedInput: boolean;
@@ -210,7 +225,7 @@ type ChatViewportProps = {
     directory?: string;
     scrollRef: React.RefObject<HTMLDivElement | null>;
     messageListRef: React.RefObject<MessageListHandle | null>;
-    registerList: (list: TimelineListHandle | null) => void;
+    registerList: (list: TimelineListHandle | null, sessionKey?: string) => void;
     onIsAtEndChange: (isAtEnd: boolean) => void;
     onListMetricsChange: (metrics: { readonly footerSize: number }) => void;
     onTimelineDataChange: () => void;
@@ -244,7 +259,14 @@ type ChatViewportProps = {
     onLoadEarlierPrompts: () => void;
 };
 
+// Sessions kept mounted per chat column, the open one included, so returning
+// to a recent one reuses its timeline. Each retained timeline costs a few MB
+// of DOM, and a phone's web view is killed under memory pressure, so the
+// mobile surface keeps only the open session.
+const retainedTimelines = () => (isMobileSurfaceRuntime() ? 1 : 4);
+
 const ChatViewport = React.memo(({
+    placeholder,
     currentSessionId,
     currentSessionKey,
     isDesktopExpandedInput,
@@ -281,31 +303,17 @@ const ChatViewport = React.memo(({
     onLoadEarlierPrompts,
 }: ChatViewportProps) => {
     const { t } = useI18n();
+    const session = React.useMemo<ChatColumnSession>(() => ({
+        sessionId: currentSessionId,
+        directory: directory ?? null,
+    }), [currentSessionId, directory]);
+    const registerSessionList = React.useCallback((list: TimelineListHandle | null) => {
+        registerList(list, currentSessionKey);
+    }, [currentSessionKey, registerList]);
+    const showingTranscript = placeholder === undefined;
     const promptPreviewsByTurnIdRef = React.useRef<Map<string, Part[]>>(new Map());
-    // Cache normalized parts per source array so unchanged messages keep the
-    // same reference and the memo below can bail out to the previous map.
-    const normalizedPromptPartsCache = React.useRef(new WeakMap<Part[], Part[]>());
     const promptPreviewsByTurnId = React.useMemo(() => {
-        const next = new Map<string, Part[]>();
-        for (let index = 0; index < renderedMessages.length; index += 1) {
-            const message = renderedMessages[index];
-            if (message.info.role !== 'user') {
-                continue;
-            }
-            // v2 keeps injected context out of the user message: loop
-            // continuations and plan-mode injections arrive as their own
-            // `synthetic`-role messages, so every remaining user message is a
-            // turn the user actually sent and stays navigable.
-            let displayParts = normalizedPromptPartsCache.current.get(message.parts);
-            if (!displayParts) {
-                displayParts = normalizeUserDisplayParts(message.parts);
-                normalizedPromptPartsCache.current.set(message.parts, displayParts);
-            }
-            if (displayParts.length === 0) {
-                continue;
-            }
-            next.set(message.info.id, displayParts);
-        }
+        const next = buildPromptPreviewsByTurnId(renderedMessages);
         const prev = promptPreviewsByTurnIdRef.current;
         if (prev.size === next.size) {
             let unchanged = true;
@@ -436,7 +444,7 @@ const ChatViewport = React.memo(({
     revealWaitedRef.current = revealWaited;
     React.useLayoutEffect(() => {
         const root = timelineRootRef.current;
-        if (!root) return;
+        if (!root || !showingTranscript) return;
         root.setAttribute('data-timeline-reveal', 'pending');
         let finished = false;
         let timer: number | null = null;
@@ -517,7 +525,7 @@ const ChatViewport = React.memo(({
             if (fadeTimer !== null) window.clearTimeout(fadeTimer);
             revealGate.onEmpty = null;
         };
-    }, [revealGate, scrollRef]);
+    }, [revealGate, scrollRef, showingTranscript]);
 
     const scrollContainerProps = React.useMemo(() => ({
         className: 'absolute inset-0 overflow-y-auto overflow-x-hidden z-0 chat-scroll overlay-scrollbar-target',
@@ -530,70 +538,91 @@ const ChatViewport = React.memo(({
     }), [focusScrollContainer]);
 
     return (
-        <div
-            className={cn(
-                'relative min-h-0',
-                isDesktopExpandedInput
-                    ? 'absolute inset-0 opacity-0 pointer-events-none'
-                    : 'flex-1',
-            )}
-            ref={timelineRootRef}
-            aria-hidden={isDesktopExpandedInput}
-        >
-            <div className="absolute inset-0">
-                <MessageList
-                    key={currentSessionKey}
-                    ref={messageListRef}
-                    sessionKey={currentSessionId}
-                    messages={renderedMessages}
-                    sessionIsWorking={sessionIsWorking}
-                    activeStreamingMessageId={streamingMessageId}
-                    activeStreamingPhase={activeStreamingPhase}
-                    retryOverlay={retryOverlay}
-                    isLoadingOlder={isLoadingOlder}
-                    scrollToBottom={scrollToBottom}
-                    endPinningReleased={endPinningReleased}
-                    directory={directory}
-                    registerList={registerList}
-                    // Zero end inset: the footer spacer already reserves the
-                    // zone the floating status row covers; adding its height
-                    // again produced a double-tall blank band at rest.
-                    composerOverlayHeight={0}
-                    onIsAtEndChange={onIsAtEndChange}
-                    onListMetricsChange={onListMetricsChange}
-                    onTimelineDataChange={onTimelineDataChange}
-                    listHeader={listHeader}
-                    listFooter={listFooter}
-                    scrollContainerProps={scrollContainerProps}
-                />
-                {/* The transcript's edge fades: bands in the chat background
-                    over the scroller, shown by its scroll-shadow attributes
-                    (index.css `.chat-scroll-fade`). They must stay later
-                    siblings of the scroller. */}
-                <div aria-hidden="true" className="chat-scroll-fade chat-scroll-fade--top" />
-                <div
-                    ref={registerComposerInsetReader}
-                    aria-hidden="true"
-                    className="chat-scroll-fade chat-scroll-fade--end"
-                    style={endFadeStyle}
-                />
-                <OverlayScrollbar containerRef={scrollRef} disableHorizontal suppressVisibility={isProgrammaticFollowActive} userIntentOnly observeMutations={false} onThumbDragStart={onScrollbarDrag} />
-                {showPromptNavigator && promptTurnIds.length >= 2 ? (
-                    <PromptNavigatorRail
-                        turnIds={promptTurnIds}
-                        previewsByTurnId={promptPreviewsByTurnId}
-                        activeTurnId={railActiveTurnId}
-                        onSelectTurn={onSelectTurn}
-                        canLoadEarlier={canLoadEarlierPrompts}
-                        isLoadingOlder={isLoadingOlderPrompts}
-                        onLoadEarlier={onLoadEarlierPrompts}
+        <>
+            {placeholder}
+            <div
+                className={cn(
+                    'relative min-h-0',
+                    isDesktopExpandedInput
+                        ? 'absolute inset-0 opacity-0 pointer-events-none'
+                        : 'flex-1',
+                )}
+                ref={timelineRootRef}
+                style={showingTranscript ? undefined : { display: 'none' }}
+                aria-hidden={isDesktopExpandedInput}
+            >
+                <div className="absolute inset-0">
+                    {/* Retained by session ID: the session key also holds the
+                        directory, which settles after the session opens, and
+                        a key change left a hidden second copy of the open
+                        session. The list still remounts on a key change. */}
+                    <KeepAlive
+                        key={getRuntimeKey()}
+                        cacheKey={showingTranscript ? currentSessionId : null}
+                        capacity={retainedTimelines()}
+                    >
+                        <ChatColumnSessionContext.Provider value={session}>
+                            <MessageList
+                                key={currentSessionKey}
+                                ref={messageListRef}
+                                sessionKey={currentSessionId}
+                                messages={renderedMessages}
+                                sessionIsWorking={sessionIsWorking}
+                                activeStreamingMessageId={streamingMessageId}
+                                activeStreamingPhase={activeStreamingPhase}
+                                retryOverlay={retryOverlay}
+                                isLoadingOlder={isLoadingOlder}
+                                scrollToBottom={scrollToBottom}
+                                endPinningReleased={endPinningReleased}
+                                directory={directory}
+                                registerList={registerSessionList}
+                                // The footer already reserves the composer's band.
+                                composerOverlayHeight={0}
+                                onIsAtEndChange={onIsAtEndChange}
+                                onListMetricsChange={onListMetricsChange}
+                                onTimelineDataChange={onTimelineDataChange}
+                                listHeader={listHeader}
+                                listFooter={listFooter}
+                                scrollContainerProps={scrollContainerProps}
+                            />
+                        </ChatColumnSessionContext.Provider>
+                    </KeepAlive>
+                    {/* The transcript's edge fades must follow the scroller. */}
+                    <div aria-hidden="true" className="chat-scroll-fade chat-scroll-fade--top" />
+                    <div
+                        ref={registerComposerInsetReader}
+                        aria-hidden="true"
+                        className="chat-scroll-fade chat-scroll-fade--end"
+                        style={endFadeStyle}
                     />
-                ) : null}
+                    <OverlayScrollbar
+                        containerRef={scrollRef}
+                        disableHorizontal
+                        suppressVisibility={isProgrammaticFollowActive}
+                        userIntentOnly
+                        observeMutations={false}
+                        onThumbDragStart={onScrollbarDrag}
+                    />
+                    {showPromptNavigator && promptTurnIds.length >= 2 ? (
+                        <PromptNavigatorRail
+                            sessionId={currentSessionId}
+                            directory={directory}
+                            turnIds={promptTurnIds}
+                            previewsByTurnId={promptPreviewsByTurnId}
+                            activeTurnId={railActiveTurnId}
+                            onSelectTurn={onSelectTurn}
+                            canLoadEarlier={canLoadEarlierPrompts}
+                            isLoadingOlder={isLoadingOlderPrompts}
+                            onLoadEarlier={onLoadEarlierPrompts}
+                        />
+                    ) : null}
+                </div>
             </div>
-        </div>
+        </>
     );
 }, (prev, next) => {
     return prev.currentSessionId === next.currentSessionId
+        && prev.placeholder === next.placeholder
         && prev.currentSessionKey === next.currentSessionKey
         && prev.isDesktopExpandedInput === next.isDesktopExpandedInput
         && prev.isMobile === next.isMobile
@@ -660,6 +689,39 @@ const HYDRATING_SKELETON_ITEMS: Array<{
     },
 ];
 
+// Session messages loading. The wait can last minutes while OpenCode fails to
+// start, so the rows blink on the shared 1 s tick instead of pulsing, and stand
+// still while hidden behind the expanded composer.
+const HydrationSkeleton: React.FC<{ waiting: boolean }> = ({ waiting }) => {
+    const blink = useWaitingBlink(waiting);
+    return (
+        <div className={cn('space-y-4', blink)}>
+            {HYDRATING_SKELETON_ITEMS.map((item) => (
+                <div key={item.id} className="group w-full">
+                    <div className="chat-message-column">
+                        <div className="space-y-2.5 px-4 py-3">
+                            <div className="space-y-1.5">
+                                {item.toolRows.map((row) => (
+                                    <div key={`${item.id}-${row.id}`} className="flex items-center gap-2">
+                                        <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-full" />
+                                        <Skeleton className={cn('h-4 rounded-md', row.titleWidth)} />
+                                        <Skeleton className={cn('h-4 rounded-md', row.detailWidth)} />
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="space-y-1.5 pt-1">
+                                {item.textWidths.map((width, index) => (
+                                    <Skeleton key={`${item.id}-text-${index}`} className={cn('h-4 rounded-md', width)} />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};
+
 // `onStop` is set while a subagent's turn runs: its session takes no
 // prompts, but the user can still stop it from here.
 const ReadOnlyPromptBanner: React.FC<{ text: string; onStop?: () => void; stopLabel?: string }> = ({ text, onStop, stopLabel }) => (
@@ -704,7 +766,6 @@ const renderDraftTitle = (title: string, projectLabel: string | null): React.Rea
 };
 
 const DraftWelcome: React.FC<{ exiting?: boolean }> = ({ exiting = false }) => {
-    const { t } = useI18n();
     const draftTarget = useSessionUIStore((state) => state.newSessionDraft.target);
     const selectedProjectId = useSessionUIStore((state) => state.newSessionDraft.selectedProjectId ?? null);
     const projectLabel = useProjectsStore(React.useCallback((state) => {
@@ -715,6 +776,7 @@ const DraftWelcome: React.FC<{ exiting?: boolean }> = ({ exiting = false }) => {
             : null) ?? state.projects[0] ?? null;
         return project ? getProjectDisplayLabel(project) : null;
     }, [draftTarget, selectedProjectId]));
+    const draftHeading = useDraftHeading(projectLabel);
 
     return (
         <div className={cn(
@@ -722,12 +784,7 @@ const DraftWelcome: React.FC<{ exiting?: boolean }> = ({ exiting = false }) => {
             exiting && 'pointer-events-none opacity-0',
         )}>
             <h1 className="text-balance text-3xl font-normal tracking-tight text-foreground">
-                {renderDraftTitle(
-                    projectLabel
-                        ? t('chat.emptyState.draftTitleWithProject', { project: projectLabel })
-                        : t('chat.emptyState.draftTitle'),
-                    projectLabel,
-                )}
+                {renderDraftTitle(draftHeading, projectLabel)}
             </h1>
             <DraftPresetChips
                 onSubmit={(starter) => useInputStore.getState().requestPresetSubmit(starter.submitText, starter.ref.type)}
@@ -779,7 +836,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const globalSessionId = useSessionUIStore((s) => (pinned ? null : s.currentSessionId));
     const globalSessionDirectory = useSessionUIStore((s) => (pinned ? null : s.currentSessionDirectory));
     const liveSessionId = pinned ? pinnedSelection?.sessionId ?? null : globalSessionId;
-    const liveSessionDirectory = pinned ? pinnedSelection?.directory ?? null : globalSessionDirectory;
+    const pinnedSessionDirectory = usePinnedSessionDirectory(pinned ? pinnedSelection : null);
+    const liveSessionDirectory = pinned ? pinnedSessionDirectory : globalSessionDirectory;
     const materializedDraftSessionId = useSessionUIStore((s) => (pinned ? null : s.materializedDraftSessionId));
     const liveSelection = React.useMemo(
         () => ({ sessionId: liveSessionId, directory: liveSessionDirectory }),
@@ -874,13 +932,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     );
 
     // UI store
-    const globalExpandedInput = useUIStore((state) => (pinned ? false : state.isExpandedInput));
-    const [pinnedExpandedInput, setPinnedExpandedInput] = React.useState(false);
-    const isExpandedInput = pinned ? pinnedExpandedInput : globalExpandedInput;
-    const pinnedExpandedInputValue = React.useMemo<ChatColumnExpandedInput | null>(
-        () => (pinned ? { expanded: pinnedExpandedInput, setExpanded: setPinnedExpandedInput } : null),
-        [pinned, pinnedExpandedInput],
-    );
+    const isExpandedInput = useUIStore((state) => (pinned ? false : state.isExpandedInput));
+    const stickyUserHeader = useUIStore((state) => state.stickyUserHeader);
     const promptNavigatorEnabled = useUIStore((state) => state.promptNavigatorEnabled);
     const allowPromptingSubagentSessions = useUIStore((state) => state.allowPromptingSubagentSessions);
     // The timeline dialog of the main chat is app state (a global shortcut
@@ -930,6 +983,9 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         currentSessionId ?? '',
         effectiveSessionDirectory,
     );
+    // The messages of a space's session live inside the space: while it is stopped, gone or out
+    // of reach a load only waits for its timeout, so the chat holds it and says why instead.
+    const spaceStopped = useSpaceDirectoryStopped(effectiveSessionDirectory);
     const [firstVisiblePerformance] = React.useState(createFirstVisibleSessionPerformanceTracker);
 
     React.useEffect(() => {
@@ -980,6 +1036,30 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         // turn is still running only per the last conversation message.
         return isIncompleteAssistantTurn(getLastConversationRecord(sessionMessages)?.info);
     }, [currentSessionId, sessionMessages, sessionPermissions.length, sessionForms.length, sessionStatusForCurrent.type]);
+
+    const latestCompletedReply = React.useMemo(
+        () => findLatestCompletedReply(sessionMessages),
+        [sessionMessages],
+    );
+    const autoReadAloudEnabled = useConfigStore((state) => state.autoReadAloudEnabled);
+    // Use the reply's own message id as the reading key so the message
+    // button shows the auto-started reading as playing and can stop it.
+    const { play: playAutoReadAloud } = useMessageTTS(latestCompletedReply?.messageId);
+    // Permission prompts pause `sessionIsWorking` while the turn is still
+    // running, so status also marks the session as active for the auto-read
+    // baseline.
+    const sessionIsActive = sessionIsWorking
+        || sessionStatusForCurrent.type === 'busy'
+        || sessionStatusForCurrent.type === 'retry';
+    useAutoReadAloud({
+        sessionKey: currentSessionKey ?? '',
+        ready: hasRenderableSessionSnapshot && sessionMessageLoadState.status === 'ready',
+        sessionIsActive,
+        reply: latestCompletedReply,
+        enabled: autoReadAloudEnabled && !pinned,
+        play: playAutoReadAloud,
+    });
+
     const activeRetryStatus = React.useMemo(() => {
         if (!currentSessionId || sessionStatusForCurrent.type !== 'retry') {
             return null;
@@ -1053,10 +1133,16 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const isDesktopExpandedInput = isExpandedInput;
     const useCompactDraftLayout = isMobile || isVSCode || chatSurfaceMode === 'mini-chat';
     // Work-status panel: a borderless column to the right of the transcript.
-    // It yields to the context panel and to a narrow chat; `rowRef` goes on the
-    // row that holds both columns, so its width never depends on the panel's
-    // own visibility.
-    const { rowRef: workStatusRowRef, visible: workStatusVisible, fits: workStatusFits, roomy: workStatusRoomy } = useWorkStatusVisibility({
+    // It yields to a narrow chat, and to the context panel unless the chat area
+    // fits both beside the transcript; `rowRef` goes on the row that holds both
+    // columns, so its width never depends on the panel's own visibility.
+    const {
+        rowRef: workStatusRowRef,
+        visible: workStatusVisible,
+        fits: workStatusFits,
+        roomy: workStatusRoomy,
+        roomyBesidePanel: workStatusRoomyBesidePanel,
+    } = useWorkStatusVisibility({
         isMobile,
         isVSCode,
     });
@@ -1307,13 +1393,11 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     // a `subagent: true` command; a call's report finishes that call's row
     // (see `ToolPart`), and a run started before the loaded history stays in
     // the session's subagent list, so the chat never shifts for either.
-    const directorySessions = useSessions(effectiveSessionDirectory);
-    const viewportMessages = React.useMemo(() => {
-        const childStartedAt = (childSessionID: string): number | undefined => (
-            directorySessions.find((session) => session.id === childSessionID)?.time.created
-        );
-        return keepCommandSubagentReports(sessionMessages, childStartedAt);
-    }, [directorySessions, sessionMessages]);
+    const sessionStartTimes = useSessionStartTimes(effectiveSessionDirectory);
+    const viewportMessages = React.useMemo(
+        () => keepCommandSubagentReports(sessionMessages, (childSessionID) => sessionStartTimes.get(childSessionID)),
+        [sessionStartTimes, sessionMessages],
+    );
 
     const timelineController = useChatTimelineController({
         sessionId: currentSessionId,
@@ -1328,6 +1412,31 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         isPinned,
         showScrollButton,
     });
+
+    // A transcript someone works in keeps every turn it receives, and every
+    // timeline pass walks all of them. When a turn starts or ends with the
+    // reader at the end, the loader cuts what outgrew the cold-navigation
+    // window back to it; the older turns load again on scroll, as in a freshly
+    // opened session. Both edges count, since queued prompts and agent loops
+    // start the next turn the moment one ends. The pause lets the send glide,
+    // the turn's last block, its footer and the turn-end glide land first. A
+    // reader away from the end holds the history, so another column showing
+    // this session never cuts what they look at.
+    const turnCount = timelineController.turnIds.length;
+    const isPinnedRef = React.useRef(isPinned);
+    isPinnedRef.current = isPinned;
+    React.useEffect(() => {
+        if (!active || !currentSessionId || !effectiveSessionDirectory) return;
+        const timer = window.setTimeout(() => {
+            if (!isPinnedRef.current) return;
+            messageLoader.trimHistory({ directory: effectiveSessionDirectory, sessionID: currentSessionId });
+        }, HISTORY_TRIM_DELAY_MS);
+        return () => window.clearTimeout(timer);
+    }, [active, currentSessionId, effectiveSessionDirectory, messageLoader, sessionIsWorking, turnCount]);
+    React.useEffect(() => {
+        if (isPinned || !currentSessionId || !effectiveSessionDirectory) return;
+        return messageLoader.retainSessionHistory({ directory: effectiveSessionDirectory, sessionID: currentSessionId }, 'browsing');
+    }, [currentSessionId, effectiveSessionDirectory, isPinned, messageLoader]);
 
     const handleHistoryScroll = timelineController.handleHistoryScroll;
     React.useEffect(() => {
@@ -1378,7 +1487,9 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         void navigation.scrollToTurnId(turnId, { behavior: 'auto' });
     }, [navigation]);
     const canLoadEarlierPrompts = timelineController.historySignals.canLoadEarlier;
+    // The mini chat window is too narrow for the navigator's panel.
     const showPromptNavigator = !isMobile
+        && chatSurfaceMode !== 'mini-chat'
         && !isDesktopExpandedInput
         && promptNavigatorEnabled
         && timelineController.turnIds.length >= 2;
@@ -1497,9 +1608,18 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 
     React.useEffect(() => {
         if (!active || !currentSessionId) return;
-        if (hasRenderableSessionSnapshot) return;
+        if (hasRenderableSessionSnapshot || spaceStopped) return;
         void ensureSessionRenderable(currentSessionId);
-    }, [currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot, active]);
+    }, [currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot, active, spaceStopped]);
+
+    // A space that runs again answers the load the chat held, or the one that failed while it
+    // was going down: the user waiting on its start sees the chat without a retry.
+    const wasSpaceStoppedRef = React.useRef(spaceStopped);
+    React.useEffect(() => {
+        const wasStopped = wasSpaceStoppedRef.current;
+        wasSpaceStoppedRef.current = spaceStopped;
+        if (wasStopped && !spaceStopped && !hasRenderableSessionSnapshot) retrySessionLoad();
+    }, [hasRenderableSessionSnapshot, retrySessionLoad, spaceStopped]);
 
     const composerSlotRef = React.useRef<HTMLDivElement | null>(null);
     // The slot mounts after the first commit (behind the session gate), so
@@ -1559,6 +1679,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const scrollNodeRef = React.useMemo(() => ({ current: scrollNode }), [scrollNode]);
     useScrollShadow(scrollNodeRef, {
         observeMutations: false,
+        hideTopShadow: isMobile && stickyUserHeader,
         // The glass composer is the visible end of the transcript.
         hideBottomShadow: floatingComposer,
     });
@@ -1630,7 +1751,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 		);
 	}
 
-    const sessionSurface = (() => {
+    const sessionPlaceholder = (() => {
         if (draftOpen || draftPresentationExiting) {
             if (!useCompactDraftLayout || isDesktopExpandedInput) {
                 return null;
@@ -1640,6 +1761,9 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 
         const showHydrationSkeleton = isSessionHydrating && sessionMessages.length === 0 && !sessionIsWorking;
         if (showHydrationSkeleton) {
+            if (spaceStopped && effectiveSessionDirectory) {
+                return <SpaceChatPlaceholder directory={effectiveSessionDirectory} />;
+            }
             if (sessionMessageLoadState.status === 'error') {
                 return (
                     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
@@ -1677,30 +1801,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     aria-hidden={isDesktopExpandedInput}
                 >
                     <div className="absolute inset-0 overflow-y-auto overflow-x-hidden pt-6" style={CHAT_SCROLL_STYLE}>
-                        <div className="space-y-4">
-                            {HYDRATING_SKELETON_ITEMS.map((item) => (
-                                <div key={item.id} className="group w-full">
-                                    <div className="chat-message-column">
-                                        <div className="space-y-2.5 px-4 py-3">
-                                            <div className="space-y-1.5">
-                                                {item.toolRows.map((row) => (
-                                                    <div key={`${item.id}-${row.id}`} className="flex items-center gap-2">
-                                                        <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-full" />
-                                                        <Skeleton className={cn('h-4 rounded-md', row.titleWidth)} />
-                                                        <Skeleton className={cn('h-4 rounded-md', row.detailWidth)} />
-                                                    </div>
-                                                ))}
-                                            </div>
-                                            <div className="space-y-1.5 pt-1">
-                                                {item.textWidths.map((width, index) => (
-                                                    <Skeleton key={`${item.id}-text-${index}`} className={cn('h-4 rounded-md', width)} />
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
+                        <HydrationSkeleton waiting={!isDesktopExpandedInput} />
                     </div>
                 </div>
             );
@@ -1718,45 +1819,48 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             );
         }
 
-        return (
-            <ChatViewport
-                currentSessionId={currentSessionId ?? ''}
-                currentSessionKey={currentSessionKey ?? currentSessionId ?? ''}
-                isDesktopExpandedInput={isDesktopExpandedInput}
-                isMobile={isMobile}
-                floatingComposer={floatingComposer}
-                statusRowClearance={sessionIsWorking ? composerOverlayHeight : 0}
-                directory={effectiveSessionDirectory}
-                scrollRef={scrollRef}
-                registerList={registerList}
-                onIsAtEndChange={onIsAtEndChange}
-                onListMetricsChange={onListMetricsChange}
-                onTimelineDataChange={onTimelineDataChange}
-                messageListRef={messageListRef}
-                renderedMessages={timelineController.renderedMessages}
-                isLoadingOlder={timelineController.isLoadingOlder}
-                sessionIsWorking={sessionIsWorking}
-                streamingMessageId={streamingMessageId}
-                activeStreamingPhase={activeStreamingPhase}
-                retryOverlay={retryOverlay}
-                scrollToBottom={resumeToLatestInstant}
-                onScrollbarDrag={onManualNavigation}
-                endPinningReleased={userOwnsScroll}
-                revealWaited={revealWaited}
-                revealGate={revealGate}
-                isProgrammaticFollowActive={isFollowingProgrammatically}
-                showLoadOlderButton={showLoadOlderButton}
-                onLoadOlder={handleLoadOlderClick}
-                turnIds={timelineController.turnIds}
-                activeTurnId={timelineController.activeTurnId}
-                onSelectTurn={handlePromptNavigatorSelect}
-                showPromptNavigator={showPromptNavigator}
-                canLoadEarlierPrompts={canLoadEarlierPrompts}
-                isLoadingOlderPrompts={timelineController.isLoadingOlder}
-                onLoadEarlierPrompts={handleLoadOlderClick}
-            />
-        );
+        return undefined;
     })();
+
+    const sessionSurface = (
+        <ChatViewport
+            placeholder={sessionPlaceholder}
+            currentSessionId={currentSessionId ?? ''}
+            currentSessionKey={currentSessionKey ?? currentSessionId ?? ''}
+            isDesktopExpandedInput={isDesktopExpandedInput}
+            isMobile={isMobile}
+            floatingComposer={floatingComposer}
+            statusRowClearance={sessionIsWorking ? composerOverlayHeight : 0}
+            directory={effectiveSessionDirectory}
+            scrollRef={scrollRef}
+            registerList={registerList}
+            onIsAtEndChange={onIsAtEndChange}
+            onListMetricsChange={onListMetricsChange}
+            onTimelineDataChange={onTimelineDataChange}
+            messageListRef={messageListRef}
+            renderedMessages={timelineController.renderedMessages}
+            isLoadingOlder={timelineController.isLoadingOlder}
+            sessionIsWorking={sessionIsWorking}
+            streamingMessageId={streamingMessageId}
+            activeStreamingPhase={activeStreamingPhase}
+            retryOverlay={retryOverlay}
+            scrollToBottom={resumeToLatestInstant}
+            onScrollbarDrag={onManualNavigation}
+            endPinningReleased={userOwnsScroll}
+            revealWaited={revealWaited}
+            revealGate={revealGate}
+            isProgrammaticFollowActive={isFollowingProgrammatically}
+            showLoadOlderButton={showLoadOlderButton}
+            onLoadOlder={handleLoadOlderClick}
+            turnIds={timelineController.turnIds}
+            activeTurnId={timelineController.activeTurnId}
+            onSelectTurn={handlePromptNavigatorSelect}
+            showPromptNavigator={showPromptNavigator}
+            canLoadEarlierPrompts={canLoadEarlierPrompts}
+            isLoadingOlderPrompts={timelineController.isLoadingOlder}
+            onLoadEarlierPrompts={handleLoadOlderClick}
+        />
+    );
 
 	return (
 		<div
@@ -1770,7 +1874,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 		>
 		<ChatColumnSessionContext.Provider value={chatColumnSession}>
 		<ChatColumnActionsContext.Provider value={columnActions}>
-		<ChatColumnExpandedInputContext.Provider value={pinnedExpandedInputValue}>
 		{/* One mobile comment controller per column: selections in this column
 		    comment into this column's composer, never a sibling's. */}
 		<MobileCommentComposerContext.Provider value={mobileCommentComposer}>
@@ -1954,16 +2057,17 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         </div>
         </ChatQuoteHighlightContext.Provider>
         </MobileCommentComposerContext.Provider>
-        </ChatColumnExpandedInputContext.Provider>
         </ChatColumnActionsContext.Provider>
         </ChatColumnSessionContext.Provider>
         {/* Kept mounted while it could ever show, so it can fade out and back
-            in; `visible` drives that, and `reserved` keeps its column in the
-            right slot while the context panel covers it. */}
+            in; `visible` drives that, `reserved` keeps its column in the right
+            slot while the context panel covers it, and `besidePanel` keeps it
+            beside the open panel. */}
         {workStatusPanelMountable && workStatusHost ? createPortal(
             <WorkStatusPanel
                 visible={showWorkStatusPanel}
                 reserved={workStatusReserved}
+                besidePanel={workStatusRoomyBesidePanel}
                 sessionId={currentSessionId ?? null}
                 directory={workStatusDirectory ?? null}
                 repositoryEnabled={!isManagedChatContext}

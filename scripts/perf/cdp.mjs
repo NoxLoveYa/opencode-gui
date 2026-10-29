@@ -119,7 +119,12 @@ const ANTI_THROTTLING_ARGS = [
   "--disable-background-timer-throttling",
   "--disable-backgrounding-occluded-windows",
   "--disable-renderer-backgrounding",
-  "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
+  // MacAppCodeSignClone: on macOS Chrome copies its 1.4 GB app bundle into
+  // $TMPDIR/../X/com.google.Chrome.code_sign_clone at every launch and removes
+  // the copy only on a clean quit. A killed or crashed profiling run leaves it
+  // behind, and a day of runs filled the disk. Chrome has one feature list, so
+  // every disabled feature goes into this one flag.
+  "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,MacAppCodeSignClone",
 ]
 
 /**
@@ -156,6 +161,9 @@ export const launchChrome = ({ chrome, profileDir, port, headless, extraArgs = [
     "about:blank",
   ]
   if (headless) args.unshift("--headless=new", "--disable-gpu")
+  // Chrome refuses to start as root with its sandbox on, which is how
+  // containers and CI runners usually run it.
+  if (process.getuid?.() === 0) args.unshift("--no-sandbox")
   return spawn(chrome, args, { stdio: "ignore" })
 }
 

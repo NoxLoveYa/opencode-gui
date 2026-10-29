@@ -4,7 +4,7 @@
 
 Keep authored definitions separate from runtime colors. Optional values are meaningful defaults, not missing rendering data. `compactTheme` removes semantic defaults; the maintainer script checks resolved-color equality before replacing JSON files. Existing custom files are read without rewriting them.
 
-`syntax.ts` owns syntax inheritance. Chat's static worker theme and the file/diff TextMate theme use `buildSyntaxTokenRules`; CodeMirror uses the same resolved palette. Changes to inheritance must preserve explicit overrides and pass compact round-trip tests. The worker theme contains CSS variables so switching palettes does not require tokenizing code again.
+`syntax.ts` owns syntax inheritance. Code is highlighted by `@pierre/highlights` for the languages it has a lexer for and by Shiki for the rest, so every palette is built in two formats from the same resolved roles: TextMate rules in `buildSyntaxTokenRules`, and Zed token styles in `lib/shiki/zedThemeFromAppTheme.ts`, whose table maps each Highlights token name to a syntax role. Files, diffs and CodeMirror get concrete colors; chat code gets the CSS-variable form of each, so switching palettes does not require tokenizing code again. Highlights accepts only hex colors, so the Zed builder converts `rgb()` itself and other color functions through a canvas where a document exists. Changes to inheritance must preserve explicit overrides and pass compact round-trip tests.
 
 CodeMirror, Shiki/Pierre and chat/tool output use the authored
 `syntax.base.background` directly, exposed as `--syntax-background` in CSS.
@@ -54,6 +54,16 @@ the canvas to remain visible. Mono keeps every role grayscale.
 Body, secondary and bold text retain the palette's neutral cast with distinct
 contrast levels; bold text is a stronger body color rather than a syntax accent.
 These authored choices apply to built-ins, not to existing custom theme files.
+Every built-in text role stays at 4.5:1 or more: body and secondary text on
+the canvas, sidebar and elevated surfaces, and markdown links, link hover and
+quote text on the canvas. `definition.test.ts` checks each palette. A colour
+under the floor moves toward black or white until it reaches 4.6:1, the import
+adapter's own floor, so it keeps its hue. Components draw these roles at full
+strength; a quieter step mixes toward the secondary text instead of fading it.
+Dark built-ins hold secondary text at about 4.75:1 on their weakest surface
+(the elevated one), about 5.4 on the sidebar: in dark palettes mid greys sit
+close together, and a brighter secondary colour merges with resting titles
+and lifts every footer and caption. Catppuccin Mocha keeps its official Subtext 0.
 
 Catppuccin Mocha keeps the official palette for its surfaces and revised text,
 tool and interaction roles. Body, bold and italic text use Text; secondary text
@@ -105,7 +115,8 @@ Ordinary palettes retain their canvas and hue, but sidebar and elevated layers
 follow the built-in hierarchy. Surface contrast stays within 1.04–1.10 where
 the canvas permits it; a black canvas keeps a black sidebar. Body text is softened
 to a canvas contrast ceiling of 13.6 in dark and 9 in light, with a readability
-floor of 7 across shared surfaces when possible. Secondary text targets 4.6–6.
+floor of 7 across shared surfaces when possible. Secondary text targets 4.6–6
+in light palettes and 4.6–5.2 in dark ones.
 Readability takes precedence over ceilings. Bubble text is checked after adding
 the primary tint. Bold uses stronger neutral text. Code backgrounds keep their
 source lightness but take the canvas hue, so a neutral code fill does not sit as a

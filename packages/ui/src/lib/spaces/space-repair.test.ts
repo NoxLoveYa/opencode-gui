@@ -25,6 +25,7 @@ const entry = (change: Partial<SpaceEntry> = {}): SpaceEntry => ({
   grants: [],
   access: null,
   needsAccess: [],
+  accessFailures: [],
   damage: null,
   setup: null,
   ...change,
@@ -134,7 +135,8 @@ describe('the actions of a space', () => {
       const run = runSpaceAction(ID, 'restart');
       expect(useSpacesStore.getState().actions.get(ID)).toEqual({ kind: 'running', action: 'restart' });
       await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(requests).toEqual([`POST /api/openchamber/spaces/${ID}/restart`, 'GET /api/openchamber/spaces']);
+      // The list read brings the project's own providers with it, for the composer's rule.
+      expect(requests).toEqual([`POST /api/openchamber/spaces/${ID}/restart`, 'GET /api/openchamber/spaces', 'GET /api/openchamber/spaces/custom-providers']);
       // The restart went through and the journey list came back; the line still says "restarting".
       expect(useSpacesStore.getState().journey?.get(ID)?.state).toBe('running');
       expect(useSpacesStore.getState().actions.get(ID)).toEqual({ kind: 'running', action: 'restart' });

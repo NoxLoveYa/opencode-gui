@@ -19,6 +19,8 @@ import { z } from 'zod';
 
 const parseJsonBody = express.json({ limit: '1mb' });
 const todoTextInput = z.string();
+// null clears the plan's session link.
+const sessionIdInput = z.string().nullable();
 const optionalTextInput = z.string().optional();
 const optionalCompletedInput = z.boolean().optional();
 
@@ -29,7 +31,7 @@ const isValidationError = (error) => {
 
 const respondWithError = (res, error, fallbackMessage) => {
   const message = error instanceof Error ? error.message : fallbackMessage;
-  if (error?.status === 400 || error?.status === 404) {
+  if (error?.status === 400 || error?.status === 404 || error?.status === 409) {
     return res.status(error.status).json({ error: message });
   }
   if (isValidationError(error)) {
@@ -87,8 +89,14 @@ export const registerProjectContextRoutes = (app, dependencies) => {
     if (!id.success) {
       return res.status(400).json({ error: 'id must be a string' });
     }
+    // The runtime validates the plan link and dependencies against the stored list.
     try {
-      const { context } = await projectContextRuntime.createTodo(req.params.projectId, { text: text.data, id: id.data });
+      const { context } = await projectContextRuntime.createTodo(req.params.projectId, {
+        text: text.data,
+        id: id.data,
+        planId: req.body.planId,
+        dependsOn: req.body.dependsOn,
+      });
       return res.status(201).json(context);
     } catch (error) {
       return respondWithError(res, error, 'Failed to create todo');
@@ -110,6 +118,8 @@ export const registerProjectContextRoutes = (app, dependencies) => {
       return res.json(await projectContextRuntime.updateTodo(req.params.projectId, req.params.todoId, {
         text: text.data,
         completed: completed.data,
+        planId: body.planId,
+        dependsOn: body.dependsOn,
       }));
     } catch (error) {
       return respondWithError(res, error, 'Failed to update todo');
@@ -144,6 +154,7 @@ export const registerProjectContextRoutes = (app, dependencies) => {
         body: body.body,
         source: body.source,
         origin: body.origin,
+        planId: body.planId,
       });
       return res.status(201).json({ note, context });
     } catch (error) {
@@ -167,6 +178,7 @@ export const registerProjectContextRoutes = (app, dependencies) => {
       const result = await projectContextRuntime.updateNote(req.params.projectId, req.params.noteId, {
         ...(body.body !== undefined ? { body: body.body } : {}),
         ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+        planId: body.planId,
       });
       if (!result) {
         return res.status(404).json({ error: 'Note not found' });
@@ -269,6 +281,25 @@ export const registerProjectContextRoutes = (app, dependencies) => {
       return res.status(201).json({ plan, context });
     } catch (error) {
       return respondWithError(res, error, 'Failed to create plan');
+    }
+  });
+
+  // The session a plan was just sent to with Implement or Improve; null clears it.
+  app.put('/api/project-context/:projectId/plans/:planId/session', parseJsonBody, async (req, res) => {
+    const sessionId = sessionIdInput.safeParse(isObjectRecord(req.body) ? req.body.sessionId : undefined);
+    if (!sessionId.success) {
+      return res.status(400).json({ error: 'sessionId must be a string or null' });
+    }
+    try {
+      const result = await projectContextRuntime.setPlanSession(req.params.projectId, req.params.planId, {
+        sessionId: sessionId.data,
+      });
+      if (!result?.plan) {
+        return res.status(404).json({ error: 'Plan not found' });
+      }
+      return res.json(result);
+    } catch (error) {
+      return respondWithError(res, error, 'Failed to link plan to session');
     }
   });
 

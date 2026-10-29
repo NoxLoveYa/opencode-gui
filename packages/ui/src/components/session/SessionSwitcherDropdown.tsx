@@ -11,8 +11,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Icon } from '@/components/icon/Icon';
 import { SessionActivityIndicator } from '@/components/session/SessionActivityIndicator';
+import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useSessionUnseenCount } from '@/sync/notification-store';
+import { useSessionUnread } from '@/sync/session-unread';
 import {
   findSwitcherItemAncestorIds,
   useSwitcherItems,
@@ -230,17 +231,15 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
   const { t } = useI18n();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
-  const notifyOnSubtasks = useUIStore((state) => state.notifyOnSubtasks);
 
-  const unseenCount = useSessionUnseenCount(session.id);
+  const isUnread = useSessionUnread(session.id);
 
   const isActive = currentSessionId === session.id;
   const sessionTitle = session.title?.trim() || t('sessions.sidebar.session.untitled');
-  const isSubtask = Boolean((session as Session & { parentID?: string | null }).parentID);
-  const needsAttention = unseenCount > 0 && (!isSubtask || notifyOnSubtasks);
   const turnActivity = useSessionTurnActivity(session.id);
   const isStreaming = turnActivity !== null;
-  const showUnreadDot = !isStreaming && needsAttention && !isActive;
+  const runningBlink = useWaitingBlink(isStreaming);
+  const showUnreadDot = !isStreaming && isUnread && !isActive;
 
   const timestamp = getSessionActivityTime(session) || Date.now();
   const timeLabel = formatSessionCompactDateLabel(timestamp);
@@ -289,7 +288,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
                 event.stopPropagation();
                 onToggleExpand?.();
               }}
-              className="inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:text-foreground"
+              className="inline-flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
               aria-label={isExpanded ? t('sessions.sidebar.session.subsessions.collapse') : t('sessions.sidebar.session.subsessions.expand')}
             >
               {isExpanded ? <Icon name="arrow-down-s" className="h-3.5 w-3.5" /> : <Icon name="arrow-right-s" className="h-3.5 w-3.5" />}
@@ -301,7 +300,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
         </div>
         {variant === 'default' ? (
           <div
-            className="flex min-w-0 items-center gap-1.5 truncate text-muted-foreground/70 leading-tight"
+            className="flex min-w-0 items-center gap-1.5 truncate text-muted-foreground leading-tight"
             style={{ fontSize: 'calc(var(--text-ui-label) * 0.85)' }}
           >
             {hasChildren ? (
@@ -314,7 +313,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
                   event.stopPropagation();
                   onToggleExpand?.();
                 }}
-                className="inline-flex h-3 w-3 flex-shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:text-foreground"
+                className="inline-flex h-3 w-3 flex-shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
                 aria-label={isExpanded ? t('sessions.sidebar.session.subsessions.collapse') : t('sessions.sidebar.session.subsessions.expand')}
               >
                 {isExpanded ? <Icon name="arrow-down-s" className="h-3 w-3" /> : <Icon name="arrow-right-s" className="h-3 w-3" />}
@@ -324,7 +323,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
             {projectLabel ? <span className="truncate">{projectLabel}</span> : null}
             {branchLabel ? (
               <span className="inline-flex min-w-0 items-center gap-0.5">
-                <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground/70" />
+                <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
                 <span className="truncate">{branchLabel}</span>
               </span>
             ) : null}
@@ -336,7 +335,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
         <span className="flex h-3 w-3 flex-shrink-0 items-center justify-center self-center">
           <SessionActivityIndicator
             state={turnActivity ?? 'unread'}
-            runningClassName="animate-busy-pulse"
+            runningClassName={cn('h-2 w-2', runningBlink)}
           />
         </span>
       ) : null}

@@ -55,6 +55,9 @@ const createMockResponse = () => {
     getHeader(name) {
       return headers.get(name.toLowerCase());
     },
+    on() {
+      return this;
+    },
     get statusCode() {
       return statusCode;
     },
@@ -1713,17 +1716,22 @@ describe('fs git-dirs', () => {
     return res;
   };
 
-  it('returns an empty list when the root itself is a repository', async () => {
-    const { handler, readdir } = registerGitDirs({
-      '/workspace': [['.git', 'dir'], ['proj-a', 'dir']],
-      '/workspace/proj-a': [['.git', 'dir']],
+  it('walks past the root\'s own .git and never reports the root', async () => {
+    // A root repository with no commits yet hides nothing below it (#4886);
+    // the client asks for it and decides from the root's status.
+    const { handler } = registerGitDirs({
+      '/workspace': [['.git', 'dir'], ['proj-a', 'dir'], ['docs', 'dir']],
+      '/workspace/docs': [['readme.txt', 'file']],
+      '/workspace/proj-a': [['.git', 'dir'], ['src', 'dir']],
     });
 
     const res = await callGitDirs(handler, { path: '/workspace' });
 
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ path: '/workspace', repositories: [] });
-    expect(readdir).toHaveBeenCalledTimes(1);
+    expect(res.body).toEqual({
+      path: '/workspace',
+      repositories: [{ path: '/workspace/proj-a', name: 'proj-a' }],
+    });
   });
 
   it('finds nested repositories with a .git directory', async () => {
@@ -2048,7 +2056,10 @@ describe('fs stat directory error handling', () => {
       await mkdir(path.join(directory, 'shared'));
       await copyFile(new URL('./routes.js', import.meta.url), path.join(directory, 'fs/routes.mjs'));
       await copyFile(new URL('./byte-range.js', import.meta.url), path.join(directory, 'fs/byte-range.js'));
+      await copyFile(new URL('./preview-bridge.js', import.meta.url), path.join(directory, 'fs/preview-bridge.js'));
       await copyFile(new URL('./workspace-file-names.js', import.meta.url), path.join(directory, 'fs/workspace-file-names.js'));
+      await copyFile(new URL('./content-search.js', import.meta.url), path.join(directory, 'fs/content-search.js'));
+      await copyFile(new URL('./search.js', import.meta.url), path.join(directory, 'fs/search.js'));
       await copyFile(new URL('../path-realpath-cache.js', import.meta.url), path.join(directory, 'path-realpath-cache.js'));
       await copyFile(new URL('../git/redaction.js', import.meta.url), path.join(directory, 'git/redaction.js'));
       await copyFile(new URL('../shared/guards.js', import.meta.url), path.join(directory, 'shared/guards.js'));
@@ -2460,6 +2471,7 @@ describe('fs html preview grants', () => {
     ['/home/user/.config/openchamber/projects/p1/canvases/c1/index.html', '<h1>canvas</h1>'],
     ['/home/user/.config/openchamber/projects/p1/canvases/c1/data.json', '[]'],
     ['/home/user/.config/openchamber/guest-auth.json', '{"token":"secret"}'],
+    ['/tmp/mockup/index.html', '<h1>mockup</h1>'],
   ]);
 
   const register = () => {
@@ -2490,9 +2502,9 @@ describe('fs html preview grants', () => {
     });
     const mintHandler = routes.find((route) => route.method === 'POST' && route.routePath === '/api/fs/preview').handler;
     const serveRoute = routes.find((route) => route.method === 'GET' && route.routePath instanceof RegExp && route.routePath.test('/api/fs/preview/g/x'));
-    const mint = async (pagePath) => {
+    const mint = async (pagePath, query = {}) => {
       const res = createMockResponse();
-      await mintHandler({ body: { path: pagePath }, query: {} }, res);
+      await mintHandler({ body: { path: pagePath }, query }, res);
       return res;
     };
     const serve = async (url) => {
@@ -2515,9 +2527,12 @@ describe('fs html preview grants', () => {
     expect(page.getHeader('content-security-policy')).toMatch(/^sandbox allow-scripts /);
     expect(page.getHeader('content-security-policy')).not.toContain('allow-same-origin');
     expect(page.getHeader('access-control-allow-origin')).toBe('null');
+    // HTML carries the Files view's annotation bridge; other files are served as they are.
+    expect(page.body.toString()).toContain('<script data-openchamber-preview-bridge>');
 
     const sibling = await serve(`/api/fs/preview/${grant}/workspace/data.json`);
     expect(sibling.statusCode).toBe(200);
+    expect(sibling.body.toString()).toBe('{}');
     expect(sibling.getHeader('access-control-allow-origin')).toBe('null');
 
     // OpenChamber's own folder can be embedded but never read from script.
@@ -2545,6 +2560,19 @@ describe('fs html preview grants', () => {
     const { grant } = (await mint('/workspace/site/index.html')).body;
     expect((await serve(`/api/fs/preview/${grant}/etc/passwd`)).statusCode).toBe(400);
     expect((await mint('/etc/passwd')).statusCode).toBe(400);
+  });
+
+  it('previews a page outside the project, readable from script only inside its own folder', async () => {
+    const { mint, serve } = register();
+    const minted = await mint('/tmp/mockup/index.html', { allowOutsideWorkspace: 'true' });
+    expect(minted.statusCode).toBe(200);
+    const { grant } = minted.body;
+
+    const page = await serve(`/api/fs/preview/${grant}/tmp/mockup/index.html`);
+    expect(page.statusCode).toBe(200);
+    expect(page.getHeader('access-control-allow-origin')).toBe('null');
+
+    expect((await serve(`/api/fs/preview/${grant}/workspace/data.json`)).statusCode).toBe(400);
   });
 });
 
@@ -2594,5 +2622,103 @@ describe('GET /api/fs/find-by-name', () => {
     for (const bad of ['src/util.ts', '*.ts', '', '..']) {
       expect((await ask(bad)).statusCode, bad).toBe(400);
     }
+  });
+});
+
+describe('GET /api/fs/find-in-files', () => {
+  let repo;
+  beforeEach(async () => {
+    repo = await mkdtemp(path.join(tmpdir(), 'oc-find-in-files-route-'));
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    await mkdir(path.join(repo, 'src'), { recursive: true });
+    await nativeFs.writeFile(path.join(repo, 'src', 'a.ts'), 'first needle\nsecond needle\n');
+    await nativeFs.writeFile(path.join(repo, 'ignored.log'), 'needle\n');
+    await nativeFs.writeFile(path.join(repo, '.gitignore'), '*.log\n');
+  });
+  afterEach(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  const register = async (overrides = {}) => {
+    const { spawn } = await import('node:child_process');
+    const { createRipgrepResolver } = await import('./ripgrep.js');
+    const fs = await import('node:fs');
+    const { app, getRoute } = createRouteRegistry();
+    registerFsRoutes(app, {
+      os: { homedir: () => '/home/user' },
+      path,
+      fsPromises: nativeFs,
+      spawn,
+      crypto: { randomUUID: () => 'job-0' },
+      normalizeDirectoryPath: (p) => p,
+      resolveProjectDirectory: async () => ({ directory: repo }),
+      buildAugmentedPath: () => '/usr/bin',
+      resolveGitBinaryForSpawn: () => 'git',
+      resolveRipgrepBinary: createRipgrepResolver({ fs: fs.default, path }).resolveRipgrepBinary,
+      openchamberUserConfigRoot: '/home/user/.config',
+      ...overrides,
+    });
+    const route = getRoute('GET', '/api/fs/find-in-files');
+    return async (query) => {
+      const res = createMockResponse();
+      await route({ query, headers: {} }, res);
+      return res;
+    };
+  };
+
+  it('answers matching lines with the stop reason', async () => {
+    const ask = await register();
+    const res = await ask({ query: 'needle' });
+    expect(res.statusCode).toBe(200);
+    expect(res.getHeader('cache-control')).toBe('no-store');
+    expect(res.body.stopped).toBeNull();
+    expect(res.body.matches.map((match) => [match.relativePath, match.line, match.text])).toEqual([
+      ['src/a.ts', 1, 'first needle'],
+      ['src/a.ts', 2, 'second needle'],
+    ]);
+    expect(res.body.matches[0]).toMatchObject({ path: path.join(repo, 'src/a.ts'), column: 7, ranges: [[6, 12]], cutStart: false });
+
+    const limited = await ask({ query: 'needle', limit: '1' });
+    expect(limited.body.stopped).toBe('limit');
+    expect(limited.body.matches).toHaveLength(1);
+
+    const unignored = await ask({ query: 'needle', respectGitignore: 'false' });
+    expect(unignored.body.matches.map((match) => match.relativePath)).toContain('ignored.log');
+  });
+
+  it('builds result paths under the root the client asked for when it is a symlink', async () => {
+    const link = `${repo}-link`;
+    await nativeFs.symlink(repo, link);
+    try {
+      const ask = await register({
+        resolveProjectDirectory: async () => ({ directory: repo, requestedDirectory: link }),
+      });
+      const res = await ask({ query: 'first' });
+      expect(res.body.matches.map((match) => match.path)).toEqual([path.join(link, 'src/a.ts')]);
+    } finally {
+      await rm(link, { force: true });
+    }
+  });
+
+  it('rejects an empty query and an invalid regular expression', async () => {
+    const ask = await register();
+    expect((await ask({ query: '   ' })).statusCode).toBe(400);
+    const invalid = await ask({ query: '(', regex: 'true' });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body).toEqual({ error: 'unclosed group', reason: 'invalid-pattern' });
+  });
+
+  it('answers 501 when no ripgrep can be found', async () => {
+    const ask = await register({ resolveRipgrepBinary: async () => null });
+    const res = await ask({ query: 'needle' });
+    expect(res.statusCode).toBe(501);
+    expect(res.body.reason).toBe('search-unavailable');
+  });
+
+  it('requires an active workspace', async () => {
+    const ask = await register({ resolveProjectDirectory: async () => ({ directory: null, error: 'No workspace' }) });
+    const res = await ask({ query: 'needle' });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toBe('No workspace');
   });
 });

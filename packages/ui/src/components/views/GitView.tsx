@@ -1,7 +1,6 @@
 import React from 'react';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useFireworksCelebration } from '@/contexts/FireworksContext';
 import type { GitIdentityProfile, CommitFileEntry, GitStatus } from '@/lib/api/types';
 import { rankByQuery } from '@/lib/search/fuzzySearch';
 import { useGitIdentitiesStore } from '@/stores/useGitIdentitiesStore';
@@ -44,10 +43,14 @@ import {
   CommandList,
 } from '@/components/ui/command';
 import { Icon } from "@/components/icon/Icon";
+import { Spinner } from "@/components/ui/spinner";
 import { Button } from '@/components/ui/button';
 
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useUIStore } from '@/stores/useUIStore';
+import { useDraftSpaceTarget } from '@/lib/spaces/useDraftSpaceTarget';
+import { panelContentDirectory } from '@/lib/spaces/space-creation-requests';
+import { SpacePreparing } from '@/components/session/spaces/SpacePreparing';
 import { useDetectedWorktreeMetadata } from '@/hooks/useDetectedWorktreeRoot';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { getSessionWorktreeRepairActions, getMutationBlockingReasons } from '@/sync/session-worktree-contract';
@@ -75,14 +78,18 @@ import { isConflictedStatusFile } from './git/changeStatus';
 import { getFreshestSourceControlStatusForBranch, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { getSourceControlAuthKey, getSourceControlReadContextAuthState, useSourceControlAuthStore, useConnectedAccountIds } from '@/stores/useSourceControlAuthStore';
 import { useRepositoryBinding } from '@/lib/source-control/repository-binding';
+import { useBranchPullRequestBase } from '@/hooks/useBranchComparisonBase';
+import { useBranchPullRequestRequest } from '@/hooks/useBranchPullRequestRequest';
 import { hasConfigChangedGrant } from '@/lib/source-control/types';
 import { createGitIndexMutationQueue, type GitIndexMutationDirection, type GitIndexMutationQueue } from './git/gitIndexMutationQueue';
 import type { GitRemote } from '@/lib/gitApi';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
+import { findWorktreeHoldingDirectory } from '@/lib/worktrees/worktreePaths';
 import { cn } from '@/lib/utils';
 import { generateCommitMessage as generateSessionCommitMessage, getGitWorktreeBootstrapStatus } from '@/lib/gitApi';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useI18n } from '@/lib/i18n';
+import { useCommitCelebration } from './git/useCommitCelebration';
 import { BoundGitNetworkOperationError, GitOperationResultError, runBoundGitNetworkOperation, runContributorAwarePush, describeGitSyncOutcome, type GitSyncOutcome } from '@/lib/boundGitNetworkOperation';
 import { useGitOperationRecovery } from './git/useGitOperationRecovery';
 import { GitOperationStatus } from './git/GitOperationStatus';
@@ -228,9 +235,17 @@ type GitViewProps = {
 };
 
 export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
+  // Counts openings of the panel, which stays mounted while closed: the clean
+  // state remounts on each one and picks a new line.
+  const [opening, setOpening] = React.useState({ active: isActive, count: 0 });
+  if (opening.active !== isActive) setOpening({ active: isActive, count: opening.count + (isActive ? 1 : 0) });
   const { t } = useI18n();
   const { git, sourceControl, runtime } = useRuntimeAPIs();
-  const currentDirectory = useEffectiveDirectory();
+  // The panel's tabs belong to the open view's folder; the repository shown is the same folder,
+  // except in a draft waiting for a new space: the space once it runs, none while it is made.
+  const panelDirectory = useEffectiveDirectory();
+  const draftSpace = useDraftSpaceTarget();
+  const currentDirectory = panelContentDirectory(draftSpace, panelDirectory) ?? undefined;
   const contributorDestination = useContributorDestinationChooser();
   const [worktreeBootstrapSnapshot, setWorktreeBootstrapSnapshot] = React.useState<{
     directory: string;
@@ -251,20 +266,8 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
       return undefined;
     }
 
-    const fromAvailable = availableWorktrees.find(
-      (metadata) => normalizePath(metadata.path) === normalizedCurrentDirectory
-    );
-    if (fromAvailable) {
-      return fromAvailable;
-    }
-
-    for (const metadata of worktreeMap.values()) {
-      if (normalizePath(metadata.path) === normalizedCurrentDirectory) {
-        return metadata;
-      }
-    }
-
-    return undefined;
+    return findWorktreeHoldingDirectory(availableWorktrees, normalizedCurrentDirectory)
+      ?? findWorktreeHoldingDirectory(worktreeMap.values(), normalizedCurrentDirectory);
   }, [availableWorktrees, normalizedCurrentDirectory, worktreeMap]);
   const storeWorktreeMetadata = React.useMemo(() => {
     if (currentSessionId) {
@@ -293,7 +296,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   // one, `gitDirectory` is the effective repository all git data and actions
   // operate on. The hook owns probing, discovery, auto-select, and
   // stale-selection recovery; data fetching below keys off its result.
-  const { rootIsGitRepo, gitDirectory, nestedRepos } = useNestedGitDirectory(
+  const { rootIsGitRepo, gitDirectory, nestedRepos, repositoryOptions } = useNestedGitDirectory(
     currentDirectory ?? null,
     { enabled: isActive, recheckOnOpen: true },
   );
@@ -353,7 +356,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   })));
   const isMobile = useUIStore((state) => state.isMobile);
   const openContextDiff = useUIStore((state) => state.openContextDiff);
-  const openContextSurface = useUIStore((state) => state.openContextSurface);
+  const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
   const [remotes, setRemotes] = React.useState<GitRemote[]>([]);
   const binding = useRepositoryBinding(gitDirectory, sourceControl, isActive);
   const [isRepositoryConfigurationOpen, setRepositoryConfigurationOpen] = React.useState(false);
@@ -694,7 +697,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   const [commitAction, setCommitAction] = React.useState<CommitAction>(null);
   const [logMaxCountLocal, setLogMaxCountLocal] = React.useState<number>(25);
   const [isSettingIdentity, setIsSettingIdentity] = React.useState(false);
-  const { triggerFireworks } = useFireworksCelebration();
+  const commitCelebration = useCommitCelebration();
 
   const autoAppliedDefaultRef = React.useRef<Map<string, string>>(new Map());
   const identityApplyCountRef = React.useRef(0);
@@ -1283,7 +1286,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     }
   }, [gitDirectory, git, refreshRemotes, refreshStatusAndBranches, t]);
 
-  const handleCommit = async (options: { pushAfter?: boolean } = {}) => {
+  const handleCommit = async (options: { pushAfter?: boolean; origin?: HTMLElement } = {}) => {
     if (!gitDirectory) return;
     if (!commitMessage.trim()) {
       toast.error(t('gitView.toast.enterCommitMessage'));
@@ -1302,14 +1305,14 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     let commitOutcome: 'pending' | 'local' | 'published' = 'pending';
 
     try {
-      await git.createGitCommit(gitDirectory, commitMessage.trim(), {
+      const commit = await git.createGitCommit(gitDirectory, commitMessage.trim(), {
         files: filesToCommit,
         stageFiles: [],
       });
       commitOutcome = 'local';
       bumpIndexRevision(gitDirectory);
       bumpIndexRevision(gitDirectory);
-      toast.success(t('gitView.toast.commitCreated'));
+      const deletion = commitCelebration.committed(commit.summary, options);
       setCommitMessage('');
       clearGeneratedHighlights();
 
@@ -1324,8 +1327,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
         setSyncAction('publish');
         await executePush();
         commitOutcome = 'published';
-        toast.success(t('gitView.publish.succeeded'));
-        triggerFireworks();
+        commitCelebration.pushed({ deletion, origin: options.origin });
       }
       await refreshAfterGitAction(() => setIntegrateRefreshKey((v) => v + 1));
     } catch (err) {
@@ -1571,7 +1573,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     return primaryRemote ? branches?.defaultBranches?.[primaryRemote] : undefined;
   }, [binding.contexts, branches]);
 
-  const baseBranch = React.useMemo(() => deriveBaseBranch({
+  const derivedBaseBranch = React.useMemo(() => deriveBaseBranch({
     remoteNames: new Set(binding.contexts[0]?.primaryRemote ? [binding.contexts[0].primaryRemote] : []),
     knownRemoteNames: new Set(binding.read?.repository.remotes.map((remote) => remote.name) ?? []),
     localBranches,
@@ -1589,6 +1591,13 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     rootBranchHint,
     worktreeMetadata?.createdFromBranch,
   ]);
+  // The branch's own parent (a chosen base, its pull request's target, the
+  // layer below it in a stack) wins over the worktree's guess.
+  const baseBranch = useBranchPullRequestBase(gitDirectory ?? null, currentBranch, isActive, binding, branches, derivedBaseBranch);
+  // The header's pull request chip and the base above read the branch's pull
+  // request status; ask for it while shown, or a branch nothing else asked
+  // about (a project's own checkout has no sidebar worktree row) shows none.
+  useBranchPullRequestRequest(isActive ? gitDirectory ?? null : null, isActive ? currentBranch : null, binding);
 
   const updateTargetBranch = React.useMemo(() => {
     const primaryRemote = binding.contexts[0]?.primaryRemote;
@@ -1860,12 +1869,12 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   // its own, so opening the tab under `gitDirectory` would park it under a key
   // the panel never displays.
   const handleViewChangeDiff = React.useCallback((path: string, staged: boolean) => {
-    if (currentDirectory && !isMobile) {
-      openContextDiff(currentDirectory, path, staged);
+    if (panelDirectory && !isMobile) {
+      openContextDiff(panelDirectory, path, staged);
       return;
     }
     navigateToDiff(path, staged);
-  }, [currentDirectory, isMobile, navigateToDiff, openContextDiff]);
+  }, [panelDirectory, isMobile, navigateToDiff, openContextDiff]);
 
   const openStashes = React.useCallback(() => setIsStashesDialogOpen(true), []);
 
@@ -2333,6 +2342,10 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     openConflictDialog(result.conflictFiles ?? [], result.operation);
   }, [t, openConflictDialog, gitDirectory, fetchStatus, fetchBranches, fetchLog, logMaxCountLocal, git]);
 
+  if (draftSpace?.kind === 'preparing') {
+    return <SpacePreparing />;
+  }
+
   if (!currentDirectory) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-center">
@@ -2347,7 +2360,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     return (
       <div className="flex h-full flex-col items-center justify-center px-4 text-center">
         {!postBootstrapRefreshFailed ? (
-          <Icon name="loader-4" className="mb-3 size-6 animate-spin text-muted-foreground" />
+          <Spinner className="mb-3 size-6 text-muted-foreground" />
         ) : null}
         <p className="typography-ui-label font-semibold text-foreground">
           {postBootstrapRefreshFailed
@@ -2383,7 +2396,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex items-center gap-2 text-muted-foreground">
-          <Icon name="loader-4" className="size-4 animate-spin" />
+          <Spinner className="size-4" />
           <span className="typography-ui-label">{t('gitView.loading.checkingRepository')}</span>
         </div>
       </div>
@@ -2453,19 +2466,19 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
             pullRequest={prChipStatus?.changeRequest ?? prChipStatus?.pr ?? null}
             pullRequestProvider={prChipStatus?.changeRequest?.provider ?? null}
             prChecks={prChipStatus?.ci?.summary ?? prChipStatus?.checks ?? null}
+            pullRequestStack={prChipStatus?.stack ?? null}
             onOpenPullRequest={
-              gitDirectory ? () => openContextSurface(gitDirectory, 'pr') : undefined
+              // The branch's own tab of the Tracker, in the panel this view is in.
+              gitDirectory ? () => openContextPanelTab(panelDirectory ?? gitDirectory, { mode: 'pr' }) : undefined
             }
-            repositoryOptions={
-              gitDirectory !== currentDirectory && Array.isArray(nestedRepos) ? nestedRepos : undefined
-            }
-            selectedRepository={gitDirectory !== currentDirectory ? gitDirectory : null}
+            repositoryOptions={repositoryOptions ?? undefined}
+            selectedRepository={repositoryOptions ? gitDirectory : null}
             onSelectRepository={
-              gitDirectory !== currentDirectory && currentDirectory
+              repositoryOptions && currentDirectory
                 ? (repository) => selectNestedRepo(currentDirectory, repository)
                 : undefined
             }
-            repositoryRoot={gitDirectory !== currentDirectory ? currentDirectory : undefined}
+            repositoryRoot={repositoryOptions ? currentDirectory ?? undefined : undefined}
           />
 
       {/* VS Code manages Git hosting itself; the webview projects remotes as a system binding without a settings surface. */}
@@ -2527,8 +2540,8 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
                         onInsertHighlights={handleInsertHighlights}
                         onGenerateMessage={handleGenerateCommitMessage}
                         isGeneratingMessage={isGeneratingMessage}
-                        onCommit={() => handleCommit({ pushAfter: false })}
-                        onCommitAndPush={() => handleCommit({ pushAfter: true })}
+                        onCommit={(origin) => handleCommit({ pushAfter: false, origin })}
+                        onCommitAndPush={(origin) => handleCommit({ pushAfter: true, origin })}
                         commitAction={commitAction}
                         networkOperationBlocked={operationRecovery.blocked}
                         hasPendingIndexMutation={hasPendingIndexMutation}
@@ -2537,7 +2550,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
                       />
                     </>
                   ) : (
-                      <GitEmptyState onOpenStashes={() => setIsStashesDialogOpen(true)} />
+                      <GitEmptyState key={opening.count} onOpenStashes={() => setIsStashesDialogOpen(true)} />
                   )}
                 </div>
             </ScrollableOverlay>

@@ -163,6 +163,19 @@ const notifyChangedBlockingRequests = <T,>(
   }
 }
 
+const notifyAllFormSubscribers = (store: StoreApi<DirectoryStore>): void => {
+  const subscribers = formSubscribersByStore.get(store)
+  if (!subscribers || subscribers.size === 0) return
+  const listeners = new Set<BlockingRequestSubscriber>()
+  for (const sessionListeners of subscribers.values()) {
+    for (const listener of sessionListeners) listeners.add(listener)
+  }
+  for (const listener of listeners) {
+    countSyncPerformance("formChangeCallbacks")
+    listener()
+  }
+}
+
 const notifyChangedSessionMessages = (
   store: StoreApi<DirectoryStore>,
   current: State,
@@ -320,6 +333,9 @@ function createDirectoryStore(directory: string, seedSessions: boolean): StoreAp
     if (state.session !== prev.session) persistSessions(directory, state.session)
     notifyChangedBlockingRequests(permissionSubscribersByStore, "permissionChangeCallbacks", store, state.permission, prev.permission)
     notifyChangedBlockingRequests(formSubscribersByStore, "formChangeCallbacks", store, state.form, prev.form)
+    // Row badges read forms from the cross-directory index until this store's
+    // bootstrap completes, so a status change can change their answer.
+    if (state.status !== prev.status) notifyAllFormSubscribers(store)
     notifyChangedSessionMessages(store, state, prev)
   })
 
@@ -331,6 +347,7 @@ export class ChildStoreManager {
   private readonly lifecycle = new Map<string, DirState>()
   private readonly pins = new Map<string, number>()
   private evictionScheduled = false
+  private bootstrapNotificationScheduled = false
   private readonly disposers = new Map<string, () => void>()
   private readonly registrySubscribers = new Set<() => void>()
   private readonly bootstrapSubscribers = new Set<() => void>()
@@ -373,8 +390,19 @@ export class ChildStoreManager {
     }
   }
 
+  /**
+   * Bootstrap listeners make React read again, and a render requests a
+   * bootstrap (`useDirectorySync` through `ensureChild`). Notifying them there
+   * updates another component mid-render, so they hear one coalesced
+   * microtask later; they read the scheduler's state then, never a payload.
+   */
   private notifyBootstrapSubscribers() {
-    for (const subscriber of this.bootstrapSubscribers) subscriber()
+    if (this.bootstrapNotificationScheduled) return
+    this.bootstrapNotificationScheduled = true
+    queueMicrotask(() => {
+      this.bootstrapNotificationScheduled = false
+      for (const subscriber of this.bootstrapSubscribers) subscriber()
+    })
   }
 
   configure(callbacks: {
@@ -997,6 +1025,32 @@ export class ChildStoreManager {
     }
   }
 
+  /**
+   * The registry half of `subscribeAll*`, whose listeners make React read
+   * again. A sidebar row creates its directory's store during render
+   * (`ensureChild`), and calling such a listener there updates another
+   * component in the middle of that render. The store subscriptions follow
+   * the registry at once, so no store update is missed; only the read waits
+   * one microtask, once for a render that creates many stores.
+   */
+  private subscribeRegistryForReaders(syncStoreSubscriptions: () => void, listener: () => void): () => void {
+    let queued = false
+    let active = true
+    const unsubscribe = this.subscribeRegistry(() => {
+      syncStoreSubscriptions()
+      if (queued) return
+      queued = true
+      queueMicrotask(() => {
+        queued = false
+        if (active) listener()
+      })
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }
+
   subscribeAll(listener: () => void): () => void {
     const storeUnsubscribers = new Map<string, () => void>()
 
@@ -1020,10 +1074,7 @@ export class ChildStoreManager {
     }
 
     syncStoreSubscriptions()
-    const unsubscribeRegistry = this.subscribeRegistry(() => {
-      syncStoreSubscriptions()
-      listener()
-    })
+    const unsubscribeRegistry = this.subscribeRegistryForReaders(syncStoreSubscriptions, listener)
 
     return () => {
       unsubscribeRegistry()
@@ -1057,10 +1108,7 @@ export class ChildStoreManager {
     }
 
     syncStoreSubscriptions()
-    const unsubscribeRegistry = this.subscribeRegistry(() => {
-      syncStoreSubscriptions()
-      listener()
-    })
+    const unsubscribeRegistry = this.subscribeRegistryForReaders(syncStoreSubscriptions, listener)
 
     return () => {
       unsubscribeRegistry()

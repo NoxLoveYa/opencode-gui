@@ -6,51 +6,63 @@ import { Button } from '@/components/ui/button';
 import { ContextMenuItem, ContextMenuSeparator } from '@/components/ui/context-menu';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { PullRequestView } from '@/components/views/PullRequestView';
+import { TrackerItemView } from '@/components/views/TrackerItemView';
+import { trackerTargetOfUrl } from '@/components/sourceBoard/openTrackerItem';
+import { useRepositoryUrlMatcher } from '@/lib/source-control/repositoryUrlMatcher';
+import { useTrackerUrlMatcher } from '@/lib/trackers/matchTrackerUrl';
+import { trackerPresentation } from '@/lib/trackers/presentation';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
+import { getDisambiguatingFolders } from '@/lib/path-utils';
 
 // Heavy views stay on-demand (same as MainLayout): importing GitView or the
 // plan statically pulls their stacks into the eager startup graph even when
 // no such tab is open. The keep-alive surfaces load in ContextSurfacePanes.
 const GitView = lazyWithChunkRecovery(() => import('@/components/views/GitView').then((m) => ({ default: m.GitView })));
-// The Linear rail icon stays hidden until a workspace is connected, so most
-// users never render this panel; keep it out of the main bundle.
 import { areTitleMapsEqual, buildSessionTitleMap, EMPTY_SESSION_TITLE_MAP, getSessionIDFromDedupeKey } from './contextPanelSessionTitles';
 import { ProjectContextPanel } from './RightSidebarTabs';
+import { WorkflowsPanel } from '@/components/chat/workflows/WorkflowsPanel';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useRepositoryReferenceProvider } from '@/components/references/referenceSources';
 import { useGuestSurfaces } from '@/hooks/useGuestSurfaces';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { useBrowserFaviconStore } from '@/stores/useBrowserFaviconStore';
-import { clampContextEditorTreeWidth, useUIStore, type ContextPanelMode } from '@/stores/useUIStore';
+import { clampContextEditorTreeWidth, isTrackerBranchTab, useUIStore, type ContextPanelMode } from '@/stores/useUIStore';
+import { useGitStatus } from '@/stores/useGitStore';
 import { useChildStoreManager } from '@/sync/sync-context';
+import { useSessionTurnActivity } from '@/sync/global-session-status';
+import { SessionActivityIndicator } from '@/components/session/SessionActivityIndicator';
 import { ContextPanelContent } from './ContextSidebarTab';
 import { browserUrlLabel } from '@/lib/browser/url';
 import { Icon } from "@/components/icon/Icon";
+import type { IconName } from "@/components/icon/icons";
 import { GuestIcon } from './GuestRailIcon';
 import { useGuestsStore } from '@/lib/guests/store';
 import { FALLBACK_GUEST_ICON } from '@/lib/guests/icon';
 import { isPluginContextPanelMode, pluginIdFromMode } from '@/lib/surfaces/modes';
-import { getContextSurfaceDefaultWidth } from '@/lib/surfaces/registry';
 import { beginLayoutAnimation, cancelWhenLayoutSettled, LAYOUT_ANIMATION_EASING, runWhenLayoutSettled } from '@/lib/layoutAnimation';
 import { useLayoutAnimationMs } from '@/hooks/useLayoutAnimationMs';
 import { WORK_STATUS_COLUMN_WIDTH } from '@/components/chat/work-status/useWorkStatusVisibility';
 import { setWorkStatusHost, useRightSlotStore } from './rightSlot';
 import { changeRequestCopy } from '@/lib/source-control/changeRequestCopy';
+import { useChangeRequestTerm } from '@/lib/source-control/providers/registry';
 import { ContextPanelHeaderSlotProvider } from './contextPanelHeaderSlot';
-import { CLOSED_ZONE_VIEW, getZoneView, isZoneShown, resolveZoneActiveTab, type ContextZone } from '@/lib/workspace/zones';
+import { CLOSED_ZONE_VIEW, CONTEXT_ZONE_DEFAULT_WIDTH, getZoneView, isZoneShown, resolveZoneActiveTab, sideZoneWidth, type ContextZone } from '@/lib/workspace/zones';
 import { closeZoneOnEscape } from './zoneEscape';
+import { registerCloseTabTarget } from '@/lib/closeTabTarget';
 import { ZoneMoveMenuItems } from './ZoneMoveMenuItems';
 import { beginZoneDrag, cancelZoneDrag, finishZoneDrag, startZoneDragGesture, updateZoneDrag } from './zoneDrag';
 import { setZoneBody, setZoneHeaderSlot } from './zoneHosts';
-import { useOpenUntilSettled } from './useOpenUntilSettled';
+import { useOpenWhenSettled } from './useOpenUntilSettled';
+import { isZoneExposed } from './zoneInteractiveContext';
+import { DockedPanelSurfaceContext } from '@/hooks/usePageColors';
+import { REPOSITORY_KIND_ICONS } from '@/components/references/referencePickerItems';
 
 const CONTEXT_PANEL_MIN_WIDTH = 320;
-const CONTEXT_PANEL_DEFAULT_WIDTH = 600;
 // The panel has no absolute pixel ceiling: on large monitors the user may
 // want it nearly full-width (side-by-side diffs with the chat open). The
 // only limit during a drag is leaving the chat column this much width.
-const CONTEXT_CHAT_MIN_WIDTH = 400;
+const CONTEXT_CHAT_MIN_WIDTH = 320;
 const RESIZE_FOLLOW_INTERVAL_MS = 100;
 const CONTEXT_TAB_LABEL_MAX_CHARS = 24;
 type TranslateFn = ReturnType<typeof useI18n>['t'];
@@ -76,7 +88,7 @@ const normalizeDirectoryKey = (value: string): string => {
 
 const clampWidth = (width: number, maxWidth: number): number => {
   if (!Number.isFinite(width)) {
-    return CONTEXT_PANEL_DEFAULT_WIDTH;
+    return CONTEXT_ZONE_DEFAULT_WIDTH;
   }
 
   return Math.min(maxWidth, Math.max(CONTEXT_PANEL_MIN_WIDTH, Math.round(width)));
@@ -115,6 +127,7 @@ const getModeLabel = (
   if (mode === 'pr') return t('contextPanel.mode.pr');
   if (mode === 'notes') return t('contextRail.surface.notes');
   if (mode === 'terminal') return t('layout.mainTab.terminal');
+  if (mode === 'workflows') return t('contextPanel.mode.workflows');
   if (isPluginContextPanelMode(mode)) {
     const guest = useGuestsStore.getState().guests.find((entry) => entry.id === pluginIdFromMode(mode));
     return guest?.name ?? t('contextRail.surface.plugin');
@@ -191,8 +204,28 @@ const ContextGuestIcon: React.FC<{ mode: ContextPanelMode }> = ({ mode }) => {
   return <GuestIcon icon={surface?.icon ?? FALLBACK_GUEST_ICON} iconSrc={surface?.iconSrc} className="h-3.5 w-3.5" />;
 };
 
+// A chat tab shows its session's live activity in place of the chat icon, so a
+// strip of many subagent chats tells the running ones from the idle ones.
+const ChatTabIcon: React.FC<{ sessionId: string }> = ({ sessionId }) => {
+  const activity = useSessionTurnActivity(sessionId);
+  return activity
+    ? <SessionActivityIndicator state={activity} className="h-3.5 w-3.5" />
+    : <Icon name="chat-4" className="h-3.5 w-3.5" />;
+};
+
+// The branch's own tab, then what each item is.
+const TrackerTabIcon: React.FC<{ url: string | null }> = ({ url }) => {
+  const urls = useRepositoryUrlMatcher();
+  const trackerUrls = useTrackerUrlMatcher();
+  const target = url ? trackerTargetOfUrl(url, urls, trackerUrls) : null;
+  const name: IconName = !target ? 'git-branch'
+    : target.source === 'tracker' ? trackerPresentation(target.provider).icon
+      : REPOSITORY_KIND_ICONS[target.kind];
+  return <Icon name={name} className="h-3.5 w-3.5" />;
+};
+
 const getTabIcon = (
-  tab: { mode: ContextPanelMode; targetPath: string | null },
+  tab: { mode: ContextPanelMode; targetPath: string | null; dedupeKey?: string },
   faviconByOrigin: Record<string, string> = {},
 ): React.ReactNode | undefined => {
   if (tab.mode === 'file') {
@@ -214,7 +247,7 @@ const getTabIcon = (
   }
 
   if (tab.mode === 'pr') {
-    return <Icon name="github" className="h-3.5 w-3.5" />;
+    return <TrackerTabIcon url={tab.targetPath} />;
   }
 
   if (tab.mode === 'notes') {
@@ -229,8 +262,15 @@ const getTabIcon = (
     return <Icon name="donut-chart-fill" className="h-3.5 w-3.5" />;
   }
 
+  if (tab.mode === 'workflows') {
+    return <Icon name="flow-chart" className="h-3.5 w-3.5" />;
+  }
+
   if (tab.mode === 'chat') {
-    return <Icon name="chat-4" className="h-3.5 w-3.5" />;
+    const sessionId = getSessionIDFromDedupeKey(tab.dedupeKey);
+    return sessionId
+      ? <ChatTabIcon sessionId={sessionId} />
+      : <Icon name="chat-4" className="h-3.5 w-3.5" />;
   }
 
   if (isPluginContextPanelMode(tab.mode)) {
@@ -248,6 +288,7 @@ const getTabIcon = (
 
   return undefined;
 };
+
 
 const browserFaviconFor = (url: string, faviconByOrigin: Record<string, string>): string => {
   try {
@@ -304,7 +345,7 @@ const HEADER_DRAG_EXCLUDED = 'button, a, input, textarea, select, label, [role="
 // Surfaces rendered by the zone itself and remounted on every switch; the
 // rest stay alive in ContextSurfacePanes.
 const isRemountedSurface = (mode: ContextPanelMode): boolean => (
-  mode === 'context' || mode === 'git' || mode === 'pr' || mode === 'notes'
+  mode === 'context' || mode === 'git' || mode === 'pr' || mode === 'notes' || mode === 'workflows'
 );
 
 const CONTEXT_PANEL_DEFAULT_HEIGHT = 320;
@@ -324,7 +365,6 @@ const ZONE_GEOMETRY = {
     axis: 'x',
     gutter: 'mb-2 ms-2 me-1.5',
     gutterSize: '0.875rem',
-    expanded: 'absolute inset-y-0 inset-e-0 z-20 min-w-0',
     handle: 'absolute bottom-2 inset-s-1 top-0 z-50 w-2 cursor-col-resize',
     sizeVariable: '--oc-context-panel-width',
   },
@@ -332,7 +372,6 @@ const ZONE_GEOMETRY = {
     axis: 'x',
     gutter: 'mb-2 ms-1.5 me-2',
     gutterSize: '0.875rem',
-    expanded: 'absolute inset-y-0 inset-s-0 z-20 min-w-0',
     handle: 'absolute bottom-2 inset-e-1 top-0 z-50 w-2 cursor-col-resize',
     sizeVariable: '--oc-context-panel-width',
   },
@@ -340,7 +379,6 @@ const ZONE_GEOMETRY = {
     axis: 'y',
     gutter: 'mb-2 mt-2',
     gutterSize: '1rem',
-    expanded: 'absolute inset-x-0 bottom-0 z-20 min-h-0',
     handle: 'absolute inset-x-0 top-1 z-50 h-2 cursor-row-resize',
     sizeVariable: '--oc-context-panel-height',
   },
@@ -371,11 +409,11 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   const { t, direction } = useI18n();
   const isRtl = direction === 'rtl';
   const effectiveDirectory = useEffectiveDirectory() ?? '';
-  const repositoryProvider = useRepositoryReferenceProvider(effectiveDirectory || null);
+  const changeRequestTerm = useChangeRequestTerm(useRepositoryReferenceProvider(effectiveDirectory || null));
   // Tab names in this repository's words: a GitLab project's change request tab is a merge request.
   const tabT = React.useCallback<TranslateFn>(
-    (key, params) => t(changeRequestCopy(key, repositoryProvider), params),
-    [repositoryProvider, t],
+    (key, params) => t(changeRequestCopy(key, changeRequestTerm), params),
+    [changeRequestTerm, t],
   );
   const directoryKey = React.useMemo(() => normalizeDirectoryKey(effectiveDirectory), [effectiveDirectory]);
 
@@ -385,8 +423,7 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   const closeContextPanelTab = useUIStore((state) => state.closeContextPanelTab);
   const pinContextPanelTab = useUIStore((state) => state.pinContextPanelTab);
   const toggleContextPanelExpanded = useUIStore((state) => state.toggleContextPanelExpanded);
-  const setContextPanelWidth = useUIStore((state) => state.setContextPanelWidth);
-  const setContextPanelHeight = useUIStore((state) => state.setContextPanelHeight);
+  const setContextZoneSize = useUIStore((state) => state.setContextZoneSize);
   const setActiveContextPanelTab = useUIStore((state) => state.setActiveContextPanelTab);
   const reorderContextPanelTabs = useUIStore((state) => state.reorderContextPanelTabs);
   const contextEditorTreeVisible = useUIStore((state) => state.contextEditorTreeVisible);
@@ -412,6 +449,7 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   const activeTab = panelState ? resolveZoneActiveTab(panelState, placement, zone) : null;
   const zoneView = panelState ? getZoneView(panelState, zone) : CLOSED_ZONE_VIEW;
   const workStatusReserved = useRightSlotStore((state) => state.workStatusReserved);
+  const workStatusBesidePanel = useRightSlotStore((state) => state.workStatusBesidePanel);
   const chatCovered = useRightSlotStore((state) => state.chatCovered);
   // The bottom zone belongs to the chat column: a page covering the chat
   // covers it too.
@@ -424,29 +462,32 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   // The editor column is shown for an open file unless the user hid it; the
   // tree never hides alongside it, so a hidden tree forces the editor back.
   const showsEditor = hasOpenEditorFile && (contextEditorVisible || !contextEditorTreeVisible);
-  const activeModeForWidth = activeTab?.mode ?? null;
   // A side zone without an editor shrinks to the tree; the bottom zone keeps
   // its full width either way.
-  const isTreeOnly = !isVertical && activeModeForWidth === 'file' && !showsEditor;
+  const isTreeOnly = !isVertical && activeTab?.mode === 'file' && !showsEditor;
   const isExpanded = Boolean(isOpen && zoneView.expanded && !isTreeOnly);
-  // A fixed size in px: the one the user resized this surface to, else the
-  // surface's default. It does not follow the chat area, so a sidebar toggle
-  // or a window resize leaves it alone unless the chat would get too small.
-  const manualSize = activeModeForWidth
-    ? (isVertical ? panelState?.heightByMode?.[activeModeForWidth] : panelState?.widthByMode?.[activeModeForWidth])
-    : undefined;
+  // A fixed size in px: the one the user resized this zone to, else the
+  // default, whatever surface or folder it shows, so switching either leaves
+  // its edge in place. It does not follow the chat area, so a sidebar toggle or a
+  // window resize leaves it alone unless the chat would get too small.
+  const manualSize = useUIStore((state) => state.contextZoneSizes[zone]);
   const desiredSize = isTreeOnly
     ? contextEditorTreeWidth
     : isVertical
       ? clampHeight(manualSize ?? CONTEXT_PANEL_DEFAULT_HEIGHT, Number.POSITIVE_INFINITY)
-      : clampWidth(manualSize ?? (activeModeForWidth ? getContextSurfaceDefaultWidth(activeModeForWidth) : CONTEXT_PANEL_DEFAULT_WIDTH), Number.POSITIVE_INFINITY);
+      : clampWidth(manualSize ?? CONTEXT_ZONE_DEFAULT_WIDTH, Number.POSITIVE_INFINITY);
   const clampSize = React.useCallback((next: number, available: number | null) => (
     isVertical ? clampHeight(next, maxPanelHeight(available)) : clampWidth(next, maxPanelWidth(available))
   ), [isVertical]);
   const chatMinimum = isVertical ? CONTEXT_CHAT_MIN_HEIGHT : CONTEXT_CHAT_MIN_WIDTH;
+  // Expanded, the zone takes everything but a chat column about as wide as
+  // the session sidebar it folds away (ZoneFitArbiter), never under the
+  // minimum, so the chat stays on screen beside it.
+  const sidebarWidth = useUIStore((state) => (isVertical ? 0 : state.sidebarWidth));
+  const expandedChatSize = isVertical ? CONTEXT_CHAT_MIN_HEIGHT : Math.max(CONTEXT_CHAT_MIN_WIDTH, sidebarWidth);
 
   // The area the zone shares with the chat, as state only while it decides
-  // something: the zone is expanded over it, or the ceiling binds (the zone
+  // something: the zone is expanded across it, or the ceiling binds (the zone
   // would leave the chat less than its minimum). Otherwise it is null, so the
   // many size changes that cannot matter (every frame of a sidebar animation,
   // most window resizes) do not re-render the zone and everything in it.
@@ -464,32 +505,51 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     const tab = panel && isZoneShown(panel, state.contextSurfaceZones, otherSide)
       ? resolveZoneActiveTab(panel, state.contextSurfaceZones, otherSide)
       : null;
-    if (!panel || !tab) return 0;
-    const editorShown = panel.tabs.some((entry) => entry.mode === 'file' && entry.targetPath)
-      && (state.contextEditorVisible || !state.contextEditorTreeVisible);
-    if (tab.mode === 'file' && !editorShown) return state.contextEditorTreeWidth;
-    return panel.widthByMode[tab.mode] ?? getContextSurfaceDefaultWidth(tab.mode);
+    return panel && tab ? sideZoneWidth(panel, tab, otherSide, state) : 0;
   });
-  // The closed right zone still holds the work-status card's column.
+  // The closed right zone still holds the work-status card's column. Beside
+  // the open panel the card claims no room from this zone: it yields first,
+  // as the chat area narrows, and only stays while the chat keeps more than
+  // its minimum, so this zone is never clamped while the card is there.
   const otherSideReserved = otherSide === 'right' && workStatusReserved && !chatCovered && otherSideWidth === 0
     ? WORK_STATUS_COLUMN_WIDTH
     : otherSideWidth;
+  // The same column in this zone, when it is the right one.
+  const workStatusColumn = zone === 'right' && workStatusReserved && !chatCovered;
+  // Beside the panel the card holds the slot's start and the panel its end.
+  // Decided while closed too: the panel then already sits past the card's
+  // column, so opening slides it in from the edge beside the card, and the
+  // card rides along with the chat's edge rather than fading out.
+  const cardBesidePanel = workStatusColumn && workStatusBesidePanel && !isExpanded;
   const [measuredArea, setMeasuredArea] = React.useState<number | null>(null);
   const measuredAreaSizeRef = React.useRef<number | null>(null);
   const otherSideRef = React.useRef(otherSideReserved);
   otherSideRef.current = otherSideReserved;
+  const isOpenRef = React.useRef(isOpen);
+  isOpenRef.current = isOpen;
   const areaDecidesRef = React.useRef<(measured: number) => boolean>(() => false);
   areaDecidesRef.current = (measured) => isExpanded || (!isTreeOnly && measured - otherSideRef.current - chatMinimum < desiredSize);
   const applyAreaSize = React.useCallback(() => {
-    const measured = measuredAreaSizeRef.current;
+    let measured = measuredAreaSizeRef.current;
+    // The session sidebar beside the row may have just been told to fold or
+    // unfold (expanding folds it) and still be at its old width: the row is
+    // taken as it will be once the sidebar arrives at the width it was set
+    // to, so the zone moves once, together with the sidebar, instead of again
+    // after it. Settled, the two widths are equal and this adds nothing. A
+    // closed zone shows nothing that could move, so it forces no layout read.
+    if (measured !== null && !isVertical && isOpenRef.current) {
+      const sidebar = document.querySelector<HTMLElement>('[data-left-sidebar]');
+      if (sidebar) measured += Math.round(sidebar.getBoundingClientRect().width - (Number.parseFloat(sidebar.style.width) || 0));
+    }
     setMeasuredArea(measured !== null && areaDecidesRef.current(measured) ? measured : null);
-  }, []);
+  }, [isVertical]);
   // What the zone shares with the chat: the row less the other side.
   const areaSize = measuredArea !== null ? measuredArea - otherSideReserved : null;
-  // Expanded, the left zone covers the whole row; the right one covers the
-  // chat area beside the left zone, as before zones.
-  const expandedArea = zone === 'left' ? measuredArea : areaSize;
-  const size = isTreeOnly ? desiredSize : clampSize(desiredSize, areaSize);
+  const size = isTreeOnly
+    ? desiredSize
+    : isExpanded && areaSize !== null
+      ? (isVertical ? Math.max(CONTEXT_PANEL_MIN_HEIGHT, areaSize - expandedChatSize) : Math.max(CONTEXT_PANEL_MIN_WIDTH, areaSize - expandedChatSize))
+      : clampSize(desiredSize, areaSize);
   // Titles are for this zone's chat tab strip only; a zone that is closed or
   // shows another surface subscribes to none.
   const showsChatTabs = isOpen && activeTab?.mode === 'chat';
@@ -511,6 +571,7 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   const resizingSizeRef = React.useRef<number | null>(null);
   const activeResizePointerIDRef = React.useRef<number | null>(null);
   const panelRef = React.useRef<HTMLElement | null>(null);
+  const focusSinkRef = React.useRef<HTMLDivElement | null>(null);
   const wasOpenRef = React.useRef(false);
 
   React.useLayoutEffect(() => {
@@ -537,12 +598,17 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     };
   }, [applyAreaSize, isVertical]);
 
-  // Expanding, a surface wanting another size, or the other side opening or
-  // closing may make the area matter. Applied in this commit, not after the
-  // animation: these change what the zone animates to.
+  // Opening, expanding, a surface wanting another size, the other side
+  // opening or closing, or the session sidebar folding or unfolding beside
+  // the row may make the area matter. Applied in this commit, not after the animation:
+  // these change what the zone animates to.
+  // Only while the area decides the size: otherwise a sidebar toggle neither
+  // re-renders the zone nor reads layout, and the row's observer covers it.
+  const sidebarMovesZone = !isVertical && isOpen && (isExpanded || measuredArea !== null);
+  const sidebarOpen = useUIStore((state) => sidebarMovesZone && state.isSidebarOpen);
   React.useLayoutEffect(() => {
     applyAreaSize();
-  }, [applyAreaSize, desiredSize, isExpanded, otherSideReserved]);
+  }, [applyAreaSize, desiredSize, isExpanded, isOpen, otherSideReserved, sidebarOpen]);
 
   React.useEffect(() => {
     if (!isOpen || wasOpenRef.current) {
@@ -550,8 +616,13 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
       return;
     }
 
+    // Focus lands on an empty element of the zone, not on the zone itself:
+    // stylesheet rules of the form `:focus-visible *` (Tailwind's group
+    // variants) restyle the whole subtree of the element whose focus changes,
+    // and on the zone that cost 40 ms in the animation's first frame with a
+    // large file tree open.
     const frame = window.requestAnimationFrame(() => {
-      panelRef.current?.focus({ preventScroll: true });
+      focusSinkRef.current?.focus({ preventScroll: true });
     });
 
     wasOpenRef.current = true;
@@ -599,14 +670,18 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     startSizeRef.current = size;
     resizingSizeRef.current = size;
     // Measure once per drag; no layout reads happen during pointermove.
-    // The same area the ceiling uses: the row less the other side.
+    // The same area the ceiling uses: the row less the other side, and less
+    // the work-status card beside this panel. The drag stops where the chat
+    // would drop under its minimum next to the card; the card yields to a
+    // panel released wider than it fits beside.
     const available = isVertical
       ? panelRef.current?.parentElement?.clientHeight
-      : (panelRef.current?.closest<HTMLElement>('[data-workspace-row]')?.clientWidth ?? 0) - otherSideRef.current;
+      : (panelRef.current?.closest<HTMLElement>('[data-workspace-row]')?.clientWidth ?? 0) - otherSideRef.current
+        - (cardBesidePanel ? WORK_STATUS_COLUMN_WIDTH : 0);
     resizeAvailableSizeRef.current = available && available > 0 ? available : null;
     document.documentElement.style.cursor = isVertical ? 'row-resize' : 'col-resize';
     event.preventDefault();
-  }, [directoryKey, isExpanded, isOpen, isVertical, size]);
+  }, [cardBesidePanel, directoryKey, isExpanded, isOpen, isVertical, size]);
 
   const finishResize = React.useCallback(() => {
     // Apply the final size once, letting the size transition carry the zone
@@ -621,13 +696,12 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     document.documentElement.style.cursor = '';
     if (isTreeOnly) {
       setContextEditorTreeWidth(finalSize);
-    } else if (directoryKey && activeModeForWidth) {
-      if (isVertical) setContextPanelHeight(directoryKey, activeModeForWidth, finalSize);
-      else setContextPanelWidth(directoryKey, activeModeForWidth, finalSize);
+    } else {
+      setContextZoneSize(zone, finalSize);
     }
     setIsResizing(false);
     activeResizePointerIDRef.current = null;
-  }, [activeModeForWidth, clampSizeForDrag, directoryKey, isTreeOnly, isVertical, setContextEditorTreeWidth, setContextPanelHeight, setContextPanelWidth, size]);
+  }, [clampSizeForDrag, isTreeOnly, setContextEditorTreeWidth, setContextZoneSize, size, zone]);
 
   // Window-level drag listeners: tracking the pointer via the thin handle and
   // pointer capture is unreliable (capture can fail over iframes and a missed
@@ -709,37 +783,79 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   // The rail switches between surfaces (modes); the in-panel strip only lists
   // instances of the active multi-instance surface (open files, split chats,
   // browser targets).
-  const isMultiInstanceMode = activeTab?.mode === 'file' || activeTab?.mode === 'chat' || activeTab?.mode === 'browser';
-  const activeModeTabs = React.useMemo(
-    () => (activeTab ? tabs.filter((tab) => tab.mode === activeTab.mode) : []),
-    [activeTab, tabs],
-  );
+  const isMultiInstanceMode = activeTab?.mode === 'file' || activeTab?.mode === 'chat' || activeTab?.mode === 'browser' || activeTab?.mode === 'pr';
+  const activeModeTabs = React.useMemo(() => {
+    if (!activeTab) return [];
+    const modeTabs = tabs.filter((tab) => tab.mode === activeTab.mode);
+    // The Tracker's branch tab always comes first.
+    return activeTab.mode === 'pr'
+      ? [...modeTabs.filter(isTrackerBranchTab), ...modeTabs.filter((tab) => !isTrackerBranchTab(tab))]
+      : modeTabs;
+  }, [activeTab, tabs]);
+  // The branch tab is named after the branch checked out here.
+  const trackerBranch = useGitStatus(activeTab?.mode === 'pr' && directoryKey ? directoryKey : null)?.current ?? null;
 
-  const tabItems = React.useMemo(() => activeModeTabs.map((tab) => {
-    const rawLabel = getTabLabel(tab, sessionTitleById, tabT);
-    const label = truncateTabLabel(rawLabel, CONTEXT_TAB_LABEL_MAX_CHARS);
-    const tabPathLabel = getRelativePathLabel(tab.targetPath, effectiveDirectory);
-    return {
-      id: tab.id,
-      label,
-      icon: getTabIcon(tab, faviconByOrigin),
-      title: tabPathLabel ? `${rawLabel}: ${tabPathLabel}` : rawLabel,
-      closeLabel: t('contextPanel.tab.closeTabAria', { label }),
-      preview: tab.preview,
-    };
-  }), [activeModeTabs, effectiveDirectory, faviconByOrigin, sessionTitleById, t, tabT]);
+  const tabItems = React.useMemo(() => {
+    const fileFolders = getDisambiguatingFolders(activeModeTabs
+      .filter((tab) => tab.mode === 'file')
+      .map((tab) => getRelativePathLabel(tab.targetPath, effectiveDirectory)));
+    return activeModeTabs.map((tab) => {
+      const branchTab = isTrackerBranchTab(tab);
+      const rawLabel = branchTab ? trackerBranch || t('contextPanel.tracker.branchTab') : getTabLabel(tab, sessionTitleById, tabT);
+      const label = truncateTabLabel(rawLabel, CONTEXT_TAB_LABEL_MAX_CHARS);
+      const tabPathLabel = getRelativePathLabel(tab.targetPath, effectiveDirectory);
+      return {
+        id: tab.id,
+        label,
+        labelFolder: tab.mode === 'file' ? fileFolders.get(tabPathLabel) : undefined,
+        icon: getTabIcon(tab, faviconByOrigin),
+        title: tabPathLabel ? `${rawLabel}: ${tabPathLabel}` : rawLabel,
+        closeLabel: t('contextPanel.tab.closeTabAria', { label }),
+        closable: !branchTab,
+        preview: tab.preview,
+      };
+    });
+  }, [activeModeTabs, effectiveDirectory, faviconByOrigin, sessionTitleById, t, tabT, trackerBranch]);
 
   const activeNonChatContent = activeTab?.mode === 'context'
         ? <ContextPanelHeaderSlotProvider value={headerSlotEl}><ContextPanelContent /></ContextPanelHeaderSlotProvider>
         : activeTab?.mode === 'git'
             ? <React.Suspense fallback={null}><ContextPanelHeaderSlotProvider value={headerSlotEl}><GitView isActive={isOpen} /></ContextPanelHeaderSlotProvider></React.Suspense>
             : activeTab?.mode === 'pr'
-                ? <PullRequestView />
+                ? (activeTab.targetPath
+                    ? (
+                      <TrackerItemView
+                        key={activeTab.id}
+                        url={activeTab.targetPath}
+                        // The folder as the views behind Changes and the walkthrough key it.
+                        directory={activeTab.targetDirectory ?? effectiveDirectory}
+                        panelDirectory={effectiveDirectory}
+                        tabId={activeTab.id}
+                        foreign={Boolean(activeTab.targetDirectory)}
+                        visible={isOpen}
+                      />
+                    )
+                    : <PullRequestView />)
             : activeTab?.mode === 'notes'
                 ? <ContextPanelHeaderSlotProvider value={headerSlotEl}><ProjectContextPanel visible={isOpen} /></ContextPanelHeaderSlotProvider>
+            : activeTab?.mode === 'workflows'
+                ? <ContextPanelHeaderSlotProvider value={headerSlotEl}><WorkflowsPanel directory={effectiveDirectory || null} /></ContextPanelHeaderSlotProvider>
         : null;
 
   const isFileTabActive = activeTab?.mode === 'file';
+
+  // Cmd/Ctrl+W in the desktop app closes the strip's active tab here, as its
+  // close button does. A file shown in the editor registers from the editor,
+  // which asks first about unsaved edits; terminal tabs from the terminal's
+  // own strip.
+  const editorClosesTab = isFileTabActive && Boolean(activeTab?.targetPath) && showsEditor;
+  const shortcutClosableTabId = isOpen && activeTab && isMultiInstanceMode && !editorClosesTab && !isTrackerBranchTab(activeTab)
+    ? activeTab.id
+    : null;
+  React.useEffect(() => {
+    if (!directoryKey || !shortcutClosableTabId) return;
+    return registerCloseTabTarget(() => closeContextPanelTab(directoryKey, shortcutClosableTabId), panelRef);
+  }, [closeContextPanelTab, directoryKey, shortcutClosableTabId]);
 
   const closeContextPanelTabs = useUIStore((state) => state.closeContextPanelTabs);
   const renderTabContextMenu = React.useCallback(
@@ -887,14 +1003,9 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
       ) : (
         <>
         <div className="flex min-w-0 flex-1 items-center gap-1.5 px-3 group-has-[[data-context-panel-toolbar]]/panel-header:hidden">
-          {/* A GitLab project's change requests are merge requests. */}
-          {activeTab?.mode === 'pr' && repositoryProvider === 'gitlab'
-            ? <Icon name="gitlab" className="h-3.5 w-3.5" />
-            : activeTab ? getTabIcon(activeTab, faviconByOrigin) : null}
+          {activeTab ? getTabIcon(activeTab, faviconByOrigin) : null}
           <span className="truncate typography-ui-label text-foreground">
-            {activeTab?.mode === 'pr' && repositoryProvider === 'gitlab'
-              ? t('contextPanel.mode.mr')
-              : activeTab ? getModeLabel(activeTab.mode, tabT) : null}
+            {activeTab ? getModeLabel(activeTab.mode, tabT) : null}
           </span>
         </div>
         {/* The active surface's own toolbar lands here (contextPanelHeaderSlot). */}
@@ -972,17 +1083,15 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   // the inline work-status card (rendered into the host below by
   // ChatContainer), and animates one width for both (rightSlot.ts). Closed,
   // it keeps the card's column when the card wants it and the chat is on
-  // screen; open, it is the panel's width. Every value stays interpolable
-  // across open/close (no instant min/max jumps).
-  const workStatusColumn = zone === 'right' && workStatusReserved && !chatCovered;
-  const expandedSize = expandedArea !== null ? `${expandedArea}px` : '100%';
+  // screen; open, it is the panel's width, plus the card's column when the
+  // card stays beside the panel. Every value stays interpolable across
+  // open/close (no instant min/max jumps).
   const slotSize = !isOpen
     ? (workStatusColumn ? `${WORK_STATUS_COLUMN_WIDTH}px` : '0px')
-    : isExpanded
-      // px, not '100%': px↔% size changes do not interpolate, which
-      // would make the expand/collapse snap instead of animating.
-      ? expandedSize
+    : cardBesidePanel
+      ? `calc(var(${geometry.sizeVariable}) + ${WORK_STATUS_COLUMN_WIDTH}px)`
       : `min(var(${geometry.sizeVariable}), 100%)`;
+  const panelOffset = cardBesidePanel ? `${WORK_STATUS_COLUMN_WIDTH}px` : '0px';
 
   // The bottom card spans the chat column. Next to a card on either side it
   // gives up its own gutter on that side, so neighbours stand one gutter apart.
@@ -994,7 +1103,7 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   // size. Only these animate as an announced layout animation; the chat area
   // resizing (a window drag, a clamp) is tracked without one, so the work
   // that waits for an animation's end is not held back for the whole drag.
-  const animationKey = `${isOpen}|${isExpanded}|${workStatusColumn}|${isOpen ? desiredSize : ''}`;
+  const animationKey = `${isOpen}|${isExpanded}|${workStatusColumn}|${isOpen && cardBesidePanel}|${isOpen ? desiredSize : ''}`;
   const animationKeyRef = React.useRef(animationKey);
   // A surface page covering or uncovering the chat moves the slot while the
   // chat is not on screen: that change snaps.
@@ -1009,28 +1118,23 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     if (!coverChanged) beginLayoutAnimation(layoutAnimationMs);
   }, [animationKey, coverChanged, layoutAnimationMs]);
 
-  // A closing zone's content fades out and only then leaves the
-  // accessibility tree, in the same commit that takes the file editor's DOM
-  // out (CodeMirrorEditor `detached`, driven by the same hook in
-  // ContextSurfacePanes; both settle in one task). Hiding the editor from
-  // accessibility while it is still in the document costs Chrome a 200 to
-  // 300 ms frame whenever an accessibility client is on (a screen reader, or
-  // any app that reads other windows, common on macOS); removing it costs a
-  // few ms. After the layout effect above, which begins the animation.
-  const contentHidden = !useOpenUntilSettled(isOpen);
-  // Expanded, and through the collapse animation, the zone floats over the
-  // chat while a spacer holds its docked size in the layout, so the chat
-  // never changes size under it. Back in the layout at once on collapse, the
-  // zone started at the full area and squeezed the chat to nothing: the
-  // transcript measured its rows at that width, thousands of pixels tall, and
-  // stayed blank until the session was reopened.
-  const overlaid = useOpenUntilSettled(isExpanded);
-  const dockedSize = !isOpen
-    ? (workStatusColumn ? `${WORK_STATUS_COLUMN_WIDTH}px` : '0px')
-    : `${size}px`;
-
+  // The zone's content becomes inert and unclickable only once the animation
+  // has settled, and for most surfaces stops being so only then too
+  // (`isZoneExposed` says which and why); just its opacity follows a toggle
+  // at once. `inert`, `pointer-events` and `user-select` are inherited, so
+  // flipping them restyles the whole surface, and with an accessibility
+  // client on adds it to the tree. Surfaces that focus themselves wait for it
+  // (`useZoneInteractive`). A closing zone leaves the accessibility tree in
+  // the same commit that takes the file editor's DOM out (CodeMirrorEditor `detached`,
+  // driven by `useOpenUntilSettled` in ContextSurfacePanes; both settle in one
+  // task). Hiding the editor from accessibility while it is still in the
+  // document costs Chrome a 200 to 300 ms frame whenever an accessibility
+  // client is on (a screen reader, or any app that reads other windows,
+  // common on macOS); removing it costs a few ms. After the layout effect
+  // above, which begins the animation.
+  const contentHidden = !isZoneExposed(isOpen, useOpenWhenSettled(isOpen), activeTab?.mode);
   const panelStyle: React.CSSProperties = {
-    [geometry.sizeVariable]: isOpen && isExpanded ? expandedSize : `${size}px`,
+    [geometry.sizeVariable]: `${size}px`,
     ...(isVertical
       ? { height: slotSize, maxHeight: '100%' }
       : { width: slotSize, maxWidth: '100%' }),
@@ -1038,22 +1142,10 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     transitionTimingFunction: LAYOUT_ANIMATION_EASING,
   };
 
-  // Less the gutters the aside reserves for the card. px in the expanded
-  // state too: px↔% size changes cannot interpolate, so the header controls
-  // would snap instead of riding the animation.
-  const cardSize = isExpanded
-    ? (expandedArea !== null ? `calc(${expandedArea}px - ${geometry.gutterSize})` : '100%')
-    : `calc(var(${geometry.sizeVariable}) - ${geometry.gutterSize})`;
+  // Less the gutters the aside reserves for the card.
+  const cardSize = `calc(var(${geometry.sizeVariable}) - ${geometry.gutterSize})`;
 
   return (
-    <>
-    {overlaid ? (
-      <div
-        aria-hidden="true"
-        className="flex-shrink-0"
-        style={isVertical ? { height: dockedSize, maxHeight: '100%' } : { width: dockedSize, maxWidth: '100%' }}
-      />
-    ) : null}
     <aside
       ref={panelRef}
       data-context-panel="true"
@@ -1079,22 +1171,25 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
         // the card only, and the session sidebar shown over the chat on hover
         // (z-25) covers the zone handle and all.
         'isolate',
-        // Anchored to its window edge while expanded: `inset-0` would teleport
-        // the far edge instantly (position does not transition), so only the
-        // size animates and the zone grows toward the chat from where it docks.
-        overlaid
-          ? geometry.expanded
-          : isVertical ? 'relative w-full flex-shrink-0' : 'relative h-full flex-shrink-0',
+        // Expanded too: the zone stays in the layout at its largest size, so
+        // the chat keeps a column beside it rather than being covered.
+        isVertical ? 'relative w-full flex-shrink-0' : 'relative h-full flex-shrink-0',
         isVertical ? 'transition-[height]' : 'transition-[width]',
         'motion-reduce:transition-none',
       )}
       onKeyDownCapture={handlePanelKeyDownCapture}
       style={panelStyle}
     >
+      {/* Where focus goes as the zone opens (see the open effect). Outside
+          the card, which is still inert then. */}
+      <div ref={focusSinkRef} tabIndex={-1} className="absolute size-0 overflow-hidden outline-none" />
       {/* The inline work-status card's host, right-anchored under the panel:
-          the card fades out while the panel fades in over it, and back. */}
+          the card fades out while the panel fades in over it, and back.
+          Beside the panel it sits at the slot's start instead, ahead of the
+          panel. Closed, the slot is the card's column, so both anchors put the
+          card in the same place and switching between them moves nothing. */}
       {zone === 'right' ? (
-        <div ref={setWorkStatusHost} className={cn('absolute inset-y-0 inset-e-0 z-0 flex', chatCovered && 'invisible')} />
+        <div ref={setWorkStatusHost} className={cn('absolute inset-y-0 z-0 flex', cardBesidePanel ? 'inset-s-0' : 'inset-e-0', chatCovered && 'invisible')} />
       ) : null}
       {isOpen && !isExpanded && (
         // In the gutter facing the chat, along the card's edge. Nothing paints
@@ -1102,6 +1197,7 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
         // itself moves on release.
         <div
           className={geometry.handle}
+          style={{ marginInlineStart: panelOffset }}
           onPointerDown={handleResizeStart}
           role="separator"
           aria-orientation={isVertical ? 'horizontal' : 'vertical'}
@@ -1126,13 +1222,18 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
           'oc-panel-edge overflow-hidden rounded-[10px]',
           // Size animates in sync with the zone (surface switches, resize
           // release).
-          isVertical ? 'transition-[height,opacity]' : 'transition-[width,opacity]',
-          !isOpen && 'pointer-events-none select-none opacity-0'
+          // The offset past the card's column moves with the slot's width, so
+          // the panel's edge stays put when the card comes or goes beside it.
+          isVertical ? 'transition-[height,opacity]' : 'transition-[width,opacity,margin-inline-start]',
+          !isOpen && 'opacity-0',
+          contentHidden && 'pointer-events-none select-none'
         )}
         style={{
           ...(isVertical
             ? { height: cardSize, width: `calc(100% - ${(leftZoneShown ? 0 : 0.5) + (rightSlotFilled ? 0 : 0.375)}rem)` }
             : { width: cardSize }),
+          // Past the card's column beside it, in addition to the gutter's ms-2.
+          ...(zone === 'right' ? { marginInlineStart: `calc(0.5rem + ${panelOffset})` } : null),
           transitionDuration: `${layoutAnimationMs}ms`,
           transitionTimingFunction: LAYOUT_ANIMATION_EASING,
         }}
@@ -1140,13 +1241,15 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
         // tree, and aria-hidden on top cost a second pass when it flipped.
         inert={contentHidden || undefined}
       >
+      <DockedPanelSurfaceContext.Provider value>
       {header}
-      {/* Keep-alive surfaces (ContextSurfacePanes) are portalled in here. */}
+      {/* Keep-alive surfaces (ContextSurfacePanes) are portalled in here and
+          take the docked surface from their own pane (ZonePane). */}
       <div ref={registerBody} className={cn('relative min-h-0 flex-1 overflow-hidden', isResizing && 'pointer-events-none')}>
         {activeTab && isRemountedSurface(activeTab.mode) ? activeNonChatContent : null}
       </div>
+      </DockedPanelSurfaceContext.Provider>
       </div>
     </aside>
-    </>
   );
 };

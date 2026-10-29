@@ -43,7 +43,7 @@ const toolsResource = ({ owner = OWNER, key = KEY, filled = true, labels = tools
  * Seeds for a complete space, as the fake docker stores them. It runs on `tools`, its server has
  * a token, and its gatekeeper runs whenever it does.
  */
-const spaceResources = ({ id = ID, owner = OWNER, running = true, tools = `openchamber-tools-${owner}-${KEY}` } = {}) => {
+const spaceResources = ({ id = ID, owner = OWNER, running = true, tools = `openchamber-tools-${owner}-${KEY}`, env = undefined } = {}) => {
   const prefix = `openchamber-space-${id}-`;
   const mounts = [
     { volume: `${prefix}volume-work`, destination: `/spaces/${id}` },
@@ -67,7 +67,7 @@ const spaceResources = ({ id = ID, owner = OWNER, running = true, tools = `openc
     {
       kind: 'container',
       name: `${prefix}space`,
-      entry: hardenedContainerEntry({ name: `${prefix}space`, labels: labelsFor('space', { id, owner }), network: `${prefix}network`, mounts, running }),
+      entry: hardenedContainerEntry({ name: `${prefix}space`, labels: labelsFor('space', { id, owner }), network: `${prefix}network`, mounts, running, env }),
     },
     { kind: 'volume', name: `${prefix}volume-work`, entry: { Name: `${prefix}volume-work`, Labels: labelsFor('volume', { id, owner }) } },
     { kind: 'volume', name: `${prefix}volume-home`, entry: { Name: `${prefix}volume-home`, Labels: labelsFor('volume', { id, owner }) }, token: 'seeded-token' },
@@ -180,6 +180,14 @@ describe('docker place: check', () => {
     expect(result.message).toMatch(/Start Docker Desktop or Colima/);
   });
 
+  it('tells a socket that refuses this user from a daemon that is down', async () => {
+    const stdout = JSON.stringify({ Client: { Version: '29.3.0' }, Server: null });
+    const stderr = 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/version": dial unix /var/run/docker.sock: connect: permission denied';
+    const result = await placeWith(async () => ({ code: 1, stdout, stderr })).check();
+    expect(result).toMatchObject({ available: false, code: 'docker_permission_denied' });
+    expect(result.message).toMatch(/docker group/);
+  });
+
   it('says the daemon is unreachable on a timeout', async () => {
     const place = placeWith(async () => { throw new SpaceError('command_timeout', 'too slow'); });
     expect((await place.check()).code).toBe('docker_daemon_unreachable');
@@ -235,12 +243,24 @@ describe('docker place: create', () => {
       '--env', 'OPENCODE_DISABLE_AUTOUPDATE=1',
       '--env', 'OPENCHAMBER_RELAY_HOST=off',
       '--env', 'OPENCHAMBER_SPACE_IDLE_STOP_FILE=/home/space/.openchamber-space/idle-stop.json',
+      '--env', 'OPENCHAMBER_SPACE_PERMISSION_DEFAULT_FILE=/home/space/.openchamber-space/permission-default.json',
       SPACE_BASE_IMAGE,
       '/bin/sh', '-c',
       'while [ ! -s /home/space/.openchamber-space/token ]; do /bin/sleep 0.2; done; OPENCHAMBER_UI_PASSWORD="$(/bin/cat /home/space/.openchamber-space/token)"; export OPENCHAMBER_UI_PASSWORD; exec openchamber serve --foreground --api-only --host 127.0.0.1 --port 27600',
     ]);
     expect(Object.keys(SPACE_ENVIRONMENT)).not.toContain('OPENCHAMBER_UI_PASSWORD');
     expect(SPACE_SERVER_COMMAND.join(' ')).not.toMatch(/\n/);
+  });
+
+  it('gives the space container OpenCode\'s start configuration when there is one, and it verifies clean', async () => {
+    const startConfig = JSON.stringify({ providers: { 'ollama-local': { settings: { baseURL: 'http://gatekeeper:8080/model/ollama-local', apiKey: 'space-window' } } } });
+    const fake = createFakeDocker({ resources: [toolsResource()] });
+    const place = makePlace(fake);
+    await place.create(SPEC, { startConfig });
+
+    const spaceCreate = fake.calls.map((call) => call.args).find((args) => args[0] === 'create' && !args.includes('--network-alias'));
+    expect(spaceCreate.slice(spaceCreate.indexOf(SPACE_BASE_IMAGE) - 2, spaceCreate.indexOf(SPACE_BASE_IMAGE))).toEqual(['--env', `OPENCODE_CONFIG_CONTENT=${startConfig}`]);
+    expect(await place.verify(ID)).toEqual([]);
   });
 
   it('creates the gatekeeper with the hardening of a space, no mount, and a limit of its own', async () => {
@@ -270,6 +290,8 @@ describe('docker place: create', () => {
       '--log-opt', 'compress=false',
       '--network', NETWORK,
       '--network-alias', 'gatekeeper',
+      // The Docker host by name, for a provider that listens on that machine's loopback.
+      '--add-host', 'host.docker.internal:host-gateway',
       '--env', 'HOME=/tmp',
       SPACE_BASE_IMAGE,
       '/bin/sh', '-c',
@@ -348,6 +370,16 @@ describe('docker place: create', () => {
         if (args[index - 1] === '--ipc' || args[index - 1] === '--cgroupns') expect(arg).toBe('private');
       });
     }
+  });
+
+  it('names the slow parts it does as they begin, and none it skips', async () => {
+    const fresh = [];
+    await makePlace(createFakeDocker({ imagePresent: false })).create(SPEC, { onStep: (step) => fresh.push(step) });
+    expect(fresh).toEqual(['downloading_image', 'preparing_tools', 'creating']);
+
+    const ready = [];
+    await makePlace(createFakeDocker({ resources: [toolsResource()] })).create(SPEC, { onStep: (step) => ready.push(step) });
+    expect(ready).toEqual([]);
   });
 
   it('pulls the image, fills the tools, then makes the space, starts it, and waits for its server', async () => {
@@ -1402,6 +1434,17 @@ describe('docker place: new tools at the next start', () => {
     ]);
     const create = fake.calls.map((call) => call.args).find((args) => args[0] === 'create');
     expect(create[create.indexOf('--memory') + 1]).toBe('4294967296');
+  });
+
+  it('keeps OpenCode\'s start configuration of the old container in the new one', async () => {
+    const startConfig = JSON.stringify({ providers: { 'ollama-local': { settings: { baseURL: 'http://gatekeeper:8080/model/ollama-local', apiKey: 'space-window' } } } });
+    const fake = createFakeDocker({ resources: [toolsResource({ key: OLD_KEY }), ...spaceResources({ running: false, tools: OLD_TOOLS, env: ['HOME=/home/space', `OPENCODE_CONFIG_CONTENT=${startConfig}`] })] });
+    const place = makePlace(fake);
+    await place.start(ID);
+
+    const create = fake.calls.map((call) => call.args).find((args) => args[0] === 'create');
+    expect(create).toContain(`OPENCODE_CONFIG_CONTENT=${startConfig}`);
+    expect(await place.verify(ID)).toEqual([]);
   });
 
   it('puts the old container back when the start of the new one fails', async () => {

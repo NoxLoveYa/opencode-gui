@@ -11,13 +11,14 @@ import {
   type BlockingPermissionRequest,
 } from '@/sync/global-blocking-requests';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
-import { useNotificationStore } from '@/sync/notification-store';
+import { isSessionUnread, isSessionUnreadWithError } from '@/sync/session-unread';
 import { respondToPermission } from '@/sync/session-actions';
 import { canSavePermission } from '@/components/chat/permissionSummary';
 import {
   useGlobalSessionsStore,
   resolveGlobalSessionDirectory,
 } from '@/stores/useGlobalSessionsStore';
+import { createSessionLineage } from '@/stores/sessionLineage';
 import { useQuotaStore } from '@/stores/useQuotaStore';
 import { QUOTA_PROVIDERS, formatWindowLabel, formatQuotaValueLabel } from '@/lib/quota';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -25,6 +26,12 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useGitStore } from '@/stores/useGitStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { resolveProjectForSessionDirectory, normalizeProjectPath } from '@/lib/projectResolution';
+import { CHAT_DRAFT_PROJECT_ID, isChatDirectoryPath } from '@/lib/chatDirectories';
+import { isSpaceDirectory } from '@/lib/spaces/space-route';
+import { sessionHasSidebarRow } from '@/lib/sidebarSessionRows';
+import { isSessionPinned } from '@/lib/sessionPins';
+import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
+import { findWorktreeHoldingDirectory } from '@/lib/worktrees/worktreePaths';
 import type { ProjectEntry } from '@/lib/api/types';
 import type { WorktreeMetadata } from '@/types/worktree';
 import { toast } from '@/components/ui';
@@ -83,8 +90,9 @@ type TraySnapshot = {
   // dropdown (same "configured to show" rule as the header/mobile). Empty
   // groups → the tray omits the Usage submenu entirely.
   usage: TrayUsage;
-  // Number of chats (root sessions) with unseen activity, for the macOS dock
-  // badge. 0 when the user disabled the badge — the main process clears it.
+  // Number of chats (root sessions with a sidebar row) with unseen activity,
+  // for the macOS dock badge. 0 when the user disabled the badge — the main
+  // process clears it.
   dockBadgeCount: number;
 };
 
@@ -164,7 +172,7 @@ const resolveSessionSubtitle = (
   }
   if (!branch) {
     for (const worktrees of worktreesByProject.values()) {
-      const match = worktrees.find((wt) => normalizeProjectPath(wt.path) === normDir);
+      const match = normDir ? findWorktreeHoldingDirectory(worktrees, normDir) : undefined;
       if (match?.branch) { branch = match.branch; break; }
     }
   }
@@ -297,51 +305,45 @@ const collectLiveData = (): LiveData => {
 //    upstream `/session/status?directory=` endpoint: that call creates an
 //    OpenCode instance per directory.
 const buildSnapshot = (instanceName: string, includeTray: boolean): TraySnapshot => {
-  const notif = useNotificationStore.getState().index.session;
-
   // The list source is the GLOBAL store — every project/worktree the backend
   // knows about, independent of which directories this client has opened. Live
   // status/unread/branch are merged in by id where we have them (the session's
   // directory is synced); otherwise the row is shown as idle.
   const allSessions = useGlobalSessionsStore.getState().activeSessions;
-  const childrenByParent = new Map<string, string[]>();
-  for (const session of allSessions) {
-    if (!session?.id) continue;
-    if (session.parentID) {
-      const siblings = childrenByParent.get(session.parentID) ?? [];
-      siblings.push(session.id);
-      childrenByParent.set(session.parentID, siblings);
-    }
-  }
+  const lineage = createSessionLineage(allSessions);
+  const collectDescendants = (rootId: string): string[] => (
+    lineage.descendantsOf(rootId, 'active').map((session) => session.id)
+  );
 
-  const collectDescendants = (rootId: string): string[] => {
-    const out: string[] = [];
-    const stack = [...(childrenByParent.get(rootId) ?? [])];
-    const seen = new Set<string>();
-    while (stack.length) {
-      const id = stack.pop() as string;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push(id);
-      stack.push(...(childrenByParent.get(id) ?? []));
-    }
-    return out;
+  const projects = useProjectsStore.getState().projects;
+  const worktreesByProject = useSessionUIStore.getState().availableWorktreesByProject;
+
+  // The tray and the dock badge cover the sessions that have a sidebar row
+  // (`sessionHasSidebarRow`). Sessions from unconfigured directories (an eval
+  // run in /tmp, a removed project, a /btw fork) have none, cannot be opened
+  // or removed from there, so they would take the tray's limited slots and
+  // hold a dock count the user has no way to clear. Pending approvals stay
+  // listed below regardless.
+  const pinnedIds = useSessionPinnedStore.getState().ids;
+  const isPlacedBySidebar = (session: Session): boolean => {
+    const directory = resolveGlobalSessionDirectory(session);
+    // A managed chat keeps its identity when its directory no longer sits under
+    // the chats root, so the project id admits it too.
+    if (isChatDirectoryPath(directory) || session.projectID === CHAT_DRAFT_PROJECT_ID) return true;
+    if (isSpaceDirectory(directory)) return true;
+    return resolveProjectForSessionDirectory(projects, worktreesByProject, directory) !== null;
   };
+  const hasSidebarRow = (session: Session): boolean => sessionHasSidebarRow(session, {
+    isPlaced: isPlacedBySidebar(session),
+    isPinned: isSessionPinned(pinnedIds, session.directory, session.id),
+  });
 
   // Count the full root list, independently of the tray's visibility and limit.
-  const ui = useUIStore.getState();
-  let dockBadgeCount = 0;
-  if (ui.dockBadgeEnabled) {
-    for (const session of allSessions) {
-      if (!session?.id || session.parentID) continue;
-      let familyUnseen = notif.unseenCount[session.id] ?? 0;
-      if (familyUnseen === 0 && ui.notifyOnSubtasks) {
-        familyUnseen = collectDescendants(session.id)
-          .reduce((sum, id) => sum + (notif.unseenCount[id] ?? 0), 0);
-      }
-      if (familyUnseen > 0) dockBadgeCount += 1;
-    }
-  }
+  // Only top-level sessions are ever unread (`isSessionUnread`); a subtask
+  // reports to its parent.
+  const dockBadgeCount = useUIStore.getState().dockBadgeEnabled
+    ? allSessions.filter((session) => isSessionUnread(session) && hasSidebarRow(session)).length
+    : 0;
   if (!includeTray) {
     return { sessions: [], approvals: [], instanceName, usage: { mode: 'usage', groups: [] }, dockBadgeCount };
   }
@@ -370,11 +372,9 @@ const buildSnapshot = (instanceName: string, includeTray: boolean): TraySnapshot
     return 'idle';
   };
 
-  const projects = useProjectsStore.getState().projects;
-  const worktreesByProject = useSessionUIStore.getState().availableWorktreesByProject;
-
   const sessions: TraySession[] = allSessions
     .filter((s) => s?.id && !s.parentID) // root rows; sub-session work rolls up
+    .filter(hasSidebarRow)
     .slice()
     .sort(compareSessionOrder)
     .slice(0, MAX_SESSIONS)
@@ -386,8 +386,8 @@ const buildSnapshot = (instanceName: string, includeTray: boolean): TraySnapshot
         title: session.title || 'Untitled session',
         status: rollupStatus(family),
         branch: directory ? (live.branchByDirectory.get(directory) ?? '') : '',
-        unseen: family.reduce((sum, id) => sum + (notif.unseenCount[id] ?? 0), 0),
-        hasError: family.some((id) => notif.unseenHasError[id] ?? false),
+        unseen: isSessionUnread(session) ? 1 : 0,
+        hasError: isSessionUnreadWithError(session),
         directory,
         subtitle: resolveSessionSubtitle(directory, session, projects, worktreesByProject, live.branchByDirectory),
       };
@@ -404,7 +404,9 @@ const buildSnapshot = (instanceName: string, includeTray: boolean): TraySnapshot
       seen.add(request.id);
       approvals.push({ kind: 'permission', id: request.id, sessionId, sessionTitle, label: permissionLabel(request), directory: pending.directory, canSave: canSavePermission(request.save) });
     }
-    for (const request of pending.forms) {
+    // A page that waits for the user's answer is listed like a form: the tray
+    // only opens the session for either.
+    for (const request of [...pending.forms, ...pending.pages]) {
       if (seen.has(request.id)) continue;
       seen.add(request.id);
       approvals.push({ kind: 'form', id: request.id, sessionId, sessionTitle, label: formLabel(request), directory: pending.directory, canSave: false });
@@ -445,19 +447,26 @@ export const useTraySync = (): void => {
       }, FLUSH_DEBOUNCE_MS);
     };
 
-    const unsubscribeNotif = useNotificationStore.subscribe(() => scheduleFlush());
     const unsubscribeGlobal = useGlobalSessionsStore.subscribe(() => scheduleFlush());
     const unsubscribeUI = useUIStore.subscribe((state, previous) => {
-      if (state.dockBadgeEnabled !== previous.dockBadgeEnabled || state.notifyOnSubtasks !== previous.notifyOnSubtasks) {
+      if (state.dockBadgeEnabled !== previous.dockBadgeEnabled) {
         scheduleFlush();
       }
     });
+    // Projects, discovered worktrees and pins decide which sessions have a
+    // sidebar row, so they move the badge as well as the tray list and its
+    // "project · branch" subtitles (deduped, so cheap).
+    const unsubscribeProjects = useProjectsStore.subscribe(() => scheduleFlush());
+    const unsubscribeWorktrees = useSessionUIStore.subscribe(() => scheduleFlush());
+    const unsubscribePins = useSessionPinnedStore.subscribe(() => scheduleFlush());
     const stopBadgeSync = () => {
       disposed = true;
       if (flushTimer !== null) window.clearTimeout(flushTimer);
-      unsubscribeNotif();
       unsubscribeGlobal();
       unsubscribeUI();
+      unsubscribeProjects();
+      unsubscribeWorktrees();
+      unsubscribePins();
     };
 
     if (!trayEnabled) {
@@ -510,10 +519,6 @@ export const useTraySync = (): void => {
     }
     rebindStores();
 
-    // Project labels and discovered worktrees feed the "project · branch"
-    // subtitle; refresh the tray when they change (deduped, so cheap).
-    const unsubscribeProjects = useProjectsStore.subscribe(() => scheduleFlush());
-    const unsubscribeWorktrees = useSessionUIStore.subscribe(() => scheduleFlush());
     const unsubscribeGit = useGitStore.subscribe(() => scheduleFlush());
     // Cross-project status map: fed live by the sync dispatcher from the global
     // event stream and seeded from the host by the root global-sessions poll.
@@ -544,8 +549,6 @@ export const useTraySync = (): void => {
     return () => {
       stopBadgeSync();
       window.clearInterval(interval);
-      unsubscribeProjects();
-      unsubscribeWorktrees();
       unsubscribeGit();
       unsubscribeGlobalStatus();
       unsubscribeGlobalRequests();

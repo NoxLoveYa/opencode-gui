@@ -242,6 +242,83 @@ describe('OpenCode proxy SSE forwarding', () => {
     expect(await response.json()).toMatchObject({ restarting: true });
   });
 
+  it('logs safe API route templates and handler names on proxy failures', async () => {
+    upstreamServer = await listen(express());
+    const upstreamPort = upstreamServer.address().port;
+    await closeServer(upstreamServer);
+    upstreamServer = undefined;
+
+    const app = express();
+    registerOpenCodeProxy(app, {
+      fs: {}, os: {}, path, OPEN_CODE_READY_GRACE_MS: 0,
+      getRuntime: () => ({ openCodePort: upstreamPort, isOpenCodeReady: true, openCodeNotReadySince: 0, isRestartingOpenCode: false }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `http://127.0.0.1:${upstreamPort}${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {},
+      getArchivedSessions: async () => ({}),
+    });
+    proxyServer = await listen(app);
+    const base = `http://127.0.0.1:${proxyServer.address().port}`;
+    const logs = [];
+    const originalError = console.error;
+    console.error = (...args) => logs.push(args.join(' '));
+    try {
+      for (const [url, method] of [
+        ['/api/session/secret-123/message?token=secret-456', 'POST'],
+        ['/api/session/secret-123/prompt?key=secret-456', 'POST'],
+        ['/api/session?cursor=secret-789', 'GET'],
+        ['/api/session/secret-123', 'GET'],
+        ['/api/event?token=secret-456', 'GET'],
+        ['/api/custom/secret-123?token=secret-456', 'GET'],
+      ]) {
+        const response = await fetch(`${base}${url}`, { method, signal: AbortSignal.timeout(2_000) });
+        expect(response.status).toBe(503);
+        await response.text();
+      }
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(logs).toEqual([
+      '[proxy] OpenCode proxy error: method=POST route=/api/session/:sessionID/message function=onApiProxyError class=connection_refused message="connect ECONNREFUSED [address]"',
+      '[proxy] OpenCode proxy error: method=POST route=/api/session/:sessionID/prompt function=onApiProxyError class=connection_refused message="connect ECONNREFUSED [address]"',
+      '[proxy] OpenCode proxy error: method=GET route=/api/session function=forwardSanitizedSessionListRequest class=connection_refused message="fetch failed" cause="connect ECONNREFUSED [address]"',
+      '[proxy] OpenCode proxy error: method=GET route=/api/session/:sessionID function=forwardSessionGetRequest class=connection_refused message="fetch failed" cause="connect ECONNREFUSED [address]"',
+      '[proxy] OpenCode proxy error: method=GET route=/api/event function=forwardSseRequest class=connection_refused message="fetch failed" cause="connect ECONNREFUSED [address]"',
+      '[proxy] OpenCode proxy error: method=GET route=/api/other function=onApiProxyError class=connection_refused message="connect ECONNREFUSED [address]"',
+    ]);
+    expect(JSON.stringify(logs)).not.toMatch(/secret|token|127\.0\.0\.1|cursor/);
+  });
+
+  it('does not copy an unexpected proxy error message into the local log', async () => {
+    const upstream = express();
+    upstream.get('/api/session', (_req, res) => res.json({ data: [], cursor: {} }));
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+    const app = express();
+    registerOpenCodeProxy(app, {
+      fs: {}, os: {}, path, OPEN_CODE_READY_GRACE_MS: 0,
+      getRuntime: () => ({ openCodePort: upstreamPort, isOpenCodeReady: true, openCodeNotReadySince: 0, isRestartingOpenCode: false }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `http://127.0.0.1:${upstreamPort}${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {},
+      mergeSpaceSessionList: () => { throw new Error('Bearer secret-123 /private/file'); },
+    });
+    proxyServer = await listen(app);
+    const logs = [];
+    const originalError = console.error;
+    console.error = (...args) => logs.push(args.join(' '));
+    try {
+      const response = await fetch(`http://127.0.0.1:${proxyServer.address().port}/api/session`);
+      expect(response.status).toBe(503);
+    } finally {
+      console.error = originalError;
+    }
+    expect(logs).toEqual([
+      '[proxy] OpenCode proxy error: method=GET route=/api/session function=forwardSanitizedSessionListRequest class=error message="unavailable"',
+    ]);
+  });
+
   it('waits for drain when writing to a slow SSE response', async () => {
     const writes = [];
     const res = new EventEmitter();
@@ -882,6 +959,52 @@ describe('OpenCode proxy SSE forwarding', () => {
     expect(cleared.metadata).toEqual({});
   });
 
+  it('serves turns that ended before the unread baseline as seen', async () => {
+    const upstream = express();
+    upstream.get('/api/session', (_req, res) => {
+      res.json({
+        data: [
+          { id: 'ses_old', time: { created: 1, updated: 2, idle: 100 } },
+          { id: 'ses_new', time: { created: 1, updated: 3, idle: 900, viewed: 50 } },
+        ],
+        cursor: {},
+      });
+    });
+    upstream.get('/api/session/ses_old', (_req, res) => {
+      res.json({ id: 'ses_old', time: { created: 1, updated: 2, idle: 100 } });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+    const externalBaseUrl = `http://127.0.0.1:${upstreamPort}`;
+
+    const app = express();
+    registerOpenCodeProxy(app, {
+      fs: {},
+      os: {},
+      path,
+      OPEN_CODE_READY_GRACE_MS: 0,
+      getRuntime: () => ({
+        openCodePort: upstreamPort,
+        openCodeBaseUrl: externalBaseUrl,
+        isOpenCodeReady: true,
+        openCodeNotReadySince: 0,
+        isRestartingOpenCode: false,
+      }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `${externalBaseUrl}${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {},
+      getUnreadBaseline: async () => 500,
+    });
+    proxyServer = await listen(app);
+    const proxyPort = proxyServer.address().port;
+
+    const list = await (await fetch(`http://127.0.0.1:${proxyPort}/api/session`)).json();
+    expect(list.data[0].time).toEqual({ created: 1, updated: 2, idle: 100, viewed: 100 });
+    expect(list.data[1].time).toEqual({ created: 1, updated: 3, idle: 900, viewed: 50 });
+    const detail = await (await fetch(`http://127.0.0.1:${proxyPort}/api/session/ses_old`)).json();
+    expect(detail.time.viewed).toBe(100);
+  });
+
   it('hands the first page of the session list to the spaces merge, and later pages not', async () => {
     const upstream = express();
     upstream.get('/api/session', (req, res) => res.json({ data: [{ id: 'h1', location: { directory: '/repo' }, title: 'host', permissions: {} }], cursor: { next: req.query.cursor ? undefined : 'p2' } }));
@@ -1177,6 +1300,6 @@ describe('OpenCode proxy SSE forwarding', () => {
     expect(Date.now() - startedAt).toBeLessThan(1000);
     await expect(response.json()).resolves.toMatchObject({ error: 'OpenCode service unavailable' });
     expect(upstreamBody).toEqual({ prompt: 'hello' });
-    expect(errorSpy).toHaveBeenCalledWith('[proxy] OpenCode proxy error:', 'socket hang up');
+    expect(errorSpy).toHaveBeenCalledWith('[proxy] OpenCode proxy error: method=POST route=/api/other function=onApiProxyError class=connection_reset message="socket hang up"');
   });
 });

@@ -5,7 +5,15 @@ import { cn } from '@/lib/utils';
 import { Icon } from '@/components/icon/Icon';
 import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { useI18n } from '@/lib/i18n';
-import { fetchDevServers, mergeDevServerCandidates, type DevServerDiscovery } from '@/lib/browser/devServers';
+import {
+  fetchDevServers,
+  mergeDevServerCandidates,
+  placeDevServerCandidates,
+  type DevServerDiscovery,
+  type WorkFolder,
+} from '@/lib/browser/devServers';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { clearAnnouncedDevServers, useAnnouncedDevServers } from '@/lib/browser/announcedServers';
 import { browserUrlLabel } from '@/lib/browser/url';
 import { isRemoteWebLoopbackUrl, isSpaceUnreachableFromHere } from '@/lib/browser/devTunnel';
@@ -33,7 +41,11 @@ const pathLabel = (url: string): string => {
   }
 };
 
-/** Re-checked while the panel is open: a project's servers appear seconds apart. */
+/**
+ * Re-checked while the panel shows this tab: a project's servers appear seconds
+ * apart. A closed panel or a background tab asks nothing, since every look makes
+ * the server list listening ports, and asks again as soon as it is shown.
+ */
 const REFRESH_INTERVAL_MS = 2_000;
 
 /**
@@ -47,7 +59,8 @@ const isUnreachableFromHere = (directory: string): boolean => isRemoteWebLoopbac
 export const BrowserEmptyState: React.FC<{
   onOpen: (url: string) => void;
   directory?: string;
-}> = ({ onOpen, directory = '' }) => {
+  visible: boolean;
+}> = ({ onOpen, directory = '', visible }) => {
   const { t } = useI18n();
   const [discovery, setDiscovery] = React.useState<DevServerDiscovery>({ kind: 'loading' });
   const announced = useAnnouncedDevServers(directory);
@@ -66,6 +79,7 @@ export const BrowserEmptyState: React.FC<{
       setDiscovery({ kind: 'ready', servers: [] });
       return;
     }
+    if (!visible) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const controller = new AbortController();
@@ -85,18 +99,35 @@ export const BrowserEmptyState: React.FC<{
       if (timer) clearTimeout(timer);
       controller.abort();
     };
-  }, [directory, spaceStopped]);
+  }, [directory, spaceStopped, visible]);
 
-  const candidates = React.useMemo(() => mergeDevServerCandidates({
-    announced,
-    discovered: discovery.kind === 'ready' ? discovery.servers : null,
-  }), [announced, discovery]);
+  const projects = useProjectsStore((state) => state.projects);
+  const worktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const folders = React.useMemo<WorkFolder[]>(() => [
+    ...projects.map((project) => ({ path: project.path, projectPath: project.path })),
+    ...[...worktreesByProject].flatMap(([projectPath, worktrees]) => (
+      worktrees.map((worktree) => ({ path: worktree.path, projectPath }))
+    )),
+  ], [projects, worktreesByProject]);
+
+  const candidates = React.useMemo(() => placeDevServerCandidates({
+    candidates: mergeDevServerCandidates({
+      announced,
+      discovered: discovery.kind === 'ready' ? discovery.servers : null,
+    }),
+    folders,
+    directory,
+  }), [announced, directory, discovery, folders]);
   // A server that just announced itself is shown even on a hidden port: the
-  // user started it, so it is no longer noise.
+  // user started it, so it is no longer noise. Servers started outside every
+  // project wait behind the same "show hidden" link as ports the user hid.
   const hiddenPorts = useHiddenDevServerPorts();
+  const [showOutsideWork, setShowOutsideWork] = React.useState(false);
   const visibleCandidates = React.useMemo(
-    () => candidates.filter((candidate) => candidate.announced || !hiddenPorts.includes(candidate.port)),
-    [candidates, hiddenPorts],
+    () => candidates.filter((candidate) => candidate.announced || (
+      !hiddenPorts.includes(candidate.port) && (showOutsideWork || !candidate.outsideWork)
+    )),
+    [candidates, hiddenPorts, showOutsideWork],
   );
   const hiddenCount = candidates.length - visibleCandidates.length;
 
@@ -149,12 +180,15 @@ export const BrowserEmptyState: React.FC<{
                       aria-label={spaceMark ?? t('contextPanel.browser.spaceAddress')}
                       title={spaceMark ?? t('contextPanel.browser.spaceAddress')}
                     >
-                      <Icon name="box-3" className="size-3.5" aria-hidden="true" />
+                      <Icon name="instance" className="size-3.5" aria-hidden="true" />
                     </span>
                   ) : (
                     <Icon name="global" className="size-3.5 shrink-0" aria-hidden="true" />
                   )}
-                  <span className="truncate">{browserUrlLabel(candidate.url) || candidate.url}</span>
+                  <span className="truncate">
+                    {browserUrlLabel(candidate.url) || candidate.url}
+                    <span className="typography-micro text-muted-foreground">{pathLabel(candidate.url)}</span>
+                  </span>
                   {spaceUnreachable ? (
                     <span
                       className="ms-auto shrink-0 text-muted-foreground"
@@ -164,11 +198,15 @@ export const BrowserEmptyState: React.FC<{
                     >
                       <Icon name="computer" className="size-3.5" aria-hidden="true" />
                     </span>
-                  ) : (
-                    <span className="ms-auto truncate typography-micro text-muted-foreground">
-                      {pathLabel(candidate.url)}
+                  ) : candidate.folderName ? (
+                    <span
+                      className="ms-auto flex min-w-0 items-center gap-1 typography-micro text-muted-foreground"
+                      title={candidate.directory}
+                    >
+                      <Icon name="folder" className="size-3 shrink-0" aria-hidden="true" />
+                      <span className="truncate" dir="auto">{candidate.folderName}</span>
                     </span>
-                  )}
+                  ) : null}
                 </Button>
                 {candidate.announced ? null : (
                   <Button
@@ -192,7 +230,10 @@ export const BrowserEmptyState: React.FC<{
               variant="link"
               size="xs"
               className="h-auto shrink-0 self-start p-0 typography-micro text-muted-foreground"
-              onClick={showHiddenDevServerPorts}
+              onClick={() => {
+                showHiddenDevServerPorts();
+                setShowOutsideWork(true);
+              }}
             >
               {hiddenCount === 1
                 ? t('contextPanel.browser.devServers.showHiddenSingle', { count: hiddenCount })

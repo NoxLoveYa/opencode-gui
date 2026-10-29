@@ -1,9 +1,11 @@
-import { spaceApiPath, spaceIdOfDirectory } from '@/lib/spaces/space-route';
+import { spaceIdOfDirectory } from '@/lib/spaces/space-route';
 import { z } from 'zod';
 import type {
   GitStatus,
   GitDiffResponse,
   GetGitDiffOptions,
+  GetGitDiffsOptions,
+  GitPathDiffBatchEntry,
   GetGitRangeDiffOptions,
   GetGitRangeFilesOptions,
   GetGitCommitDiffOptions,
@@ -22,6 +24,12 @@ import type {
   RemoveGitWorktreePayload,
   GitWorktreeSnapshotPayload,
   GitWorktreeSnapshotResult,
+  ArchiveGitWorktreePayload,
+  DeleteGitWorktreeArchivePayload,
+  GitWorktreeArchive,
+  GitWorktreeArchiveRestoreResult,
+  GitWorktreeTitleResult,
+  GitWorktreePinResult,
   GitWorktreeValidationResult,
   CreateGitCommitOptions,
   GitCommitResult,
@@ -82,6 +90,12 @@ const gitLogSchema = z.object({ all: z.array(gitLogEntrySchema), latest: gitLogE
 
 // Servers before #3586 send no `submodule`; that means "not known to be one".
 const gitPathDiffSchema = z.object({ diff: z.string(), submodule: gitSubmoduleStateSchema.nullable().default(null) });
+const gitPathDiffsSchema = z.object({
+  diffs: z.array(z.union([
+    z.object({ path: z.string(), diff: z.string(), submodule: gitSubmoduleStateSchema.nullable().default(null) }),
+    z.object({ path: z.string(), error: z.string(), code: z.enum(['path_not_found', 'nested_repository', 'untracked_directory']).nullable() }),
+  ])),
+});
 const gitFileDiffSchema = z.object({
   original: z.string(),
   modified: z.string(),
@@ -791,8 +805,8 @@ function buildUrl(
   const query: Record<string, string | number | boolean | undefined> = { ...params };
   if (directory) query.directory = directory;
 
-  // A directory inside an isolated space addresses that space's git.
-  return getRuntimeUrlResolver().api(spaceApiPath(path, directory), query);
+  // The `directory` query also sends a request about a space's directory to that space's git.
+  return getRuntimeUrlResolver().api(path, query);
 }
 
 type ProjectOverviewField = 'repo' | 'status' | 'root' | 'worktrees';
@@ -1102,6 +1116,25 @@ export async function resolveGitPrimaryRoot(directory: string): Promise<{ root: 
   return { root: overview.root ? overview.root : directory };
 }
 
+/**
+ * Where `directory` sits inside its repository's checkout: `ai` for `<checkout>/ai`,
+ * an empty string at the checkout root. Rejects when the answer is unavailable, so
+ * a caller never takes a failed read for "at the root".
+ */
+export async function resolveGitRepositoryPrefix(directory: string): Promise<string> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/toplevel`, directory));
+  if (!response.ok) {
+    throw new Error(`Failed to resolve the repository folder: ${response.statusText}`);
+  }
+  // SAFETY: the route answers `{ root, prefix }`; a body that is not that object leaves `prefix` undefined, and anything but a string is rejected below.
+  const payload = await response.json().catch(() => ({})) as { prefix?: string | null };
+  // A missing or null prefix is a failed read, not "at the root".
+  if (payload.prefix === undefined || payload.prefix === null) {
+    throw new Error('The server did not report the repository folder');
+  }
+  return payload.prefix;
+}
+
 export async function resolveGitTopLevel(directory: string): Promise<{ root: string }> {
   const response = await runtimeFetch(buildUrl(`${API_BASE}/toplevel`, directory));
   if (!response.ok) {
@@ -1158,6 +1191,30 @@ export async function getGitDiff(directory: string, options: GetGitDiffOptions):
   }
 
   return gitPathDiffSchema.parse(await response.json());
+}
+
+// The route's per-request bound; a longer list goes out in several requests.
+const GIT_DIFFS_MAX_PATHS = 1000;
+
+export async function getGitDiffs(directory: string, options: GetGitDiffsOptions): Promise<GitPathDiffBatchEntry[]> {
+  const { paths, staged, contextLines } = options;
+  const entries: GitPathDiffBatchEntry[] = [];
+  for (let start = 0; start < paths.length; start += GIT_DIFFS_MAX_PATHS) {
+    const response = await runtimeFetch(buildUrl(`${API_BASE}/diffs`, directory), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: paths.slice(start, start + GIT_DIFFS_MAX_PATHS), staged: staged === true, context: contextLines }),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to get git diffs: ${response.statusText}`);
+    }
+    for (const entry of gitPathDiffsSchema.parse(await response.json()).diffs) {
+      entries.push('diff' in entry
+        ? { path: entry.path, ok: true, diff: { diff: entry.diff, submodule: entry.submodule } }
+        : { path: entry.path, ok: false, error: entry.error, reason: entry.code });
+    }
+  }
+  return entries;
 }
 
 export async function getGitRangeDiff(
@@ -1627,6 +1684,86 @@ export async function deleteGitWorktree(directory: string, payload: RemoveGitWor
   return response.json();
 }
 
+const worktreeTitleResultSchema = z.object({ title: z.string(), branch: z.string() });
+
+export async function setGitWorktreeTitle(directory: string, title: string): Promise<GitWorktreeTitleResult> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/worktrees/title`, directory), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = z.object({ error: z.string() }).safeParse(body).data?.error;
+    throw new Error(message || 'Failed to rename the task');
+  }
+  const parsed = worktreeTitleResultSchema.safeParse(body);
+  if (!parsed.success) throw new Error('Malformed task title response');
+  return parsed.data;
+}
+
+const worktreePinResultSchema = z.object({ pinned: z.boolean(), branch: z.string() });
+
+export async function setGitWorktreePinned(directory: string, pinned: boolean): Promise<GitWorktreePinResult> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/worktrees/pin`, directory), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = z.object({ error: z.string() }).safeParse(body).data?.error;
+    throw new Error(message || 'Failed to pin the task');
+  }
+  const parsed = worktreePinResultSchema.safeParse(body);
+  if (!parsed.success) throw new Error('Malformed pin response');
+  return parsed.data;
+}
+
+const worktreeArchiveSchema = z.object({
+  id: z.string().min(1),
+  ref: z.string().min(1),
+  commit: z.string().min(1),
+  head: z.string(),
+  path: z.string().min(1),
+  branch: z.string(),
+  branchExists: z.boolean(),
+  title: z.string(),
+  archivedAt: z.number(),
+  sessionIds: z.array(z.string()),
+});
+
+const worktreeArchiveRequest = async <T>(path: string, directory: string, init: RequestInit, schema: z.ZodType<T>, fallback: string): Promise<T> => {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/worktrees/archives${path}`, directory), {
+    ...init,
+    headers: init.body ? { 'Content-Type': 'application/json' } : undefined,
+  });
+  if (!response.ok) {
+    const body = z.object({ error: z.string().optional(), code: z.string().optional() }).catch({})
+      .parse(await response.json().catch(() => null));
+    const message = body.error || response.statusText || fallback;
+    // The server's code tells a kept archive or a partial removal apart.
+    throw body.code ? new GitWorktreeRequestError(body.code, message, response.status) : new Error(message);
+  }
+  return schema.parse(await response.json());
+};
+
+export const archiveGitWorktree = (directory: string, payload: ArchiveGitWorktreePayload): Promise<GitWorktreeArchive> => (
+  worktreeArchiveRequest('', directory, { method: 'POST', body: JSON.stringify(payload) }, worktreeArchiveSchema, 'Failed to archive worktree')
+);
+
+export const listGitWorktreeArchives = async (directory: string): Promise<GitWorktreeArchive[]> => (
+  (await worktreeArchiveRequest('', directory, { method: 'GET' }, z.object({ archives: z.array(worktreeArchiveSchema) }), 'Failed to list worktree archives')).archives
+);
+
+export const restoreGitWorktreeArchive = (directory: string, id: string): Promise<GitWorktreeArchiveRestoreResult> => (
+  worktreeArchiveRequest('/restore', directory, { method: 'POST', body: JSON.stringify({ id }) }, z.object({ id: z.string(), conflicts: z.boolean() }), 'Failed to restore worktree archive')
+);
+
+export const deleteGitWorktreeArchive = (directory: string, payload: DeleteGitWorktreeArchivePayload): Promise<{ id: string; branchDeleted: boolean }> => (
+  worktreeArchiveRequest('', directory, { method: 'DELETE', body: JSON.stringify(payload) }, z.object({ id: z.string(), branchDeleted: z.boolean() }), 'Failed to delete worktree archive')
+);
+
 const worktreeSnapshotResultSchema = z.object({
   ref: z.string(),
   commit: z.string().min(1),
@@ -2016,6 +2153,23 @@ export async function getGitLog(
     throw new Error(`Failed to get git log: ${errorBody.error || response.statusText}`);
   }
   return gitLogSchema.parse(await response.json());
+}
+
+const changeIdAmendSchema = z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), changeId: z.string().regex(/^I[0-9a-f]{40}$/) });
+
+/** `GitAPI.addChangeIdToHead`: the server amends HEAD, refusing when it moved past `expectedHead`. */
+export async function addChangeIdToHead(directory: string, expectedHead: string): Promise<{ sha: string; changeId: string }> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/change-id`, directory), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedHead }),
+  });
+  if (!response.ok) {
+    const message = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(message.error || 'Failed to add a Change-Id');
+  }
+  invalidateGitStatusCache(directory);
+  return changeIdAmendSchema.parse(await response.json());
 }
 
 export async function getCommitFiles(

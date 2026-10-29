@@ -82,6 +82,10 @@ Auto. There is no env gate — the feature shipped dark behind
 - Routing failures keep the user's own behaviour: a Jev error, timeout, unknown
   category or low confidence routes to the fallback model, and the decision
   carries the reason.
+- The routing question sends `ROUTING_INSTRUCTIONS` as one string, the same
+  form as the Test probe. TypeSafe also accepts a list there, but a
+  self-hosted System One server may not: Kev answers a list with 400, so Auto
+  fell back on every send while Test passed (#4175).
 - The safety net accepts only on a verdict from Jev. With no usable
   classification provider it holds quietly (the session behaves like `ask`);
   when Jev fails it holds, broadcasts `openchamber:routing.safety-skipped` with
@@ -107,10 +111,12 @@ Auto. There is no env gate — the feature shipped dark behind
   and neither is a send routed to a user category, a fallback for low
   confidence or an error, or a hold that would change the agent (another
   agent is another system prompt, which misses the cache anyway). Warm means
-  within 5 minutes of the last answer finishing, or, when OpenCode's `warming`
-  is on for the directory, within its `duration` (30 minutes for `true`) plus
-  5 minutes. The config is read only after the first 5 minutes; an unreadable
-  one counts as warming off. The decision event names the category the send
+  within 5 minutes of the last answer finishing; for a session OpenChamber
+  keeps warm itself (`../session-warming`, `isSessionWarm`), until its warm
+  window ends plus 5 minutes; otherwise, when OpenCode's `warming` is on for the
+  directory, within its `duration` (30 minutes for `true`) plus 5 minutes. The
+  config is read only after the first 5 minutes, and not for a session
+  OpenChamber keeps warm; an unreadable one counts as warming off. The decision event names the category the send
   ran as and carries `cacheHold.requested`, the one Jev chose.
 - Auto is offered (`autoReady`) with a usable classification provider
   (`jevAvailable`), `enabled`, a fallback model and at least two enabled
@@ -130,12 +136,26 @@ Classification providers:
 - `off`: no Jev at all. Every Jev feature takes its no-provider path.
 - `zen-promo`: `opencode.ai/zen/v1/systemone` as `jev-1.13-free`, which OpenCode
   Zen answers with no credential at all. Usable while
-  `ZEN_JEV_PROMOTION_ACTIVE` is true; flip it when OpenCode ends the promotion.
+  `ZEN_JEV_PROMOTION_ACTIVE` is true. While it is false, a user who had picked
+  it sees it disabled as temporarily unavailable and falls back like any
+  unusable pick.
+  On 2026-10-27 zen's anti-fraud client check answered the free model with
+  429 `FreeUsageLimitError` ("Free models work in OpenCode") to Node and curl
+  clients whatever the headers, while Bun clients such as OpenCode got
+  through. The server runs on Node, so the promotion was off for a few hours
+  until Dax exempted Jev. If that 429 comes back, compare one call from Node
+  and one from Bun before anything else, and ask OpenCode in Slack. The other
+  route is OpenCode 2.2's `POST /api/experimental/generate/decisions` with the
+  `opencode` provider, which serves `jev-1.13-free` without a login and takes
+  `x-opencode-client` from `provider.opencode.options.headers`; in 2.2.0 it
+  starts a second copy of every local MCP server (anomalyco/opencode#59605)
+  and its predicate questions take no `criteria` (anomalyco/opencode#59606).
 - `zen-key`: the same endpoint as `jev-1.13` with a Zen API key read from
   OpenCode's credentials (`opencode/auth.js`, entry `opencode`, type `api`).
   An OpenCode account sign-in is an OAuth credential, and zen rejects it as a
-  key ("Invalid API key", checked 2026-09-27), so it does not count. The paid
-  call itself is not verified live yet.
+  key ("Invalid API key", checked 2026-09-27), so it does not count. A paid
+  call from Node with a Zen API key answers (checked 2026-10-27, billed to the
+  Zen balance); the client check that blocks the free model does not apply.
 - `openrouter`: `openrouter.ai/api/v1/systemone` as `jev-latest` (OpenRouter's
   `~typesafe/jev-latest` alias) with the OpenRouter API key saved in OpenCode
   (entry `openrouter`, type `api`), billed to that OpenRouter account.

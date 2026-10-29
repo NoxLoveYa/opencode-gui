@@ -13,6 +13,7 @@ import type {
   Project as ProjectWire,
   PromptFileAttachment,
   VcsInfo,
+  SessionInboxSyntheticPayload,
   SessionInboxUserPayload,
   SessionInfo,
   SessionMessageAssistant,
@@ -35,6 +36,7 @@ import {
   type Session,
   type ToolPart,
   type ToolState,
+  type SyntheticMessage,
   type UserMessage,
   type Vcs,
 } from "./model"
@@ -265,6 +267,50 @@ function projectAssistantMessage(info: SessionMessageAssistant, sessionID: strin
 function fileAttachmentUrl(file: PromptFileAttachment): string {
   if (file.source.type === "uri") return file.source.uri
   return `data:${file.mime};base64,${file.data}`
+}
+
+/** The inbox items that stand for a message; control items carry no payload we read. */
+export type InboxMessageItem =
+  | { type: "user"; payload: SessionInboxUserPayload }
+  | { type: "synthetic"; payload: SessionInboxSyntheticPayload }
+  | { type: "compaction" | "move" }
+
+/**
+ * The message an inbox item stands for, as `session.inbox.enqueued` paints it
+ * live and a cold load repaints it from the pending inbox. Null for control
+ * items (compaction, move), which paint nothing.
+ */
+export function projectInboxMessage(
+  item: InboxMessageItem,
+  owner: { sessionID: string; messageID: string; created: number },
+): { info: UserMessage | SyntheticMessage; parts: Part[] | null } | null {
+  if (item.type === "user") {
+    return {
+      info: compact({
+        id: owner.messageID,
+        sessionID: owner.sessionID,
+        role: "user",
+        time: { created: owner.created },
+        metadata: item.payload.metadata,
+      }),
+      parts: projectUserParts(item.payload, owner),
+    }
+  }
+  if (item.type === "synthetic") {
+    return {
+      info: compact({
+        id: owner.messageID,
+        sessionID: owner.sessionID,
+        role: "synthetic",
+        time: { created: owner.created },
+        text: item.payload.text,
+        description: item.payload.description,
+        metadata: item.payload.metadata,
+      }),
+      parts: null,
+    }
+  }
+  return null
 }
 
 /**
@@ -506,18 +552,31 @@ export function mergeConfigDocuments(entries: readonly ConfigEntry[]): Config {
 }
 
 /**
+ * A document's policy statements. OpenCode 2.0.29 serves them as top-level
+ * `policies`; older servers keep them under `experimental.policies`. Same
+ * order as upstream's merge, the experimental ones first.
+ */
+function documentPolicies(entry: ConfigDocument) {
+  return [...(entry.info.experimental?.policies ?? []), ...(entry.info.policies ?? [])]
+}
+
+/**
  * Whether any config document denies a provider through a `provider.use`
  * policy. Read per document: the folded config keeps only the last
- * document's `experimental`, and policies from every layer apply. Statements
+ * document's policies, and policies from every layer apply. Statements
  * from a connected OpenCode Console workspace are not part of `/api/config`.
  */
 export function deniesAnyProvider(entries: readonly ConfigEntry[]): boolean {
   return entries.some((entry) => isDocument(entry)
-    && (entry.info.experimental?.policies ?? []).some((policy) => policy.action === "provider.use" && policy.effect === "deny"))
+    && documentPolicies(entry).some((policy) => policy.action === "provider.use" && policy.effect === "deny"))
 }
 
-/** One `integration.use` statement: `resource` is `mcp:<server>` or `skill:<id>`, with `*` and `?` wildcards. */
-export type IntegrationPolicy = { resource: string; effect: "allow" | "deny" }
+/**
+ * One `integration.use` statement: `resource` is `mcp:<server>` or `skill:<id>`,
+ * with `*` and `?` wildcards; `path` is the config file it is written in, null
+ * for config that has no file.
+ */
+export type IntegrationPolicy = { resource: string; effect: "allow" | "deny"; path: string | null }
 
 /**
  * The `integration.use` statements of every config document, in the order
@@ -529,8 +588,10 @@ export function readIntegrationPolicies(entries: readonly ConfigEntry[]): Integr
   return entries
     .filter(isDocument)
     .reverse()
-    .flatMap((entry) => entry.info.experimental?.policies ?? [])
-    .flatMap((policy) => (policy.action === "integration.use" ? [{ resource: policy.resource, effect: policy.effect }] : []))
+    .flatMap((entry) => documentPolicies(entry)
+      .flatMap((policy) => (policy.action === "integration.use"
+        ? [{ resource: policy.resource, effect: policy.effect, path: entry.path ?? null }]
+        : [])))
 }
 
 /** OpenCode's `Wildcard.match`: `*` is any run, `?` one character, a trailing ` *` also matches nothing. */
@@ -544,12 +605,17 @@ function matchesWildcard(input: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, "s").test(input.replaceAll("\\", "/"))
 }
 
+/** The statement that decides an MCP server (`mcp:<name>`) or skill (`skill:<id>`), or null when none matches. */
+export function findIntegrationPolicy(policies: readonly IntegrationPolicy[], resource: string): IntegrationPolicy | null {
+  for (let index = policies.length - 1; index >= 0; index -= 1) {
+    if (matchesWildcard(resource, policies[index].resource)) return policies[index]
+  }
+  return null
+}
+
 /** Whether OpenCode drops this MCP server (`mcp:<name>`) or skill (`skill:<id>`) by policy. */
 export function isIntegrationDenied(policies: readonly IntegrationPolicy[], resource: string): boolean {
-  for (let index = policies.length - 1; index >= 0; index -= 1) {
-    if (matchesWildcard(resource, policies[index].resource)) return policies[index].effect === "deny"
-  }
-  return false
+  return findIntegrationPolicy(policies, resource)?.effect === "deny"
 }
 
 function isPlainRecord(value: Config[keyof Config]): value is Record<string, JsonValue> {

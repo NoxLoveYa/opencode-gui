@@ -13,7 +13,7 @@ const helpers = [
 ];
 
 const completeApp = () => [
-  ...['dist-bundle/entry.mjs', 'dist-bundle/main.mjs', 'dist-bundle/early-startup.mjs', 'preload.mjs', 'package.json'],
+  ...['dist-bundle/entry.mjs', 'dist-bundle/main.mjs', 'dist-bundle/early-startup.mjs', 'preload.mjs', 'browser-panel-preload.cjs', 'package.json'],
   `${web}/package.json`,
   `${web}/server/index.js`,
 ].map((filePath) => ({ path: filePath, unpacked: false }))
@@ -38,6 +38,14 @@ test('a complete app has no problems', () => {
 test('the web build output inside the archive is rejected', () => {
   const files = [...completeApp(), { path: `${web}/dist/assets/index.js`, unpacked: false }];
   assert.deepEqual(findPackagedAppContentProblems(files), [`${web}/dist must not be packaged (1 files found)`]);
+});
+
+test('ripgrep platform packages inside the archive are rejected', () => {
+  const files = [...completeApp(), { path: 'node_modules/@vscode/ripgrep-darwin-arm64/bin/rg', unpacked: false }];
+  assert.deepEqual(findPackagedAppContentProblems(files), [
+    '@vscode/ripgrep platform packages must not be packaged (1 files found); the binary ships in Resources/ripgrep',
+  ]);
+  assert.deepEqual(findPackagedAppContentProblems([...completeApp(), { path: 'node_modules/@vscode/ripgrep/lib/index.js', unpacked: false }]), []);
 });
 
 test('files copied from outside the allowlist are rejected', () => {

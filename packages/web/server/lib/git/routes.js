@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { isPlainObject, isString } from '../shared/guards.js';
 import { OpenCode } from '@opencode/client';
 import { createGitRedactor, redactGitText } from './redaction.js';
@@ -27,7 +28,15 @@ const WORKTREE_INSTANCE_DISPOSE_TIMEOUT_MS = 5_000;
  * OpenCode runtime itself, and both are read at call time. OpenCode 2 has no
  * instance route; evicting the location drops its cached services (file
  * watchers, LSP, MCP), which is what held the worktree folder.
+ *
+ * A session of a project opened on a folder of its repository runs in that
+ * folder of the worktree (`<worktree>/ai`), which is a location of its own, so
+ * every running location inside the worktree is evicted along with its root.
+ * When the location list cannot be read, the root is still evicted and the
+ * list error is rethrown for the removal wrapper to log.
  */
+const toLocationKey = (directory) => String(directory || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
 const createWorktreeInstanceDisposer = ({ buildOpenCodeUrl, getOpenCodeAuthHeaders }) => {
   return async (worktreeDirectory) => {
     const client = OpenCode.make({
@@ -35,7 +44,23 @@ const createWorktreeInstanceDisposer = ({ buildOpenCodeUrl, getOpenCodeAuthHeade
       headers: getOpenCodeAuthHeaders(),
       fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(WORKTREE_INSTANCE_DISPOSE_TIMEOUT_MS) }),
     });
-    await client.debug.location.evict({ location: { directory: worktreeDirectory } });
+    const root = toLocationKey(worktreeDirectory);
+    const errors = [];
+    const inside = await client.debug.location.list().then(
+      (locations) => locations.map((location) => location.directory)
+        .filter((directory) => toLocationKey(directory).startsWith(`${root}/`)),
+      (error) => {
+        errors.push(error);
+        return [];
+      },
+    );
+    const evictions = await Promise.allSettled([worktreeDirectory, ...inside].map((directory) => (
+      client.debug.location.evict({ location: { directory } })
+    )));
+    for (const eviction of evictions) {
+      if (eviction.status === 'rejected') errors.push(eviction.reason);
+    }
+    if (errors.length > 0) throw errors[0];
   };
 };
 
@@ -43,13 +68,16 @@ const createWorktreeInstanceDisposer = ({ buildOpenCodeUrl, getOpenCodeAuthHeade
 // Actions the user starts here may run a project's environment command, so
 // hooks find the project's tools; reads the UI repeats on its own may not
 // (lib/environment/refresh-scope.js).
+const worktreeTitleBodySchema = z.object({ title: z.string() });
+const worktreePinBodySchema = z.object({ pinned: z.boolean() });
+
 const userAction = (handler) => (req, res, next) => runAsUserAction(() => handler(req, res, next));
 
 export function registerGitRoutes(app, {
   networkOperations, managedSshInventory, getSourceControlBinding, contributorProvenance, resolveChangeRequestSource,
   backfillIdentities,
   createHttpsCredentialReference, resolveSourceControlAccount, errorRedactionSecrets = [], worktreeBootstrapStore,
-  emitWorktreeChanged, buildOpenCodeUrl, getOpenCodeAuthHeaders,
+  emitWorktreeChanged, buildOpenCodeUrl, getOpenCodeAuthHeaders, onBranchRewritten,
 } = {}) {
   let gitLibraries = null;
   const getGitLibraries = async () => {
@@ -64,6 +92,8 @@ export function registerGitRoutes(app, {
 
   // A path from an earlier status listing that no longer resolves is a stale
   // row or a nested repository, not a server fault.
+  // The client splits a larger changeset into requests of this size.
+  const GIT_DIFFS_MAX_PATHS = 1000;
   const GIT_PATH_ERROR_STATUS = new Map([['path_not_found', 404], ['nested_repository', 422], ['untracked_directory', 422]]);
   const sendGitPathError = (res, error) => {
     const status = GIT_PATH_ERROR_STATUS.get(error?.code);
@@ -884,6 +914,38 @@ export function registerGitRoutes(app, {
     }
   });
 
+  // The same reads as GET /api/git/diff for many paths of one side, so a
+  // client that needs a whole changeset makes one request instead of one per
+  // file. Per-path failures are entries of the answer, not a failed request.
+  app.post('/api/git/diffs', async (req, res) => {
+    const { getPathDiffs } = await getGitLibraries();
+    try {
+      const directory = req.query.directory;
+      if (!isString(directory) || !directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+
+      const paths = req.body?.paths;
+      if (!Array.isArray(paths) || paths.length === 0 || paths.length > GIT_DIFFS_MAX_PATHS || !paths.every((path) => isString(path) && path)) {
+        return res.status(400).json({ error: `paths must be 1 to ${GIT_DIFFS_MAX_PATHS} non-empty strings` });
+      }
+
+      const staged = req.body?.staged === true;
+      const context = Number(req.body?.context);
+
+      const diffs = await getPathDiffs(directory, {
+        paths,
+        staged,
+        contextLines: Number.isInteger(context) && context >= 0 ? context : 3,
+      });
+
+      res.json({ diffs });
+    } catch (error) {
+      console.error('Failed to get git diffs:', error);
+      res.status(500).json({ error: error.message || 'Failed to get git diffs' });
+    }
+  });
+
   app.get('/api/git/file-diff', async (req, res) => {
     const { getFileDiff } = await getGitLibraries();
     try {
@@ -1211,6 +1273,24 @@ export function registerGitRoutes(app, {
       res.status(500).json({ error: error.message || 'Failed to remove remote' });
     }
   });
+
+  // A review host's preflight: gives the checked-out commit the Change-Id
+  // trailer its commit-msg hook would have added, computed locally.
+  app.post('/api/git/change-id', userAction(async (req, res) => {
+    const directory = resolveDirectoryQuery(req.query?.directory);
+    if (!directory) return res.status(400).json({ error: 'directory parameter is required' });
+    try {
+      const { addChangeIdToHead } = await import('../source-control/change-id.js');
+      const { sha, changeId, branch } = await addChangeIdToHead(directory, req.body?.expectedHead);
+      // The cached status of that branch was read for the old tip.
+      onBranchRewritten?.({ directory, branch });
+      return res.json({ sha, changeId });
+    } catch (error) {
+      if (Number.isInteger(error?.status) && error.status < 500) return res.status(error.status).json({ error: error.message, code: error.code });
+      console.error('Failed to add a Change-Id:', error?.message);
+      return res.status(500).json({ error: 'Failed to add a Change-Id', code: error?.code ?? 'CHANGE_ID_FAILED' });
+    }
+  }));
 
   app.post('/api/git/rebase', userAction(async (req, res) => {
     const { rebase } = await getGitLibraries();
@@ -1584,6 +1664,45 @@ export function registerGitRoutes(app, {
     }
   });
 
+  // The user renaming a worktree's task: always written, and from then on the
+  // agent keeps it (see `setWorktreeTaskTitle`). An empty title clears it.
+  app.put('/api/git/worktrees/title', userAction(async (req, res) => {
+    const { setWorktreeTaskTitle } = await getGitLibraries();
+    try {
+      const directory = resolveDirectoryQuery(req.query.directory);
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+      const body = worktreeTitleBodySchema.safeParse(req.body);
+      if (!body.success) {
+        return res.status(400).json({ error: 'title must be a string' });
+      }
+      res.json(await setWorktreeTaskTitle(directory, { title: body.data.title, by: 'user' }));
+    } catch (error) {
+      console.error('Failed to set the worktree task title:', error);
+      res.status(Number.isInteger(error?.status) ? error.status : 500).json({ error: error.message || 'Failed to set the task title' });
+    }
+  }));
+
+  // The user pinning a worktree's task to the top of the sidebar, or unpinning it.
+  app.put('/api/git/worktrees/pin', userAction(async (req, res) => {
+    const { setWorktreePinned } = await getGitLibraries();
+    try {
+      const directory = resolveDirectoryQuery(req.query.directory);
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+      const body = worktreePinBodySchema.safeParse(req.body);
+      if (!body.success) {
+        return res.status(400).json({ error: 'pinned must be a boolean' });
+      }
+      res.json(await setWorktreePinned(directory, body.data.pinned));
+    } catch (error) {
+      console.error('Failed to pin the worktree:', error);
+      res.status(Number.isInteger(error?.status) ? error.status : 500).json({ error: error.message || 'Failed to pin the worktree' });
+    }
+  }));
+
   app.post('/api/git/worktrees/validate', async (req, res) => {
     const { validateWorktreeCreate } = await getGitLibraries();
     if (typeof validateWorktreeCreate !== 'function') {
@@ -1726,6 +1845,76 @@ export function registerGitRoutes(app, {
       res.status(500).json({ error: error.message || 'Failed to snapshot worktree' });
     }
   });
+
+  // Archived worktrees: `directory` is the project (any of its checkouts),
+  // except restore, which works in the new checkout of the archive's branch.
+  const ARCHIVE_ERROR_STATUS = new Map([
+    ['WORKTREE_ARCHIVE_NOT_FOUND', 404],
+    ['WORKTREE_ARCHIVE_IN_PROGRESS', 409],
+    ['WORKTREE_ARCHIVE_NOT_APPLIED', 409],
+  ]);
+  const sendArchiveError = (res, error, fallback) => {
+    const status = ARCHIVE_ERROR_STATUS.get(error?.code) ?? 500;
+    if (status === 500) console.error(`${fallback}:`, error);
+    res.status(status).json({ error: error?.message || fallback, code: error?.code });
+  };
+
+  app.get('/api/git/worktrees/archives', async (req, res) => {
+    const { listWorktreeArchives } = await getGitLibraries();
+    const directory = resolveDirectoryQuery(req.query.directory);
+    if (!directory) return res.status(400).json({ error: 'directory parameter is required' });
+    try {
+      res.json({ archives: await listWorktreeArchives(directory) });
+    } catch (error) {
+      sendArchiveError(res, error, 'Failed to list worktree archives');
+    }
+  });
+
+  app.post('/api/git/worktrees/archives', userAction(async (req, res) => {
+    const { archiveWorktree } = await getGitLibraries();
+    const directory = resolveDirectoryQuery(req.query.directory);
+    if (!directory) return res.status(400).json({ error: 'directory parameter is required' });
+    const worktreeDirectory = z.string().min(1).safeParse(req.body?.directory).data;
+    if (!worktreeDirectory) return res.status(400).json({ error: 'worktree directory is required' });
+    if (!(worktreeBootstrapStore?.remove instanceof Function)) {
+      return res.status(501).json({ error: 'Worktree bootstrap storage is not available' });
+    }
+    try {
+      res.json(await archiveWorktree(directory, {
+        directory: worktreeDirectory,
+        id: req.body.id,
+        sessionIds: req.body.sessionIds,
+        title: req.body.title,
+        disposeInstance: canDisposeWorktreeInstance
+          ? createWorktreeInstanceDisposer({ buildOpenCodeUrl, getOpenCodeAuthHeaders })
+          : undefined,
+      }, { bootstrapStore: worktreeBootstrapStore }));
+    } catch (error) {
+      sendArchiveError(res, error, 'Failed to archive worktree');
+    }
+  }));
+
+  app.post('/api/git/worktrees/archives/restore', userAction(async (req, res) => {
+    const { restoreWorktreeArchive } = await getGitLibraries();
+    const directory = resolveDirectoryQuery(req.query.directory);
+    if (!directory) return res.status(400).json({ error: 'directory parameter is required' });
+    try {
+      res.json(await restoreWorktreeArchive(directory, { id: req.body?.id }));
+    } catch (error) {
+      sendArchiveError(res, error, 'Failed to restore worktree archive');
+    }
+  }));
+
+  app.delete('/api/git/worktrees/archives', userAction(async (req, res) => {
+    const { deleteWorktreeArchive } = await getGitLibraries();
+    const directory = resolveDirectoryQuery(req.query.directory);
+    if (!directory) return res.status(400).json({ error: 'directory parameter is required' });
+    try {
+      res.json(await deleteWorktreeArchive(directory, { id: req.body?.id, deleteBranch: req.body?.deleteBranch === true }));
+    } catch (error) {
+      sendArchiveError(res, error, 'Failed to delete worktree archive');
+    }
+  }));
 
   app.get('/api/git/worktree-type', async (req, res) => {
     const { isLinkedWorktree } = await getGitLibraries();

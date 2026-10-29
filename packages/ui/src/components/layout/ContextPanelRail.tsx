@@ -18,10 +18,13 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { Icon } from '@/components/icon/Icon';
+import type { IconName } from '@/components/icon/icons';
 import { DiffViewIcon } from '@/components/icons/DiffIcon';
 import { GuestIcon } from '@/components/layout/GuestRailIcon';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useDraftSpaceTarget } from '@/lib/spaces/useDraftSpaceTarget';
+import { panelContentDirectory } from '@/lib/spaces/space-creation-requests';
 import { useDeviceInfo } from '@/lib/device';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
@@ -35,10 +38,16 @@ import {
   isShortcutPrefixHeld,
 } from '@/lib/shortcuts';
 import { cn } from '@/lib/utils';
-import { useGitStatus } from '@/stores/useGitStore';
-import { useSourceControlAuthEntry, useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
-import { GITHUB_SOURCE_CONTROL_IDENTITY } from '@/lib/source-control/identity';
-import { useRepositoryReferenceProvider } from '@/components/references/referenceSources';
+import { useEffectiveGitDirectory, useGitStatus, useGitStore } from '@/stores/useGitStore';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { runBackgroundNetworkTask } from '@/lib/background-network';
+import { normalizePath } from '@/lib/pathNormalization';
+import { sessionEvents } from '@/lib/sessionEvents';
+import { getSourceControlAuthKey, useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
+import { useSourceControlProvider, useSourceControlProviders } from '@/lib/source-control/providers/registry';
+import type { SourceControlProviderDescriptor } from '@/lib/source-control/providers/descriptor';
+import { PROVIDER_FALLBACK_ICON, providerIconSrc, providerSpriteName } from '@/components/sourceControl/providerIconSprite';
+import { useRepositoryHostProvider } from '@/components/references/referenceSources';
 import { normalizeContextPanelDirectoryKey, useUIStore } from '@/stores/useUIStore';
 import { useGuestSurfaces } from '@/hooks/useGuestSurfaces';
 import { useGuestBadgeStore } from '@/lib/guests/badge-store';
@@ -50,6 +59,7 @@ import { ZoneMoveMenuItems } from './ZoneMoveMenuItems';
 import { startZoneDragGesture, type ZoneDragGesture } from './zoneDrag';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { changeRequestCopy } from '@/lib/source-control/changeRequestCopy';
+import { useWorkflowsSurfaceShown } from '@/lib/workflows/panel';
 
 const RAIL_TOOLTIP_DELAY_MS = 150;
 // Hold the surface-switch modifier for this long before revealing the order
@@ -163,7 +173,9 @@ const ContextPanelRailItem: React.FC<RailItemProps> = ({
             ) : null}
           </button>
         </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={8}>
+        {/* Descriptions run long, and extensions bring their own: cap the
+            width so they wrap instead of stretching across the chat. */}
+        <TooltipContent side="left" sideOffset={8} className="max-w-72 break-words">
           <div className="flex flex-col gap-0.5">
             <span>{label}</span>
             <span className="typography-micro text-muted-foreground">{description}</span>
@@ -183,6 +195,16 @@ const ContextPanelRailItem: React.FC<RailItemProps> = ({
   );
 };
 
+// The Tracker wears the project's host: its provider's sprite icon, else the
+// mark it serves as an icon URL. With no host it holds tracker items and the like.
+type RailIcon = { icon: IconName; iconSrc?: string };
+
+const trackerRailIcon = (descriptor: SourceControlProviderDescriptor | null): RailIcon => {
+  if (!descriptor) return { icon: 'ticket-2' };
+  const sprite = providerSpriteName(descriptor, 'line');
+  return sprite ? { icon: sprite } : { icon: PROVIDER_FALLBACK_ICON, iconSrc: providerIconSrc(descriptor) };
+};
+
 export const ContextPanelRail: React.FC = () => {
   const { t } = useI18n();
   const effectiveDirectory = useEffectiveDirectory();
@@ -197,14 +219,44 @@ export const ContextPanelRail: React.FC = () => {
   const closeContextZone = useUIStore((state) => state.closeContextZone);
   const contextSurfaceZones = useUIStore((state) => state.contextSurfaceZones);
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
-  const githubAuthChecked = (useSourceControlAuthEntry(GITHUB_SOURCE_CONTROL_IDENTITY)?.hasChecked ?? false);
+  const providers = useSourceControlProviders();
+  // Whether any provider's default instance (github.com, gitlab.com) has answered an auth check.
+  const defaultInstanceAuthChecked = useSourceControlAuthStore((state) => providers.some((descriptor) => (
+    descriptor.instances.defaultInstance !== null
+    && state.entries[getSourceControlAuthKey({ provider: descriptor.id, instance: descriptor.instances.defaultInstance })]?.hasChecked === true
+  )));
   // Change requests come from GitHub or GitLab, whichever the project lives on,
   // so the surface is there when either kind of account is connected.
   const sourceControlConnected = useSourceControlAuthStore((state) => Object.values(state.entries)
     .some((entry) => entry.status?.status === 'connected'));
-  const repositoryProvider = useRepositoryReferenceProvider(directoryKey || null);
+  const repositoryProvider = useRepositoryHostProvider(directoryKey || null);
+  // Until the project's host is known the rail reads as the first provider, as it did before hosts were read.
+  const trackerDescriptor = useSourceControlProvider(repositoryProvider === 'none' ? null : repositoryProvider ?? providers[0]?.id);
+  const changeRequestTerm = repositoryProvider === 'none' ? 'pullRequest' : trackerDescriptor.terminology.changeRequest;
   const { screenWidth } = useDeviceInfo();
-  const gitStatus = useGitStatus(directoryKey || null);
+  // The Git badge counts what the Git panel shows: for a draft waiting for a new space, the space's changes;
+  // for a folder holding repositories, the repository picked in the panel. Same root as GitView, so the
+  // nested selection it stored is found under the same key.
+  const gitRoot = panelContentDirectory(useDraftSpaceTarget(), effectiveDirectory ?? null);
+  const gitDirectory = useEffectiveGitDirectory(gitRoot);
+  const gitStatus = useGitStatus(gitDirectory);
+  const { git } = useRuntimeAPIs();
+  const ensureGitStatus = useGitStore((state) => state.ensureStatus);
+  const fetchGitStatus = useGitStore((state) => state.fetchStatus);
+  // The chat keeps the root's status warm and fresh; a remembered nested repository has nobody
+  // reading it until its panel opens, so the badge reads it itself: once, and again on each
+  // refresh hint. Hints from agent tools carry the session directory, which is the root here.
+  React.useEffect(() => {
+    if (!git || !gitRoot || !gitDirectory || gitDirectory === gitRoot) return;
+    void runBackgroundNetworkTask(() => ensureGitStatus(gitDirectory, git));
+    const root = normalizePath(gitRoot);
+    const repository = normalizePath(gitDirectory);
+    return sessionEvents.onGitRefreshHint((hint) => {
+      const hinted = normalizePath(hint.directory);
+      if (hinted !== root && hinted !== repository) return;
+      void runBackgroundNetworkTask(() => fetchGitStatus(gitDirectory, git, { silent: true }));
+    });
+  }, [ensureGitStatus, fetchGitStatus, git, gitDirectory, gitRoot]);
 
   const surfaceSwitchPrefix = React.useMemo(
     () => getEffectiveShortcutPrefix('switch_context_surface', shortcutOverrides),
@@ -290,6 +342,7 @@ export const ContextPanelRail: React.FC = () => {
   const guestBadges = useGuestBadgeStore((state) => state.countByGuest);
   const clearGuestBadge = useGuestBadgeStore((state) => state.clearBadge);
   const tabs = panelState?.tabs ?? EMPTY_TABS;
+  const workflowsShown = useWorkflowsSurfaceShown(tabs, effectiveDirectory || null);
   // One surface per open zone is on screen; each lights its rail icon.
   const shownModes = React.useMemo(
     () => shownContextModes(panelState, contextSurfaceZones),
@@ -305,18 +358,20 @@ export const ContextPanelRail: React.FC = () => {
       screenWidth,
       tabs,
       sourceControlConnected,
+      workflowsShown,
       extras: guestSurfaces,
-    }).map((surface) => (surface.id === 'pr' && repositoryProvider === 'gitlab' ? { ...surface, icon: 'gitlab' as const } : surface));
-  }, [contextRailHiddenSurfaces, contextRailOrder, guestSurfaces, repositoryProvider, screenWidth, sourceControlConnected, tabs]);
+    }).map((surface) => (surface.id === 'pr' ? { ...surface, ...trackerRailIcon(repositoryProvider === 'none' ? null : trackerDescriptor) } : surface));
+  }, [contextRailHiddenSurfaces, contextRailOrder, guestSurfaces, repositoryProvider, screenWidth, sourceControlConnected, tabs, trackerDescriptor, workflowsShown]);
 
   // A surface whose integration disconnected closes rather than lingering as
   // an active panel with no rail icon.
+  const hasTrackerItems = tabs.some((tab) => tab.mode === 'pr' && tab.targetPath);
   React.useEffect(() => {
-    if (!directoryKey || !githubAuthChecked || sourceControlConnected || !shownModes.has('pr')) {
+    if (!directoryKey || !defaultInstanceAuthChecked || sourceControlConnected || hasTrackerItems || !shownModes.has('pr')) {
       return;
     }
     closeContextZone(directoryKey, zoneOfMode(contextSurfaceZones, 'pr'));
-  }, [closeContextZone, contextSurfaceZones, directoryKey, githubAuthChecked, shownModes, sourceControlConnected]);
+  }, [closeContextZone, contextSurfaceZones, directoryKey, defaultInstanceAuthChecked, hasTrackerItems, shownModes, sourceControlConnected]);
 
   const [isSurfacesDialogOpen, setIsSurfacesDialogOpen] = React.useState(false);
 
@@ -331,10 +386,10 @@ export const ContextPanelRail: React.FC = () => {
     zoneGestureRef.current?.cancel();
     zoneGestureRef.current = startZoneDragGesture({
       mode: surface.mode,
-      label: surface.label ?? t(changeRequestCopy(surface.labelKey, repositoryProvider)),
+      label: surface.label ?? t(changeRequestCopy(surface.labelKey, changeRequestTerm)),
       from: zoneOfMode(useUIStore.getState().contextSurfaceZones, surface.mode),
     }, (point) => point.x < railLeft - 16);
-  }, [repositoryProvider, surfaces, t]);
+  }, [changeRequestTerm, surfaces, t]);
   const handleDragCancel = React.useCallback(() => {
     zoneGestureRef.current?.cancel();
     zoneGestureRef.current = null;
@@ -376,7 +431,7 @@ export const ContextPanelRail: React.FC = () => {
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragCancel={handleDragCancel} onDragEnd={handleDragEnd}>
         <SortableContext items={surfaces.map((surface) => surface.id)} strategy={verticalListSortingStrategy}>
           {surfaces.map((surface, index) => {
-            const label = surface.label ?? t(changeRequestCopy(surface.labelKey, repositoryProvider));
+            const label = surface.label ?? t(changeRequestCopy(surface.labelKey, changeRequestTerm));
             // Git shows a numeric badge instead of the old activity dot.
             // Other surfaces never inherit git's changed-files signal.
             // The work-status panel reports the same count in words a few
@@ -396,7 +451,7 @@ export const ContextPanelRail: React.FC = () => {
                 isActive={shownModes.has(surface.mode)}
                 showActivityDot={false}
                 label={label}
-                description={t(changeRequestCopy(surface.descriptionKey, repositoryProvider))}
+                description={t(changeRequestCopy(surface.descriptionKey, changeRequestTerm))}
                 badgeCount={badgeCount}
                 badgeAriaLabel={badgeCount !== null
                   ? t(
@@ -433,7 +488,7 @@ export const ContextPanelRail: React.FC = () => {
             type="button"
             aria-label={t('contextRail.configure.open')}
             onClick={() => setIsSurfacesDialogOpen(true)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
           >
             <Icon name="equalizer-2" className="h-[18px] w-[18px]" />
           </button>

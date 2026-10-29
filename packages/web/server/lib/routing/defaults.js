@@ -42,9 +42,11 @@ export const ZEN_JEV_MODEL = 'jev-1.13-free';
 export const ZEN_CLIENT_ID = 'openchamber';
 
 /**
- * Whether the free promotion is still on. When OpenCode ends it, flip this and
- * the promotion stops being offered; users keep Jev through a Zen or TypeSafe
- * key, or lose the safety net and Auto until they add one.
+ * Whether the free promotion can be used. While false it is not offered; users
+ * keep Jev through a key, or lose the safety net and Auto until they add one.
+ *
+ * See DOCUMENTATION.md for the 2026-10-27 outage that turned it off for a
+ * few hours.
  */
 export const ZEN_JEV_PROMOTION_ACTIVE = true;
 
@@ -87,13 +89,18 @@ export const JEV_TIMEOUT_MS = 4000;
  * It does not let finished work raise a follow-up; a follow-up that only
  * looks cheap because it reuses a warm context is the router's concern, not
  * the classifier's.
+ *
+ * Sent as one string, a line per item. TypeSafe also accepts a list, but a
+ * self-hosted System One server may take only a string (Kev answers 400 to a
+ * list), and Auto then fell back on every send while Settings' Test passed
+ * (#4175).
  */
 export const ROUTING_INSTRUCTIONS = [
   'Pick the task category that best describes this coding request, judging the reasoning it demands rather than the length of the reply it asks for.',
   'A request that wants a one-line answer to a hard debugging or design question is still hard; a long but mechanical edit is still trivial.',
   'The thing to classify is `request`, the latest user message. Read `history` (earlier conversation, oldest first) only to understand what `request` refers to, then judge the reasoning `request` itself demands. Do not let the difficulty of work already done in `history` raise or lower the category.',
   'A bare approval such as "go", "yes", "approve", or "do it" authorises the work just described in history: classify it as the category that work demands, not as trivial.',
-];
+].join('\n');
 
 /**
  * Measured on 31 mixed bash/edit/mcp/webfetch permissions: this "should the agent

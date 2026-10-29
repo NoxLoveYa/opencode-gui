@@ -1,6 +1,7 @@
 import { matchesRankQuery } from '@/lib/search/fuzzySearch';
 import React from 'react';
 
+import { useEmojiPicker } from '@/components/emoji/useEmojiPicker';
 import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { KnowledgeCard } from './KnowledgeCard';
@@ -15,6 +16,62 @@ import { classifyMemory, memoryViewKey, type MemoryBadge } from '@/lib/agentMemo
 import { cn } from '@/lib/utils';
 import { selectProjectMemoryForPath, useAgentMemoryStore } from '@/stores/useAgentMemoryStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { startMemoryTidy } from './memoryTidy';
+
+/**
+ * Starts the tidy-up session. Offered only while both scopes are loaded for
+ * this project: a store that failed to load would reach the agent as empty,
+ * and it would tidy against half the data.
+ */
+const MemoryTidyButton: React.FC<{ projectPath: string | null }> = ({ projectPath }) => {
+  const { t } = useI18n();
+  const [starting, setStarting] = React.useState(false);
+  const ready = useAgentMemoryStore((state) => (
+    Boolean(projectPath)
+    && state.loaded
+    && !state.loading
+    && !state.globalFailed
+    && !state.projectFailed
+    && state.projectPath === projectPath
+    && state.global.length + state.project.length > 0
+  ));
+
+  const handleClick = async () => {
+    if (!projectPath || starting) return;
+    const { global, project } = useAgentMemoryStore.getState();
+    setStarting(true);
+    try {
+      const outcome = await startMemoryTidy({
+        projectPath,
+        title: t('rightSidebar.contextNotesTodo.memory.tidy.sessionTitle'),
+        memory: { global, project },
+      });
+      if (!outcome.ok) {
+        toast.error(t(outcome.reason === 'no-model'
+          ? 'rightSidebar.contextNotesTodo.memory.tidy.noModel'
+          : 'rightSidebar.contextNotesTodo.memory.tidy.failed'));
+      }
+    } catch {
+      toast.error(t('rightSidebar.contextNotesTodo.memory.tidy.failed'));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      disabled={!ready || starting}
+      onClick={() => void handleClick()}
+      className="ms-auto shrink-0 gap-1 border-[var(--status-info-border)] bg-[var(--status-info-background)] text-[var(--status-info)] hover:bg-[var(--status-info-background)] hover:text-[var(--status-info)]"
+    >
+      <Icon name={starting ? 'loader-4' : 'brush'} className={cn('size-3.5', starting && 'animate-spin')} />
+      {t('rightSidebar.contextNotesTodo.memory.tidy.action')}
+    </Button>
+  );
+};
 
 const MemoryBadgePill: React.FC<{ badge: MemoryBadge }> = ({ badge }) => {
   const { t } = useI18n();
@@ -141,6 +198,8 @@ const MemoryView: React.FC<{
     }
   }, [bodyDraft, entry.body, entry.title, titleDraft]);
 
+  const bodyRef = React.useRef<HTMLTextAreaElement>(null);
+  const emojiPicker = useEmojiPicker(bodyRef);
   const commitRef = React.useRef<() => void>(() => {});
   commitRef.current = () => {
     const title = titleDraft.trim();
@@ -193,6 +252,7 @@ const MemoryView: React.FC<{
           className="w-full flex-shrink-0 bg-transparent typography-ui-header font-semibold text-foreground outline-none focus-visible:outline-none"
         />
         <textarea
+          ref={bodyRef}
           value={bodyDraft}
           onChange={(event) => setBodyDraft(event.target.value.slice(0, AGENT_MEMORY_BODY_MAX_LENGTH))}
           onBlur={() => commitRef.current()}
@@ -200,6 +260,7 @@ const MemoryView: React.FC<{
           dir="auto"
           className="min-h-0 w-full flex-1 resize-none overflow-y-auto bg-transparent typography-ui-label leading-relaxed text-foreground outline-none focus-visible:outline-none"
         />
+        {emojiPicker}
       </div>
     </KnowledgeEntryView>
   );
@@ -348,23 +409,26 @@ export const MemorySection: React.FC<{
           not which view you are in, and the chip's pressed state says which one
           is selected far more plainly than a pill sitting on a matching
           background did. */}
-      <div role="group" aria-label={t('rightSidebar.contextNotesTodo.memory.scope.label')} className="flex items-center gap-1">
-        {scopeOptions.map((option) => (
-          <Button
-            key={option.id}
-            type="button"
-            variant="chip"
-            size="xs"
-            aria-pressed={scope === option.id}
-            className="!font-normal"
-            onClick={() => {
-              scopePickedRef.current = true;
-              setScope(option.id);
-            }}
-          >
-            {`${option.label} ${option.count}`}
-          </Button>
-        ))}
+      <div className="flex items-center gap-1">
+        <div role="group" aria-label={t('rightSidebar.contextNotesTodo.memory.scope.label')} className="flex items-center gap-1">
+          {scopeOptions.map((option) => (
+            <Button
+              key={option.id}
+              type="button"
+              variant="chip"
+              size="xs"
+              aria-pressed={scope === option.id}
+              className="!font-normal"
+              onClick={() => {
+                scopePickedRef.current = true;
+                setScope(option.id);
+              }}
+            >
+              {`${option.label} ${option.count}`}
+            </Button>
+          ))}
+        </div>
+        <MemoryTidyButton projectPath={projectPath} />
       </div>
 
       {scope === 'project' && !projectPath ? (

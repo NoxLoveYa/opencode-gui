@@ -47,7 +47,7 @@ import {
  * the last); Cmd/Ctrl+Enter submits from anywhere in the dock.
  *
  * Mounted once per composer, inside the shared floating frame, so it shares
- * the frame's clearance and hides behind BTW like the queue does. The BTW
+ * the frame's clearance and hides behind an expanded BTW. The BTW
  * sheet keeps the inline `FormCard` for its child session's forms.
  */
 
@@ -161,6 +161,14 @@ const FormDockPanel: React.FC<{ form: FormRequest; forms: FormRequest[] }> = ({ 
 
     const availableMaxHeight = useMobileAutocompleteMaxHeight(bodyRef, !collapsed, 320);
 
+    // The phone's keyboard rises after the answer box takes focus and shrinks
+    // the body under it, which leaves the box below the part still shown.
+    React.useLayoutEffect(() => {
+        const focused = document.activeElement;
+        if (!focused || !bodyRef.current?.contains(focused)) return;
+        focused.scrollIntoView({ block: 'nearest' });
+    }, [availableMaxHeight]);
+
     const updateValue = React.useCallback((key: string, patch: Partial<FormValues[string]>) => {
         setValues((previous) => ({ ...previous, [key]: { ...valueOf(previous, key), ...patch } }));
     }, []);
@@ -250,7 +258,7 @@ const FormDockPanel: React.FC<{ form: FormRequest; forms: FormRequest[] }> = ({ 
 
     const title = form.title?.trim() || t('chat.formCard.inputNeeded');
     const stepLabel = (field: FormField, index: number) => field.title?.trim() || t('chat.questionCard.questionFallback', { index: String(index + 1) });
-    const iconButtonClass = 'rounded p-1 text-muted-foreground/70 transition-colors hover:bg-interactive-hover/30 hover:text-foreground';
+    const iconButtonClass = 'rounded p-1 text-muted-foreground transition-colors hover:bg-interactive-hover/30 hover:text-foreground';
 
     return (
         <ComposerFloatingPanel

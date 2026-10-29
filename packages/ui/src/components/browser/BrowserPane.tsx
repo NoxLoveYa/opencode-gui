@@ -1,5 +1,6 @@
 import { isIMECompositionEvent } from '@/lib/ime';
 import React from 'react';
+import { z } from 'zod';
 
 import { toast } from '@/components/ui';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -43,7 +44,9 @@ import { Icon } from '@/components/icon/Icon';
 import {
   buildClickScript,
   buildInspectScript,
+  buildQuietScript,
   buildScrollScript,
+  buildSelectScript,
   buildSnapshotScript,
   buildTypeScript,
 } from '@/lib/browser/pageActions';
@@ -64,7 +67,13 @@ import { isStageShown, useWebviewFocusGuard, type HoldPageFocus } from './useWeb
 
 export type BrowserPaneProps = {
   initialUrl: string;
+  /** The folder whose panel holds the tab: its address is kept there, and a comment goes to its chat. */
   directory: string;
+  /**
+   * The folder the page is browsed for: the same folder, or the space a draft waiting for one
+   * shows. Its pages, history and dev servers are that folder's.
+   */
+  siteDirectory: string;
   tabID: string;
   /** The session whose agent opened this tab; null for the user's own tab. */
   ownerSessionId: string | null;
@@ -104,14 +113,21 @@ const BROWSER_PARTITION = 'persist:openchamber-browser';
  * The mark before the address of a space's tab while it shows a loopback page:
  * `localhost` there means the space, and the sidebar's container icon says so.
  */
-const addressMarkOf = (directory: string, address: string, label: string): { icon: 'box-3'; label: string } | undefined => (
-  spaceIdOfDirectory(directory) !== null && isLoopbackUrl(address) ? { icon: 'box-3', label } : undefined
+const addressMarkOf = (directory: string, address: string, label: string): { icon: 'instance'; label: string } | undefined => (
+  spaceIdOfDirectory(directory) !== null && isLoopbackUrl(address) ? { icon: 'instance', label } : undefined
 );
 
 const browserPartitionOf = (directory: string): string => {
   const spaceId = spaceIdOfDirectory(directory);
   return spaceId ? `openchamber-space-preview:${spaceId}` : BROWSER_PARTITION;
 };
+/** Sent by the desktop shell when a panel page asks for a new tab (`main.mjs`). */
+const BROWSER_OPEN_TAB_EVENT = 'openchamber:browser-panel-open-tab';
+const browserTabRequestSchema = z.object({
+  webContentsId: z.number(),
+  url: z.string().min(1),
+  background: z.boolean(),
+});
 /** Kept small: this rides along with every snapshot. */
 const CONSOLE_PROBLEM_LIMIT = 20;
 const GATEWAY_RETRY_DELAY_MS = 600;
@@ -125,6 +141,18 @@ const GATEWAY_RETRY_DELAY_MS = 600;
 const GATEWAY_WAIT_MS = 20_000;
 /** How long an agent action waits for a freshly mounted view to get a page. */
 const VIEW_READY_TIMEOUT_MS = 15_000;
+/** How long a page must stay unchanged to count as rendered after its load. */
+const PAGE_QUIET_MS = 500;
+/** Longest `browser.open` waits after the load for the page to stop changing. */
+const OPEN_QUIET_MAX_MS = 5_000;
+/**
+ * The load and quiet waits of an open together, unless the caller has less
+ * left. With the view's own wait (15 s) it stays inside the server's 45 s.
+ */
+const OPEN_SETTLE_BUDGET_MS = 30_000;
+/** Shorter for a capture: a page that keeps changing is shot as it is. */
+const CAPTURE_QUIET_MAX_MS = 3_000;
+const quietResultSchema = z.object({ quiet: z.boolean() });
 
 /**
  * Puts a stage where the compositor draws it but the user cannot see it, for a
@@ -148,7 +176,7 @@ const revealStageForCapture = (stage: HTMLElement | null): (() => void) => {
   return () => { stage.style.cssText = previousStyle; };
 };
 
-const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabID, ownerSessionId, visible }) => {
+const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory: tabsDirectory, siteDirectory: directory, tabID, ownerSessionId, visible }) => {
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
   const webviewRef = React.useRef<WebviewElement | null>(null);
@@ -201,7 +229,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
    * Set while the tab's first load comes from saved state rather than from
    * someone opening it now. That load is not waited out; the next one is.
    */
-  const tabDirectory = normalizeContextPanelDirectoryKey(directory);
+  const tabDirectory = normalizeContextPanelDirectoryKey(tabsDirectory);
   const restoredLoadRef = React.useRef(Boolean(startUrl) && !wasBrowserTabOpenedWithAddress(tabDirectory, tabID));
   const restoredSettleRef = React.useRef<BrowserNavStatus | null>(null);
   React.useEffect(() => {
@@ -213,9 +241,9 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
   const openedAtRef = React.useRef(Date.now());
 
   const persistUrl = React.useCallback((url: string) => {
-    if (!url || url === BLANK_URL || !directory || !tabID) return;
-    setContextPanelTabTargetPath(directory, tabID, url);
-  }, [directory, tabID, setContextPanelTabTargetPath]);
+    if (!url || url === BLANK_URL || !tabsDirectory || !tabID) return;
+    setContextPanelTabTargetPath(tabsDirectory, tabID, url);
+  }, [tabsDirectory, tabID, setContextPanelTabTargetPath]);
 
   const navigation = useWebviewNavigation(webviewElement, {
     initialUrl: startUrl,
@@ -241,7 +269,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
       .catch(() => { if (active) setTunnelFailedUrl(startUrl || 'http://localhost/'); });
     return () => { active = false; };
   }, [directory, startUrl]);
-  const attachAnnotation = useAnnotationAttach(directory);
+  const attachAnnotation = useAnnotationAttach(tabsDirectory);
   const overlayLabels = useAnnotationOverlayLabels();
   const isLoading = navigation.status.kind === 'loading';
 
@@ -425,6 +453,45 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
     }
   }, []);
 
+  /**
+   * Waits for a loaded page to stop changing (`buildQuietScript`). `false` when
+   * it was still changing at `maxMs`, or the script got no answer; the host
+   * timer covers a page whose own timers never fire.
+   */
+  const waitForQuiet = React.useCallback(async (webview: WebviewElement, maxMs: number): Promise<boolean> => {
+    const script = buildQuietScript({ quietMs: PAGE_QUIET_MS, maxMs });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hostLimit = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), maxMs + 1_000); });
+    try {
+      const result = quietResultSchema.safeParse(await Promise.race([webview.executeJavaScript(script, false), hostLimit]));
+      return result.success && result.data.quiet;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }, []);
+
+  /**
+   * How an opened page came out. Loaded is not yet rendered: an app swaps its
+   * splash for the real page only after its lazy chunks arrive. `settled:
+   * false` means the page is still fetching or still changing, not that
+   * opening failed: the agent can snapshot it and decide.
+   */
+  const settlePage = React.useCallback(async (webview: WebviewElement, budgetMs = OPEN_SETTLE_BUDGET_MS): Promise<{ title: string; settled: boolean }> => {
+    const startedAt = Date.now();
+    const loaded = await waitForIdle(Math.min(25_000, Math.max(0, budgetMs - OPEN_QUIET_MAX_MS)));
+    const left = budgetMs - (Date.now() - startedAt);
+    const settled = loaded && left > PAGE_QUIET_MS && await waitForQuiet(webview, Math.min(OPEN_QUIET_MAX_MS, left));
+    let title = '';
+    try {
+      title = webview.getTitle() || '';
+    } catch {
+      title = '';
+    }
+    return { title, settled };
+  }, [waitForIdle, waitForQuiet]);
+
   const performControlAction = React.useCallback(async (
     action: string,
     parameters: Record<string, unknown>,
@@ -473,7 +540,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
         });
         // Wait for a settled page first: a screenshot of a half-painted layout is
         // worse than none, because it looks like a finished one.
-        await waitForIdle();
+        if (await waitForIdle()) await waitForQuiet(webview, CAPTURE_QUIET_MAX_MS);
         const capture = await annotationHost.capturePage();
         if (!capture) throw new Error('The page could not be captured');
         let title = '';
@@ -505,22 +572,19 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
       applyViewportParameter();
       loadUrl(url);
       await new Promise((resolve) => setTimeout(resolve, 150));
-      const settled = await waitForIdle(25_000);
-      let title = '';
-      try {
-        title = webview.getTitle() || '';
-      } catch {
-        title = '';
-      }
-      // `settled: false` means the page is still fetching, not that opening
-      // failed — the agent can snapshot it and decide for itself.
       return {
         url: normalizeBrowserUrl(url),
-        title,
+        ...await settlePage(webview),
         opened: true,
-        settled,
         viewport: viewportSummary(viewportRef.current),
       };
+    }
+
+    // A tab an open without `tabId` just made: the view loads the page on its
+    // own, and the open's answer waits here for how it came out.
+    if (action === 'browser.settle') {
+      const budget = z.number().safeParse(parameters.budgetMs);
+      return settlePage(webview, budget.success ? budget.data : undefined);
     }
 
     await waitForIdle();
@@ -543,6 +607,12 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
             selector: String(parameters.selector ?? ''),
             value: String(parameters.value ?? ''),
             submit: parameters.submit === true,
+          });
+        case 'browser.select':
+          return buildSelectScript({
+            selector: String(parameters.selector ?? ''),
+            label: typeof parameters.label === 'string' ? parameters.label : undefined,
+            value: typeof parameters.value === 'string' ? parameters.value : undefined,
           });
         case 'browser.inspect':
           return buildInspectScript({ selector: String(parameters.selector ?? '') });
@@ -599,12 +669,12 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
     }
     // A click or a submit commonly starts a navigation; let it land so the
     // agent's next snapshot sees the page the action produced.
-    if (action === 'browser.click' || (action === 'browser.type' && parameters.submit === true)) {
+    if (action === 'browser.click' || action === 'browser.select' || (action === 'browser.type' && parameters.submit === true)) {
       await new Promise((resolve) => setTimeout(resolve, 150));
       await waitForIdle();
     }
     return result;
-  }, [annotationHost, loadUrl, waitForIdle, waitForView]);
+  }, [annotationHost, loadUrl, settlePage, waitForIdle, waitForQuiet, waitForView]);
 
   // The agent works this page while the user types elsewhere in the app.
   const guardAgentAction = useWebviewFocusGuard(webviewElement, stageRef);
@@ -738,17 +808,26 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
     };
   }, [directory, loadUrl, webviewElement]);
 
-  // Popups open in place; a detached window would escape the panel entirely.
+  // A link the page opens in a new tab (target=_blank, a modified click) gets a
+  // tab of its own beside this one; the desktop shell names the page it came from.
   React.useEffect(() => {
     if (!webviewElement) return;
-    const onNewWindow = (event: Event) => {
-      const detail = (event as CustomEvent<{ url?: string }>).detail;
-      event.preventDefault();
-      if (detail?.url) loadUrl(detail.url);
+    const onOpenTab = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return;
+      const request = browserTabRequestSchema.safeParse(event.detail);
+      if (!request.success) return;
+      let ownId = -1;
+      try {
+        ownId = webviewElement.getWebContentsId();
+      } catch {
+        return;
+      }
+      if (request.data.webContentsId !== ownId) return;
+      useUIStore.getState().openContextBrowser(tabDirectory, request.data.url, { reveal: !request.data.background });
     };
-    webviewElement.addEventListener('new-window', onNewWindow);
-    return () => webviewElement.removeEventListener('new-window', onNewWindow);
-  }, [loadUrl, webviewElement]);
+    window.addEventListener(BROWSER_OPEN_TAB_EVENT, onOpenTab);
+    return () => window.removeEventListener(BROWSER_OPEN_TAB_EVENT, onOpenTab);
+  }, [tabDirectory, webviewElement]);
 
   const applyZoom = React.useCallback((level: number) => {
     const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, level));
@@ -976,6 +1055,11 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
             src={initialSrc}
             partition={browserPartitionOf(directory)}
             allowpopups
+            // An agent's tab is mostly out of sight while the agent works it:
+            // a hidden page's timers would run about once a second, and the
+            // app took a minute to start in it. The user's own hidden tabs
+            // stay throttled. Read once, when the view attaches.
+            webpreferences={ownerSessionId !== null ? 'backgroundThrottling=no' : undefined}
             style={layout
               ? {
                 // Laid out at the chosen size and scaled visually: the page must
@@ -991,7 +1075,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
           />
         ) : null}
         {initialSrc !== null && !startUrl && !navigation.url && !isLoading ? (
-          <BrowserEmptyState onOpen={loadUrlFromUser} directory={directory} />
+          <BrowserEmptyState onOpen={loadUrlFromUser} directory={directory} visible={visible} />
         ) : null}
         {isWaitingForServer ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background p-6 text-center">
@@ -1002,7 +1086,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
         {tunnelFailedUrl ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background p-6 text-center">
             {spaceIdOfDirectory(directory) !== null ? (
-              <Icon name="box-3" className="size-8 text-muted-foreground opacity-70" aria-hidden="true" />
+              <Icon name="instance" className="size-8 text-muted-foreground opacity-70" aria-hidden="true" />
             ) : null}
             <span className="typography-ui-header text-foreground">{t('contextPanel.browser.tunnelFailed')}</span>
             <span className="typography-micro text-muted-foreground">
@@ -1026,7 +1110,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
         ) : null}
         {isLoading ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 h-0.5 overflow-hidden">
-            <div className="h-full w-1/3 animate-[browser-progress_1.1s_ease-in-out_infinite] bg-[var(--primary)]" />
+            <div className="h-full w-1/3 bg-[var(--primary)]" />
           </div>
         ) : null}
       </div>
@@ -1039,7 +1123,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
  * opaque to us here: no navigation events, no annotation, no console. The
  * toolbar reflects that instead of offering controls that would silently fail.
  */
-const IframeBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabID }) => {
+const IframeBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory: tabsDirectory, siteDirectory: directory, tabID, visible }) => {
   const { t } = useI18n();
   const setContextPanelTabTargetPath = useUIStore((state) => state.setContextPanelTabTargetPath);
   const normalized = normalizeBrowserUrl(initialUrl);
@@ -1056,13 +1140,13 @@ const IframeBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabI
   // Nothing here waits for a dev server, so a tab opened with an address only
   // needs the mark dropped, keeping the session-only set from growing.
   React.useEffect(() => {
-    forgetBrowserTabOpenedWithAddress(normalizeContextPanelDirectoryKey(directory), tabID);
-  }, [directory, tabID]);
+    forgetBrowserTabOpenedWithAddress(normalizeContextPanelDirectoryKey(tabsDirectory), tabID);
+  }, [tabsDirectory, tabID]);
 
   const persistUrl = React.useCallback((url: string) => {
-    if (!url || url === BLANK_URL || !directory || !tabID) return;
-    setContextPanelTabTargetPath(directory, tabID, url);
-  }, [directory, tabID, setContextPanelTabTargetPath]);
+    if (!url || url === BLANK_URL || !tabsDirectory || !tabID) return;
+    setContextPanelTabTargetPath(tabsDirectory, tabID, url);
+  }, [tabsDirectory, tabID, setContextPanelTabTargetPath]);
 
   const visitedAddresses = useBrowserHistoryStore(selectBrowserHistory(directory));
   const recordHistoryVisit = useBrowserHistoryStore((state) => state.recordVisit);
@@ -1127,7 +1211,7 @@ const IframeBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabI
         {unreachableUrl ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background p-6 text-center">
             {insideSpace ? (
-              <Icon name="box-3" className="size-8 text-muted-foreground opacity-70" aria-hidden="true" />
+              <Icon name="instance" className="size-8 text-muted-foreground opacity-70" aria-hidden="true" />
             ) : null}
             <span className="typography-ui-header text-foreground">
               {t(insideSpace ? 'contextPanel.browser.spaceLoopback.title' : 'contextPanel.browser.remoteLoopback.title', { url: browserUrlLabel(unreachableUrl) })}
@@ -1145,7 +1229,7 @@ const IframeBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tabI
             sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
           />
         ) : (
-          <BrowserEmptyState onOpen={navigate} directory={directory} />
+          <BrowserEmptyState onOpen={navigate} directory={directory} visible={visible} />
         )}
       </div>
     </div>

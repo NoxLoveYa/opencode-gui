@@ -2,7 +2,7 @@ import { Readable } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
 
-import { LOGIN_PROVIDERS, WINDOW_PLACEHOLDER_KEY, archivedChatOf, buildLoginRow, buildProviderConfig, createSpaceOpenCode, loginEndOf, loginEnded, loginGrantOf, spaceLoginCredentialId } from './space-opencode.js';
+import { LOGIN_PROVIDERS, WINDOW_PLACEHOLDER_KEY, archivedChatOf, buildLoginRow, buildProviderConfig, buildStartConfig, createSpaceOpenCode, isStartConfig, loginEndOf, loginEnded, loginGrantOf, spaceLoginCredentialId } from './space-opencode.js';
 
 const ID = 'a1b2c3d4e5f6';
 const GRANTS = [
@@ -27,13 +27,13 @@ describe('the provider configuration inside a space', () => {
     expect(JSON.stringify(buildProviderConfig(GRANTS))).not.toContain('api.anthropic.com');
   });
 
-  it('writes the whole file over exec, as JSON on stdin, through a temporary name', async () => {
+  it('writes the whole file over exec, as JSON on stdin, through a temporary name, beside the project and not in the home directory', async () => {
     const calls = [];
     const opencode = createSpaceOpenCode({ exec: async (spaceId, argv, options) => { calls.push({ spaceId, argv, options }); return { code: 0, stdout: '', stderr: '' }; } });
     await opencode.writeProviderConfig(ID, GRANTS);
     expect(calls).toEqual([{
       spaceId: ID,
-      argv: ['/bin/sh', '-c', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; mkdir -p /home/space/.config/opencode && cat > /home/space/.config/opencode/opencode.json.new && mv /home/space/.config/opencode/opencode.json.new /home/space/.config/opencode/opencode.json'],
+      argv: ['/bin/sh', '-c', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; mkdir -p /spaces/a1b2c3d4e5f6/.opencode && cat > /spaces/a1b2c3d4e5f6/.opencode/opencode.json.new && mv /spaces/a1b2c3d4e5f6/.opencode/opencode.json.new /spaces/a1b2c3d4e5f6/.opencode/opencode.json && rm -f /home/space/.config/opencode/opencode.json'],
       options: { stdin: `${JSON.stringify(buildProviderConfig(GRANTS), null, 2)}\n` },
     }]);
   });
@@ -43,6 +43,19 @@ describe('the provider configuration inside a space', () => {
     await expect(opencode.writeProviderConfig(ID, GRANTS)).rejects.toMatchObject({ code: 'space_setup_failed', message: expect.stringContaining('Read-only file system') });
   });
 
+  it('writes a custom provider as the host defines it, at the window, and leaves one the host cannot say now out', () => {
+    const ollama = { kind: 'custom', id: 'ollama-local', provider: 'ollama-local' };
+    const definitions = new Map([['ollama-local', { name: 'Ollama (local)', package: 'aisdk:@ai-sdk/openai-compatible', baseURL: 'http://localhost:11434/v1', headers: {}, models: { 'qwen3:8b': { modelID: 'qwen3:8b', name: 'Qwen3 8B' } }, key: null }]]);
+    expect(buildProviderConfig([GRANTS[0], ollama], definitions)).toEqual({
+      $schema: 'https://opencode.ai/config.json',
+      provider: { anthropic: { options: { baseURL: 'http://gatekeeper:8080/model/anthropic', apiKey: WINDOW_PLACEHOLDER_KEY } } },
+      providers: { 'ollama-local': { name: 'Ollama (local)', package: 'aisdk:@ai-sdk/openai-compatible', settings: { baseURL: 'http://gatekeeper:8080/model/ollama-local', apiKey: WINDOW_PLACEHOLDER_KEY }, models: { 'qwen3:8b': { modelID: 'qwen3:8b', name: 'Qwen3 8B' } } } },
+    });
+    // The host's address stays on the host; the space sees the window and nothing behind it.
+    expect(JSON.stringify(buildProviderConfig([ollama], definitions))).not.toContain('11434');
+    expect(buildProviderConfig([ollama])).toEqual({ $schema: 'https://opencode.ai/config.json', provider: {} });
+  });
+
   it('points a provider with a login grant at the window over HTTP, with no placeholder key', () => {
     expect(buildProviderConfig([{ kind: 'login', id: 'openai', provider: 'openai', method: 'chatgpt-browser' }]).provider).toEqual({
       openai: { options: { baseURL: 'http://gatekeeper:8080/model/openai', transport: 'http' } },
@@ -50,6 +63,21 @@ describe('the provider configuration inside a space', () => {
     // Copilot's plugin reads its address from the row, so the configuration says nothing of it.
     expect(buildProviderConfig([{ kind: 'login', id: 'github-copilot', provider: 'github-copilot', method: 'device' }]).provider).toEqual({});
     expect(buildProviderConfig([{ kind: 'login', id: 'openai', provider: 'openai', method: 'some-new-method' }]).provider).toEqual({});
+  });
+});
+
+describe('OpenCode\'s start configuration', () => {
+  it('carries the window and the placeholder key of each custom provider, and nothing of the host\'s definition', () => {
+    const text = buildStartConfig(['ollama-local', 'lighthouse']);
+    expect(JSON.parse(text)).toEqual({ providers: {
+      'ollama-local': { settings: { baseURL: 'http://gatekeeper:8080/model/ollama-local', apiKey: WINDOW_PLACEHOLDER_KEY } },
+      lighthouse: { settings: { baseURL: 'http://gatekeeper:8080/model/lighthouse', apiKey: WINDOW_PLACEHOLDER_KEY } },
+    } });
+    expect(isStartConfig(text)).toBe(true);
+  });
+
+  it('is none without a custom provider', () => {
+    expect(buildStartConfig([])).toBeNull();
   });
 });
 

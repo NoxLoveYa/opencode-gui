@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client"
 import type { SyncEvent } from "@/lib/opencode/events"
+import type { JsonValue } from "@/lib/opencode/model"
 import { adoptRelayTunnel, deactivateRelayTunnel } from "@/lib/relay/runtime-tunnel"
 import type { RelayTunnelClient, RelayTunnelWebSocket } from "@/lib/relay/tunnel-client"
 import { clearRuntimeUrlAuthToken, setRuntimeUrlAuthToken } from "@/lib/runtime-auth"
@@ -34,7 +35,7 @@ function statusEvent(type: "busy" | "retry"): OpenCodeEvent {
 }
 
 /** A raw stream payload: wire events, or OpenChamber's own bridge events. */
-type StreamPayload = OpenCodeEvent | { type: string; properties: Record<string, string> }
+type StreamPayload = OpenCodeEvent | { type: string; properties: Record<string, JsonValue> }
 
 /** `keepalives` counts SSE comments sent before the events. They are activity without an event. */
 function createSdk(events: StreamPayload[], streamFinished: () => void, keepalives = 0): OpenCodeClient {
@@ -147,6 +148,34 @@ describe("createEventPipeline", () => {
     expect(events[0]).toEqual({ type: "session.status", properties: { sessionID: "ses_1", status: { type: "idle" } } })
   })
 
+  // Regression (#5259): the host's start reaches a client whose clock is off.
+  test("bridges the host's turn start onto this device's clock", async () => {
+    const hostNow = Date.now() + 3_600_000
+    const before = Date.now()
+    const { events } = await collect(
+      [{ type: "openchamber:session-status", properties: { sessionID: "ses_1", status: "busy", timestamp: hostNow, turnStartedAt: hostNow - 1_200_000 } as never }],
+      1,
+    )
+    const event = events[0]
+    if (event.type !== "session.status") throw new Error("expected a status event")
+    expect(event.properties.turnStart?.source).toBe("host")
+    expect(event.properties.turnStart?.at).toBeGreaterThanOrEqual(before - 1_200_000)
+    expect(event.properties.turnStart?.at).toBeLessThanOrEqual(Date.now() - 1_200_000)
+  })
+
+  test("keeps the start of a turn that began in the same flush as its next step", async () => {
+    const { events } = await collect(
+      [
+        { ...base, type: "session.execution.started", data: { sessionID: "ses_1" } } as OpenCodeEvent,
+        statusEvent("busy"),
+      ],
+      1,
+    )
+    expect(events).toHaveLength(1)
+    const event = events[0]
+    expect(event.type === "session.status" && event.properties.turnStart?.source).toBe("live")
+  })
+
   test("bridges openchamber archive announcements into session patches", async () => {
     const { events } = await collect(
       [{ type: "openchamber:session-archived", properties: { sessionID: "ses_1", archivedAt: 42 } as never }],
@@ -173,6 +202,48 @@ describe("createEventPipeline", () => {
     )
     expect(events[0]).toEqual({ type: "openchamber.notification", properties: { kind: "agent-complete", sessionId: "ses_1", title: "Done" } })
     expect(events[1]).toEqual({ type: "openchamber.permission-auto-accept", properties: { sessions: { ses_1: true }, modes: { ses_1: "safety" }, revision: 3 } })
+  })
+
+  test("passes the server's waiting-page announcements through typed", async () => {
+    const { events } = await collect(
+      [
+        { type: "openchamber:page-waiting", properties: { sessionID: "ses_1", directory: "/repo", page: { id: "call_1", title: "Pick a layout" } } as never },
+        { type: "openchamber:page-settled", properties: { sessionID: "ses_1", pageID: "call_1" } },
+      ],
+      2,
+    )
+    expect(events[0]).toEqual({ type: "openchamber.page-waiting", properties: { sessionID: "ses_1", directory: "/repo", page: { id: "call_1", title: "Pick a layout" } } })
+    expect(events[1]).toEqual({ type: "openchamber.page-settled", properties: { sessionID: "ses_1", pageID: "call_1" } })
+  })
+
+  test("passes the server's recap wait announcements through typed", async () => {
+    const { events } = await collect(
+      [
+        { type: "openchamber:session-assist", properties: { sessionID: "ses_1", directory: "/chat", pending: true } },
+        { type: "openchamber:session-assist", properties: { sessionID: "ses_1", directory: null, pending: false } },
+      ],
+      2,
+    )
+    expect(events[0]).toEqual({ type: "openchamber.session-assist", properties: { sessionID: "ses_1", directory: "/chat", pending: true } })
+    expect(events[1]).toEqual({ type: "openchamber.session-assist", properties: { sessionID: "ses_1", directory: null, pending: false } })
+  })
+
+  test("passes the server's workflow run changes through typed, and drops a malformed one", async () => {
+    const run = {
+      id: "wf_one", parentSessionId: "ses_1", directory: "/repo", name: "audit-routes", description: "Audit every route",
+      state: "running", attempt: 1, createdAt: 1, currentPhase: "Audit", phases: ["Audit"],
+      agents: [{ key: "k-1", label: "audit a", phase: "Audit", state: "running", sessionId: "ses_agent" }], logs: [],
+    }
+    const { events } = await collect(
+      [
+        { type: "openchamber:workflow-run", properties: { run: { ...run, state: "exploded" } } },
+        { type: "openchamber:workflow-run", properties: { run } },
+        { type: "openchamber:workflow-run-removed", properties: { runId: "wf_one", parentSessionId: "ses_1" } },
+      ],
+      2,
+    )
+    expect(events[0]).toEqual({ type: "openchamber.workflow-run", properties: { run } })
+    expect(events[1]).toEqual({ type: "openchamber.workflow-run-removed", properties: { runId: "wf_one", parentSessionId: "ses_1" } })
   })
 
   test("ignores payloads that are neither wire events nor bridge events", async () => {
@@ -415,6 +486,7 @@ describe("createEventPipeline over the WebSocket transport", () => {
       },
       getStatus: () => ({ state: "connected" }),
       subscribeStatus: () => () => undefined,
+      retry: () => undefined,
       close: () => undefined,
     }
     adoptRelayTunnel({ relayUrl: "wss://relay.test", serverId: "fixture", hostEncPubJwk: {} }, tunnel)
@@ -453,6 +525,19 @@ describe("classifyStreamPayload", () => {
       .toEqual({ kind: "space-setup", spaceId: "0123456789ab" })
     expect(classifyStreamPayload({ type: "openchamber:space-setup", properties: { spaceId: "bad" } }, undefined))
       .toEqual({ kind: "events", events: [] })
+    expect(classifyStreamPayload({ type: "openchamber:space-permission-stream", properties: { spaceId: "0123456789ab", status: "connected" } }, undefined))
+      .toEqual({ kind: "space-permission-stream", spaceId: "0123456789ab" })
+    expect(classifyStreamPayload({ type: "openchamber:space-permission-stream", properties: { spaceId: "bad", status: "connected" } }, undefined))
+      .toEqual({ kind: "events", events: [] })
+    // A space's policy and a request it left for the user keep the space's id for their owner.
+    expect(classifyStreamPayload({
+      type: "openchamber:permission-auto-accept.updated",
+      properties: { sessions: { ses_1: true }, modes: { ses_1: "auto" }, revision: 2, spaceId: "0123456789ab" },
+    }, undefined)).toMatchObject({ kind: "events", events: [{ event: { type: "openchamber.permission-auto-accept", properties: { spaceId: "0123456789ab" } } }] })
+    expect(classifyStreamPayload({
+      type: "openchamber:permission-auto-accept.left-for-user",
+      properties: { permissionId: "per_1", sessionId: "ses_1", directory: null, spaceId: "0123456789ab" },
+    }, undefined)).toMatchObject({ kind: "events", events: [{ event: { type: "openchamber.permission-left-for-user", properties: { spaceId: "0123456789ab" } } }] })
     expect(classifyStreamPayload({ type: "openchamber:session-archived", properties: { sessionID: "ses_1", archivedAt: 5 } }, "/frame"))
       .toMatchObject({ kind: "events", events: [{ directory: "/frame", event: { type: "session.patched" } }] })
     expect(classifyStreamPayload({ nothing: true }, undefined)).toEqual({ kind: "events", events: [] })

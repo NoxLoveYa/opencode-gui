@@ -300,3 +300,15 @@ describe('VS Code v2 migration bridge', () => {
     await expect(handleSystemBridgeMessage({ id: 'failed', type: 'api:opencode/install-v2' }, { manager }, deps)).rejects.toThrow('Installation failed');
   });
 });
+
+describe('VS Code system bridge api:sessions/metadata:set', () => {
+  const manager = { getApiUrl: () => 'http://127.0.0.1:9', getOpenCodeAuthHeaders: () => ({}) };
+  const failingWith = (error) => ({ ...deps, sessionState: { setMetadata: async () => { throw error; } } });
+  const message = { id: 'meta', type: 'api:sessions/metadata:set', payload: { sessionId: 'ses_a', patch: { openchamber: { work: { state: 'done' } } } } };
+
+  test('reports a failed write', async () => {
+    const response = await handleSystemBridgeMessage(message, { manager }, failingWith(new Error('OpenCode is down')));
+
+    expect(response).toEqual({ id: 'meta', type: 'api:sessions/metadata:set', success: false, error: 'OpenCode is down' });
+  });
+});

@@ -8,8 +8,9 @@
  * effect.
  *
  * With content, the inner end slot sends while the session is idle. While it
- * is running, abort keeps that slot and a queue action appears just before it,
- * inside the pill.
+ * is running, abort keeps that slot and a follow-up action appears just before
+ * it, inside the pill: it queues or steers as Enter does under the follow-up
+ * setting.
  */
 
 import React, { useState } from 'react';
@@ -20,9 +21,10 @@ import { StopIcon } from '@/components/icons/StopIcon';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useMessageQueueStore } from '@/stores/messageQueueStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isDictationCaptureSupported } from '@/lib/dictation/use-dictation-audio-source';
-import { ComposerAttachmentControls } from './ComposerAttachmentControls';
+import { ComposerAttachmentControls, type ComposerTrackerPicker } from './ComposerAttachmentControls';
 
 export interface MobilePillComposerProps {
     message: string;
@@ -43,14 +45,11 @@ export interface MobilePillComposerProps {
     bottomRow?: React.ReactNode;
     onExpand: () => void;
     onPrimaryAction: () => void;
-    /** While a turn runs, the trailing action queues, as the expanded composer does. */
-    onQueueMessage: () => void;
     onPickLocalFiles: () => void;
     onOpenGitHubPicker: () => void;
     /** The host the project's issues and change requests come from. */
-    repositoryProvider?: SourceControlProvider;
-    showLinearPicker?: boolean;
-    onOpenLinearPicker?: () => void;
+    repositoryProvider?: SourceControlProvider | null;
+    trackerPickers?: readonly ComposerTrackerPicker[];
     onOpenAttachSheet: () => void;
     onStartDictation: () => void;
     onAbort: () => void;
@@ -74,29 +73,27 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
         bottomRow,
         onExpand,
         onPrimaryAction,
-        onQueueMessage,
         onPickLocalFiles,
         onOpenGitHubPicker,
         repositoryProvider,
-        showLinearPicker,
-        onOpenLinearPicker,
+        trackerPickers,
         onOpenAttachSheet,
         onStartDictation,
         onAbort,
     } = props;
     const canPrimaryAction = hasContent && Boolean(currentSessionId || newSessionDraftOpen);
-    const showQueueAction = canPrimaryAction && canAbort;
+    const showFollowUpAction = canPrimaryAction && canAbort;
+    const queuesFollowUp = useMessageQueueStore((state) => state.followUpBehavior) === 'queue';
+    const followUpLabel = t(queuesFollowUp ? 'chat.chatInput.actions.queueMessageAria' : 'chat.chatInput.actions.sendMessageAria');
     const dictationEnabled = useConfigStore((state) => state.dictationEnabled);
     const [dictationSupported] = useState(() => !isVSCodeRuntime() && isDictationCaptureSupported());
     const showDictation = dictationEnabled && dictationSupported;
 
     return (
         <div className="flex flex-col">
-            {/* Shadow on the wrapper: the wrapper hugs the box, so the shadow
-                follows the morph's height tween. */}
             <div
                 className={cn(
-                    'flex min-w-0 flex-col shadow-[0_4px_16px_-4px_rgb(0_0_0_/_0.12)]',
+                    'flex min-w-0 flex-col',
                     topRow || bottomRow ? 'rounded-[1.5rem]' : 'rounded-full',
                 )}
             >
@@ -105,7 +102,9 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
                 // The morph measures and animates this box (see mobileComposerMorph).
                 data-composer-box="true"
                 className={cn(
-                    'oc-surface-floating flex min-w-0 flex-col border border-border/80',
+                    // Lit like the desktop composer box: top edge, hairline,
+                    // shadow and, in dark themes, the faint sheen.
+                    'oc-surface-floating oc-glass-floating oc-composer-sheen flex min-w-0 flex-col',
                     topRow || bottomRow ? 'rounded-[1.5rem]' : 'rounded-full',
                 )}
             >
@@ -123,8 +122,7 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
                     handlePickLocalFiles={onPickLocalFiles}
                     openGitHubPicker={onOpenGitHubPicker}
                     repositoryProvider={repositoryProvider}
-                    showLinearPicker={showLinearPicker}
-                    openLinearPicker={onOpenLinearPicker}
+                    trackerPickers={trackerPickers}
                     onOpenMobileSheet={onOpenAttachSheet}
                 />
                 <button
@@ -160,17 +158,17 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
                         <Icon name="mic" className={cn(iconSizeClass, 'text-current')} />
                     </button>
                 ) : null}
-                {/* While a turn runs, a draft can only be queued: the same
-                    rotated icon and label the expanded composer uses. */}
-                {showQueueAction ? (
+                {/* While a turn runs, a draft queues or steers as the setting
+                    says: the same icon and label the expanded composer uses. */}
+                {showFollowUpAction ? (
                     <button
                         type="button"
                         className={cn(footerIconButtonClass, 'text-primary hover:text-primary')}
-                        onClick={onQueueMessage}
-                        title={t('chat.chatInput.actions.queueMessageAria')}
-                        aria-label={t('chat.chatInput.actions.queueMessageAria')}
+                        onClick={onPrimaryAction}
+                        title={followUpLabel}
+                        aria-label={followUpLabel}
                     >
-                        <Icon name="send-plane-2" className={cn(sendIconSizeClass, '-rotate-90 rtl:rotate-90')} />
+                        <Icon name="send-plane-2" className={cn(sendIconSizeClass, queuesFollowUp && '-rotate-90 rtl:rotate-90')} />
                     </button>
                 ) : null}
                 {/* Same visibility rule as the full composer's stop control:

@@ -29,6 +29,8 @@ import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 
 import { AddCatalogDialog } from './AddCatalogDialog';
 import { InstallSkillDialog } from './InstallSkillDialog';
+import { SkillsCatalogRows } from './SkillsCatalogRows';
+import { skillCatalogUrl } from './skillCatalogUrl';
 
 type SkillsMode = 'manual' | 'external';
 
@@ -37,25 +39,6 @@ interface SkillsCatalogPageProps {
   onModeChange: (mode: SkillsMode) => void;
   showModeTabs?: boolean;
 }
-
-const GITHUB_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-
-const getRepoUrl = (source: string): string | null => {
-  const trimmed = source.trim();
-  if (!GITHUB_REPO_PATTERN.test(trimmed)) {
-    return null;
-  }
-  return `https://github.com/${trimmed}`;
-};
-
-const getSkillUrl = (item: SkillsCatalogItem): string | null => {
-  const repoUrl = getRepoUrl(item.repoSource);
-  if (!repoUrl) {
-    return null;
-  }
-  const skillPath = [item.repoSubpath, item.skillDir].filter(Boolean).join('/');
-  return skillPath ? `${repoUrl}/tree/HEAD/${skillPath}` : repoUrl;
-};
 
 let cachedStarsFormatter: { locale: string; formatter: Intl.NumberFormat } | null = null;
 
@@ -120,11 +103,11 @@ const SourceCard: React.FC<{
       onClick={onSelect}
       aria-pressed={isActive}
       className={cn(
-        'oc-surface-elevated w-full min-h-24 text-start rounded-lg border bg-surface-elevated p-3.5 flex gap-3 items-start transition-colors',
+        'oc-tile w-full min-h-24 text-start rounded-lg p-3.5 flex gap-3 items-start',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         isActive
-          ? 'border-border bg-interactive-selection text-interactive-selection-foreground'
-          : 'border-border hover:border-interactive-border-hover'
+          ? 'bg-interactive-selection text-interactive-selection-foreground'
+          : 'oc-tile-hover'
       )}
     >
       <span className="min-w-0 flex-1 block">
@@ -473,7 +456,7 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
                 setEditingCatalogId(null);
                 setCatalogDialogOpen(true);
               }}
-              className="min-h-24 text-start rounded-lg border border-dashed border-[var(--interactive-border)] hover:border-[var(--interactive-border-hover)] hover:bg-[var(--surface-muted)] p-3.5 flex gap-3 items-start transition-colors"
+              className="min-h-24 text-start rounded-lg border border-dashed border-[color-mix(in_srgb,var(--foreground)_14%,transparent)] oc-tile-hover p-3.5 flex gap-3 items-start transition-colors"
             >
               <span className="flex items-center justify-center rounded-md bg-transparent text-muted-foreground w-8 h-8 shrink-0">
                 <Icon name="add" className="h-4 w-4" />
@@ -482,7 +465,7 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
                 <span className="typography-ui-label text-muted-foreground block">
                   {t('settings.skills.catalog.page.source.addOwnTitle')}
                 </span>
-                <span className="typography-micro text-muted-foreground/70 block mt-0.5">
+                <span className="typography-micro text-muted-foreground block mt-0.5">
                   {t('settings.skills.catalog.page.source.addOwnDescription')}
                 </span>
               </span>
@@ -492,7 +475,7 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
 
         {lastCatalogError && (
           <SettingsSection>
-            <div className="rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] px-4 py-3">
+            <div className="rounded-lg bg-[var(--status-error-background)] px-4 py-3">
               <div className="typography-ui-label font-medium text-[var(--status-error)]">{t('settings.skills.catalog.page.error.catalogTitle')}</div>
               <div className="typography-meta text-[var(--status-error)]/80 mt-1">{lastCatalogError.message}</div>
               {lastCatalogError.kind === 'authRequired' && isCustomSource && (
@@ -518,7 +501,7 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
               <span className="typography-micro font-medium uppercase tracking-wide text-muted-foreground truncate">
                 {listTitle}
               </span>
-              <span className="typography-micro text-muted-foreground/70 shrink-0">
+              <span className="typography-micro text-muted-foreground shrink-0">
                 {t('settings.skills.catalog.page.foundCount', { count: filtered.length })}
               </span>
             </div>
@@ -609,18 +592,20 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
               </div>
             ) : filtered.length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">
-                <p className="typography-body">{t('settings.skills.catalog.page.empty.noSkillsTitle')}</p>
+                <p className="typography-ui-label">{t('settings.skills.catalog.page.empty.noSkillsTitle')}</p>
                 <p className="typography-meta mt-1 opacity-75">{t('settings.skills.catalog.page.empty.noSkillsDescription')}</p>
               </div>
             ) : (
-              <div className="divide-y divide-[var(--surface-subtle)]">
-                {filtered.map((item) => {
+              <SkillsCatalogRows
+                items={filtered}
+                itemKey={itemKey}
+                renderRow={(item) => {
                   const installed = item.installed?.isInstalled;
                   const installedScope = item.installed?.scope;
-                  const skillUrl = getSkillUrl(item);
+                  const skillUrl = skillCatalogUrl(item);
 
                   return (
-                    <div key={`${item.sourceId}:${item.skillDir}`} className="py-2">
+                    <div className="py-2">
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -646,10 +631,10 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
                           {item.description ? (
                             <div className="typography-meta text-muted-foreground mt-0.5 line-clamp-2">{item.description}</div>
                           ) : (
-                            <div className="typography-meta text-muted-foreground/50 mt-0.5 italic">{t('settings.skills.catalog.shared.noDescription')}</div>
+                            <div className="typography-meta text-muted-foreground mt-0.5 italic">{t('settings.skills.catalog.shared.noDescription')}</div>
                           )}
 
-                          <div className="typography-micro text-muted-foreground/80 mt-1 flex items-center gap-2 min-w-0">
+                          <div className="typography-micro text-muted-foreground mt-1 flex items-center gap-2 min-w-0">
                             {skillUrl ? (
                               <a
                                 href={skillUrl}
@@ -718,8 +703,8 @@ export const SkillsCatalogPage: React.FC<SkillsCatalogPageProps> = ({ mode, onMo
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                }}
+              />
             )}
         </SettingsSection>
       </SettingsPageLayout>

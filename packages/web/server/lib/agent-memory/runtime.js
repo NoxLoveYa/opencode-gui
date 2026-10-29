@@ -76,6 +76,16 @@ const DUPLICATE_OVERLAP_THRESHOLD = 0.75;
 const DUPLICATE_MIN_TOKENS = 4;
 
 /**
+ * A new entry sharing this much wording with a stored one is reported back as
+ * related. A reversed decision ("unit tests moved from bun to vitest") is
+ * phrased too differently to count as a duplicate, so without the report it
+ * lands beside the entry it contradicts. Set low on purpose: a false match
+ * costs the agent one line to ignore, and the agent decides what replaces what.
+ */
+const RELATED_OVERLAP_THRESHOLD = 0.4;
+const RELATED_LIMIT = 3;
+
+/**
  * Words carried by almost every sentence, so their overlap says nothing about
  * whether two memories mean the same thing.
  */
@@ -132,6 +142,18 @@ const findSupersededEntry = (entries, title, body) => {
     }
   }
   return best;
+};
+
+/** Stored entries close enough in wording that a new one may reverse them, closest first. */
+const findRelatedEntries = (entries, title, body) => {
+  const incoming = tokenize(`${title} ${body}`);
+  if (incoming.size < DUPLICATE_MIN_TOKENS) return [];
+  return entries
+    .map((entry) => ({ entry, score: overlapFraction(incoming, tokenize(`${entry.title} ${entry.body}`)) }))
+    .filter(({ score }) => score >= RELATED_OVERLAP_THRESHOLD)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, RELATED_LIMIT)
+    .map(({ entry }) => entry);
 };
 
 const clampLength = (value, maxLength) => {
@@ -346,8 +368,8 @@ export const createAgentMemoryRuntime = (deps) => {
         const titles = current.entries.map((entry) => `- ${entry.title}`).join('\n');
         throw new Error(
           `${resolved.scope} memory is full (${current.entries.length}/${limit} entries). `
-          + 'Consolidate before saving anything else: merge overlapping entries by saving one '
-          + 'under an existing title, and delete what is stale or wrong. Then retry this save, '
+          + 'Consolidate before saving anything else: merge overlapping entries by rewriting one '
+          + 'with its memoryId, and delete what is stale or wrong. Then retry this save, '
           + `all in this turn. Current entries:\n${titles}`,
         );
       }
@@ -363,16 +385,17 @@ export const createAgentMemoryRuntime = (deps) => {
         ...(findThreatPattern(`${title}\n${body}`) ? { flagged: true } : {}),
         ...(sessionId ? { sessionId } : {}),
       };
+      const related = findRelatedEntries(current.entries, title, body);
       const entries = [entry, ...current.entries];
       await write(resolved, entries);
-      return { entry, entries, replaced: false };
+      return { entry, entries, replaced: false, related };
     });
   };
 
   /**
-   * A user correction. The agent rewrites by saving the same memory again, so
-   * this exists for the panel: a memory worded badly enough to mislead should
-   * be fixable where it is read, not only deletable.
+   * A rewrite of one entry by id. The panel uses it for user corrections, and
+   * the agent's save uses it when it names the entry it is rewriting, which is
+   * how a tidy-up merges and corrects without guessing at a match.
    */
   const update = async (target, memoryId, patch) => {
     const resolved = resolveTarget(target);
@@ -407,6 +430,9 @@ export const createAgentMemoryRuntime = (deps) => {
         ...(hasType ? { type: patch.type } : {}),
         updatedAt: Date.now(),
       };
+      // Judged on the new text, as a read would judge it.
+      delete updated.flagged;
+      if (findThreatPattern(`${updated.title}\n${updated.body}`)) updated.flagged = true;
       const entries = current.entries.map((entry) => (entry.id === id ? updated : entry));
       await write(resolved, entries);
       return { entry: updated, entries };

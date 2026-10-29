@@ -3,6 +3,7 @@ import { z } from "zod"
 import { isAmbiguousSendFailure } from '@/sync/send-failure-classification'
 import { adoptRelayTunnel, deactivateRelayTunnel } from "@/lib/relay/runtime-tunnel"
 import type { RelayTunnelClient } from "@/lib/relay/tunnel-client"
+import { useSpacesStore } from "@/lib/spaces/spaces-store"
 
 // The generated `@opencode/client` runs for real here; only the runtime
 // transport (`runtimeFetch`) and runtime identity are replaced. That keeps
@@ -351,11 +352,14 @@ describe("error normalisation", () => {
     expect(error).toMatchObject({ status: 500, operation: "session.get" })
   })
 
-  test("a transport failure has no status", async () => {
+  test("a transport failure has no status and stays outcome-unknown", async () => {
     responses.push(new TypeError("Failed to fetch"))
     const error = await opencodeClient.getSession("ses_x").catch((e: unknown) => e)
     expect(error).toBeInstanceOf(OpencodeApiError)
     expect((error as { status?: number }).status).toBeUndefined()
+    // A lost response proves nothing about whether the server ran the request,
+    // so a prompt send it fails must confirm before rolling the message back.
+    expect(isAmbiguousSendFailure(error)).toBe(true)
   })
 
   test("fetchPermission maps 404 to resolved and everything else to unknown", async () => {
@@ -401,6 +405,30 @@ describe("sendMessage", () => {
       agents: [{ name: "explore", mention: { start: 0, end: 8, text: "@explore" } }],
     })
     expect(requests.every((r) => r.headers.get("x-opencode-directory") === encodeURIComponent("/repo/app"))).toBe(true)
+  })
+
+  test("beforeSend runs once every context part was admitted and right before the prompt leaves", async () => {
+    const seen: string[] = []
+    responses.push(
+      json({ id: "syn_1" }),
+      // The second context part answers late: beforeSend must still wait for it.
+      async () => { await new Promise((resolve) => setTimeout(resolve, 20)); seen.push("context admitted"); return json({ id: "syn_2" }) },
+      () => { seen.push("prompt request"); return json({ id: "msg_1" }) },
+    )
+    await opencodeClient.sendMessage({
+      id: "ses_1",
+      providerID: "openai",
+      text: "hello",
+      messageId: "msg_1",
+      context: [{ text: "first" }, { text: "second" }],
+      beforeSend: () => { seen.push("beforeSend") },
+    })
+    expect(seen).toEqual(["context admitted", "beforeSend", "prompt request"])
+    expect(requests.map((r) => r.url.pathname)).toEqual([
+      "/api/session/ses_1/synthetic",
+      "/api/session/ses_1/synthetic",
+      "/api/session/ses_1/prompt",
+    ])
   })
 
   test("context ids travel with the synthetic messages and sort below the prompt id", async () => {
@@ -745,6 +773,7 @@ describe("messages and config", () => {
       openWebSocket() { throw new Error("no sockets here") },
       getStatus: () => ({ state: "connected" }),
       subscribeStatus: () => () => undefined,
+      retry: () => undefined,
       close: () => undefined,
     }
     adoptRelayTunnel({ relayUrl: "wss://relay.test", serverId: "fixture", hostEncPubJwk: {} }, tunnel)
@@ -843,26 +872,6 @@ describe("messages and config", () => {
     expect(catalog.models[0]).toEqual(model)
   })
 
-  test("providers are asked only after the models answered", async () => {
-    // OpenCode 2.0.27+ holds the model routes until the directory's plugins are
-    // active; a provider read sent alongside answers before them, empty.
-    const answer = (request: CapturedRequest) =>
-      request.url.pathname === "/api/provider"
-        ? json({ location: {}, data: [{ id: "openai", name: "OpenAI" }] })
-        : request.url.pathname === "/api/model"
-          ? json({ location: {}, data: [{ id: "openai/x", modelID: "x", providerID: "openai" }] })
-          : json({ location: {}, data: { id: "openai/x", modelID: "x", providerID: "openai" } })
-    responses.push(answer, answer, answer)
-    const before = requests.length
-
-    await opencodeClient.getProvidersForConfig("/repo/app")
-    expect(requests.slice(before).map((request) => request.url.pathname)).toEqual([
-      "/api/model",
-      "/api/model/default",
-      "/api/provider",
-    ])
-  })
-
   test("a fresh provider read waits out the one in flight and reads again", async () => {
     const answer = (request: CapturedRequest) =>
       request.url.pathname === "/api/provider"
@@ -886,7 +895,30 @@ describe("messages and config", () => {
 })
 
 describe("providers of an isolated space", () => {
-  test("are the host's, asked with no directory, while models come from the space", async () => {
+  const providerAnswer = (request: CapturedRequest) =>
+    request.url.pathname.endsWith("/provider")
+      ? json({ location: {}, data: [{ id: "lighthouse", name: "Lighthouse" }] })
+      : request.url.pathname.endsWith("/model")
+        ? json({ location: {}, data: [{ id: "lighthouse/q", modelID: "q", providerID: "lighthouse" }] })
+        : json({ location: {}, data: { id: "lighthouse/q", modelID: "q", providerID: "lighthouse" } })
+
+  test("are the host's in the project the space was made from, so a provider of that project's own config is there", async () => {
+    const space = "/spaces/a1b2c3d4e5f6/app"
+    useSpacesStore.getState().applyMarks([{ id: "a1b2c3d4e5f6", name: "One", state: "complete", projectDirectory: "/repo/app", directory: space }])
+    try {
+      responses.push(providerAnswer, providerAnswer, providerAnswer)
+      const before = requests.length
+      const catalog = await opencodeClient.getProvidersForConfig(space)
+      expect(catalog.providers).toEqual([{ id: "lighthouse", name: "Lighthouse" }])
+      const provider = requests.slice(before).find((request) => request.url.pathname.endsWith("/provider"))
+      expect(provider?.url.pathname).toBe("/api/provider")
+      expect(provider?.headers.get("x-opencode-directory")).toBe(encodeURIComponent("/repo/app"))
+    } finally {
+      useSpacesStore.getState().applyMarks([])
+    }
+  })
+
+  test("are the host's, asked with no directory while the space's project is unknown, while models come from the space", async () => {
     const space = "/spaces/a1b2c3d4e5f6/app"
     const answer = (request: CapturedRequest) =>
       request.url.pathname.endsWith("/provider")

@@ -14,11 +14,12 @@ import {
   isSubagentTool,
   isWebTool,
   normalizeToolName,
+  renderedPage,
   subagentSessionId,
   toolDescription,
   toolFileDiffs,
-  toolInputPath,
-} from "./tools"
+  toolInputPath, isShownInPlace, proposedWorkflowRunId, generatedImagePaths } from "./tools"
+import type { Metadata, ToolInput, ToolState } from "./model"
 
 describe("tool identity", () => {
   test("recognizes the v2 names, not the v1 ones", () => {
@@ -247,5 +248,90 @@ describe("execute call details", () => {
   test("reads the script off the input", () => {
     expect(executeScript({ code: "return 1" })).toBe("return 1")
     expect(executeScript({})).toBe(undefined)
+  })
+})
+
+describe("renderedPage", () => {
+  const accepted = { openchamber: { ok: true } }
+  const completed = (input: ToolInput, metadata?: Metadata): ToolState => ({ status: "completed", input, output: "", metadata, time: { start: 1, end: 2 } })
+  const running = (input: ToolInput): ToolState => ({ status: "running", input, time: { start: 1 } })
+
+  test("reads the page from parameters, or beside the action, once OpenChamber accepted it", () => {
+    expect(renderedPage("openchamber_render", completed({ action: "render.page", parameters: { html: "<p>a</p>", title: "Chart" } }, accepted)))
+      .toEqual({ html: "<p>a</p>", title: "Chart", ask: { kind: "show" } })
+    expect(renderedPage("openchamber_render", completed({ action: "render.page", html: "<p>b</p>", title: "Flat" }, accepted)))
+      .toEqual({ html: "<p>b</p>", title: "Flat", ask: { kind: "show" } })
+    // An explicit parameters object wins, as it does in the plugin.
+    expect(renderedPage("openchamber_render", completed({ html: "<p>flat</p>", parameters: { html: "<p>nested</p>", title: "T" } }, accepted)))
+      .toEqual({ html: "<p>nested</p>", title: "T", ask: { kind: "show" } })
+  })
+
+  test("shows a page that waits while its call runs, and its answer once it completes", () => {
+    const input = { action: "render.page", parameters: { html: "<p>a</p>", title: "Pick", awaitAnswer: true } }
+    expect(renderedPage("openchamber_render", running(input))?.ask).toEqual({ kind: "waiting" })
+    expect(renderedPage("openchamber_render", completed(input, { openchamber: { ok: true, answer: { answered: true, summary: "Layout B", data: { layout: "b" } } } }))?.ask)
+      .toEqual({ kind: "answered", summary: "Layout B", data: { layout: "b" } })
+    expect(renderedPage("openchamber_render", completed(input, { openchamber: { ok: true, answer: { answered: false, reason: "chat" } } }))?.ask)
+      .toEqual({ kind: "answered-in-chat" })
+    expect(renderedPage("openchamber_render", completed(input, { openchamber: { ok: true, answer: { answered: false, reason: "chat-sent-earlier" } } }))?.ask)
+      .toEqual({ kind: "chat-sent-earlier" })
+    const stopped: ToolState = { status: "error", input, error: "aborted", time: { start: 1, end: 2 } }
+    expect(renderedPage("openchamber_render", stopped)?.ask).toEqual({ kind: "unanswered" })
+  })
+
+  test("leaves a refused, unfinished, empty or foreign call to its tool row", () => {
+    const input = { action: "render.page", parameters: { html: "<p>a</p>", title: "Chart" } }
+    expect(renderedPage("openchamber_render", completed(input, { openchamber: { ok: false } }))).toBeNull()
+    expect(renderedPage("openchamber_render", completed(input))).toBeNull()
+    expect(renderedPage("openchamber_render", running(input))).toBeNull()
+    expect(renderedPage("openchamber_render", { status: "error", input, error: "refused", time: { start: 1, end: 2 } })).toBeNull()
+    expect(renderedPage("openchamber_render", completed({ parameters: { html: "  ", title: "Chart" } }, accepted))).toBeNull()
+    expect(renderedPage("openchamber", completed(input, accepted))).toBeNull()
+  })
+
+  test("names a page sent without a title after its own title or first heading, as the server does", () => {
+    const titled = (html: string) => renderedPage("openchamber_render", completed({ parameters: { html } }, accepted))?.title
+    expect(titled("<title> Q3 &amp; Q4 </title><h1>Other</h1>")).toBe("Q3 & Q4")
+    expect(titled("<title></title><h2>Release <b>2.4</b></h2>")).toBe("Release 2.4")
+    expect(titled(`<h1>${"x".repeat(200)}</h1>`)).toBe("x".repeat(120))
+    // Nothing names it: the chat shows its own word.
+    expect(titled("<p>a</p>")).toBe("")
+  })
+})
+
+describe("proposedWorkflowRunId", () => {
+  const completed = (output: string, tool = "openchamber_workflow"): [string, ToolState] => [tool, { status: "completed", input: { action: "workflow.run" }, output, time: { start: 1, end: 2 } }]
+  type Envelope = { ok: boolean; action: string; data?: { runId: string; state?: string }; error?: { message: string } }
+  const envelope = (body: Envelope) => JSON.stringify({ schemaVersion: 1, ...body })
+
+  test("reads the run a workflow.run call proposed, which the chat draws in place of the row", () => {
+    const call = completed(envelope({ ok: true, action: "workflow.run", data: { runId: "wf_one", state: "awaiting-approval" } }))
+    expect(proposedWorkflowRunId(...call)).toBe("wf_one")
+    expect(isShownInPlace(...call)).toBe(true)
+  })
+
+  test("leaves other actions, refusals and other tools to their rows", () => {
+    expect(proposedWorkflowRunId(...completed(envelope({ ok: true, action: "workflow.status", data: { runId: "wf_one" } })))).toBeNull()
+    expect(proposedWorkflowRunId(...completed(envelope({ ok: false, action: "workflow.run", error: { message: "bad script" } })))).toBeNull()
+    expect(proposedWorkflowRunId(...completed("not json"))).toBeNull()
+    expect(proposedWorkflowRunId(...completed(envelope({ ok: true, action: "workflow.run", data: { runId: "wf_one" } }), "openchamber"))).toBeNull()
+  })
+})
+
+describe("generatedImagePaths", () => {
+  const completed = (output: string, tool = "openchamber_image"): [string, ToolState] => [tool, { status: "completed", input: { prompt: "a cat" }, output, time: { start: 1, end: 2 } }]
+  const envelope = (ok: boolean, paths: string[]) => JSON.stringify({ schemaVersion: 1, ok, action: "image.generate", data: { images: paths.map((path) => ({ path, mime: "image/png" })) } })
+
+  test("reads the files an image.generate call saved, which the chat draws in place of the row", () => {
+    const call = completed(envelope(true, ["/tmp/opencode/generated-images/a.png", "/repo/b.png"]))
+    expect(generatedImagePaths(...call)).toEqual(["/tmp/opencode/generated-images/a.png", "/repo/b.png"])
+    expect(isShownInPlace(...call)).toBe(true)
+  })
+
+  test("leaves refusals, running calls and other tools to their rows", () => {
+    expect(generatedImagePaths(...completed(envelope(false, ["/tmp/a.png"])))).toEqual([])
+    expect(generatedImagePaths(...completed(envelope(true, [])))).toEqual([])
+    expect(generatedImagePaths(...completed(envelope(true, ["/tmp/a.png"]), "openchamber_render"))).toEqual([])
+    expect(generatedImagePaths("openchamber_image", { status: "running", input: {}, time: { start: 1 } })).toEqual([])
   })
 })

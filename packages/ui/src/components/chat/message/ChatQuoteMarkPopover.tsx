@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 
+import { useEmojiPicker } from '@/components/emoji/useEmojiPicker';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { isIMECompositionEvent } from '@/lib/ime';
@@ -27,6 +28,8 @@ export interface ChatQuoteMarkPopoverProps {
     onEditingChange: (editing: boolean) => void;
     onSave: (text: string) => void;
     onRemove: () => void;
+    /** Where to render: the open modal dialog for a quote in a full-screen page; the body otherwise. */
+    portalTarget?: HTMLElement | null;
 }
 
 export function ChatQuoteMarkPopover({
@@ -37,10 +40,12 @@ export function ChatQuoteMarkPopover({
     onEditingChange,
     onSave,
     onRemove,
+    portalTarget,
 }: ChatQuoteMarkPopoverProps) {
     const { t } = useI18n();
     const [draft, setDraft] = React.useState(comment);
     const inputRef = React.useRef<HTMLTextAreaElement>(null);
+    const emojiPicker = useEmojiPicker(inputRef, editing);
 
     const resizeInput = React.useCallback(() => {
         const element = inputRef.current;
@@ -69,10 +74,10 @@ export function ChatQuoteMarkPopover({
     };
 
     const placeBelow = anchorRect.top < PLACE_BELOW_THRESHOLD_PX;
-    const left = Math.min(
-        Math.max(anchorRect.left + anchorRect.width / 2, VIEWPORT_MARGIN_PX),
-        window.innerWidth - VIEWPORT_MARGIN_PX,
-    );
+    const left = anchorRect.left + anchorRect.width / 2;
+    // Percentages in translate use the popover's own width, so both the short
+    // preview and the wider editor stay inside the viewport without measuring.
+    const translateX = `clamp(${VIEWPORT_MARGIN_PX - left}px, -50%, calc(100vw - ${left + VIEWPORT_MARGIN_PX}px - 100%))`;
 
     return createPortal(
         <div
@@ -80,17 +85,17 @@ export function ChatQuoteMarkPopover({
             // The glass card's shadow lives here, off its backdrop-filter
             // element; this box hugs the card, so the radius matches it.
             className={cn(
-                'app-region-no-drag fixed z-50 shadow-[0_4px_16px_-4px_rgb(0_0_0_/_0.12)]',
+                'app-region-no-drag fixed z-50 w-max max-w-[calc(100vw-24px)]',
                 editing ? 'rounded-3xl' : 'rounded-2xl',
             )}
             style={{
                 left,
                 top: placeBelow ? anchorRect.bottom + POPOVER_GAP_PX : anchorRect.top - POPOVER_GAP_PX,
-                transform: placeBelow ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
+                transform: `translate(${translateX}, ${placeBelow ? '0' : '-100%'})`,
             }}
         >
             {editing ? (
-                <div className="oc-glass-popover flex items-end gap-2 rounded-3xl border border-[var(--interactive-border)] py-1 ps-4 pe-1">
+                <div className="oc-glass-popover oc-glass-floating flex items-end gap-2 rounded-3xl py-1 ps-4 pe-1">
                     <textarea
                         ref={inputRef}
                         rows={1}
@@ -110,9 +115,10 @@ export function ChatQuoteMarkPopover({
                             }
                         }}
                         placeholder={t('chat.textSelection.comment.placeholder')}
-                        className="w-64 max-w-[70vw] flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground placeholder:opacity-60"
+                        className="min-w-0 w-64 max-w-[70vw] flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground placeholder:opacity-60"
                         style={{ minHeight: 0, height: 'auto' }}
                     />
+                    {emojiPicker}
                     <button
                         type="button"
                         onClick={save}
@@ -124,7 +130,7 @@ export function ChatQuoteMarkPopover({
                     </button>
                 </div>
             ) : (
-                <div className="oc-glass-popover flex max-w-[min(360px,80vw)] items-start gap-1 rounded-2xl border border-[var(--interactive-border)] py-1 ps-3 pe-1">
+                <div className="oc-glass-popover oc-glass-floating flex max-w-[min(360px,80vw)] items-start gap-1 rounded-2xl py-1 ps-3 pe-1">
                     {comment ? (
                         <div className="min-w-0 flex-1 whitespace-pre-wrap break-words py-1 text-sm text-foreground">{comment}</div>
                     ) : null}
@@ -153,6 +159,6 @@ export function ChatQuoteMarkPopover({
                 </div>
             )}
         </div>,
-        document.body,
+        portalTarget ?? document.body,
     );
 }

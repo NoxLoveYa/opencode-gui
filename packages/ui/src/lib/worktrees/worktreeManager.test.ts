@@ -30,6 +30,7 @@ let createdWorktreeResult: GitWorktreeCreateResult = createdWorktree;
 const bootstrapWatcherCalls: string[] = [];
 const bootstrapWatcherOptions: Array<{ onReady?: () => void }> = [];
 const warningToasts: string[] = [];
+const infoToasts: string[] = [];
 const removeCalls: Array<{ directory: string; payload: RemoveGitWorktreePayload }> = [];
 
 const sessionState = {
@@ -48,6 +49,7 @@ mock.module('@/lib/openchamberConfig', () => ({
 mock.module('@/components/ui', () => ({
   toast: {
     warning: (message: string) => warningToasts.push(message),
+    info: (message: string) => infoToasts.push(message),
   },
 }));
 
@@ -164,6 +166,7 @@ describe('worktreeManager list invalidation', () => {
     bootstrapWatcherCalls.length = 0;
     bootstrapWatcherOptions.length = 0;
     warningToasts.length = 0;
+    infoToasts.length = 0;
     removeCalls.length = 0;
     createdWorktreeResult = createdWorktree;
     sessionState.availableWorktreesByProject = new Map();
@@ -192,6 +195,18 @@ describe('worktreeManager list invalidation', () => {
     });
 
     expect(warningToasts).toEqual(['session.newWorktree.toast.fetchSourceAccess']);
+  });
+
+  test('says where a diverged leftover branch was kept', async () => {
+    createdWorktreeResult = { ...createdWorktree, branchBackup: 'feature-backup-1234567' };
+
+    await createWorktree({ id: 'project-branch-backup', path: '/repo' }, {
+      branchName: 'feature',
+      worktreeName: 'feature',
+    });
+
+    expect(infoToasts).toEqual(['session.newWorktree.toast.branchBackup']);
+    expect(warningToasts).toEqual([]);
   });
 
   test('retries an in-flight list when a worktree is created before it resolves', async () => {
@@ -607,6 +622,12 @@ describe('worktreeMapsEqual', () => {
   test('returns false when discovered display metadata changes', () => {
     const a = new Map([['/repo', [wt('/r/main', '', { name: 'old', label: 'old' })]]]);
     const b = new Map([['/repo', [wt('/r/main', '', { name: 'new', label: 'new' })]]]);
+    expect(worktreeMapsEqual(a, b)).toBe(false);
+  });
+
+  test('returns false when the task title changes, so a named or renamed task reaches the sidebar', () => {
+    const a = new Map([['/repo', [wt('/r/feat', 'feat')]]]);
+    const b = new Map([['/repo', [wt('/r/feat', 'feat', { title: 'Sidebar works view' })]]]);
     expect(worktreeMapsEqual(a, b)).toBe(false);
   });
 

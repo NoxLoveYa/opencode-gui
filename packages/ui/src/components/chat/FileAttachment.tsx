@@ -9,6 +9,11 @@ import { cn } from '@/lib/utils';
 import { openExternalUrl } from '@/lib/url';
 import { formatFileSize } from '@/lib/fileSize';
 import { getLanguageFromExtension, isDrawioFile, isExcalidrawFile } from '@/lib/toolHelpers';
+import { trackerPresentation } from '@/lib/trackers/presentation';
+import { decodeDataUrlText, getIssueLinkKind, getRepositoryIssueLinkProvider, getTrackerItemLinkProvider, isTextLikeFile, resolveAttachmentOpenTarget, type IssueLinkKind } from '@/lib/messages/attachmentPreview';
+import { ProviderIcon } from '@/components/sourceControl/ProviderIcon';
+import { useSourceControlProvider } from '@/lib/source-control/providers/registry';
+import { useOpenAttachment } from './message/useOpenAttachment';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
@@ -109,7 +114,7 @@ const FileAttachmentButton = memo(() => {
             onClick={isVSCodeRuntime ? handleVSCodePick : () => fileInputRef.current?.click()}
             className={cn(
               'flex items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-              'hover:bg-muted text-muted-foreground',
+              'hover:bg-interactive-hover text-muted-foreground',
               buttonSizeClass
             )}
             aria-label={t('chat.fileAttachment.actions.attachAria')}
@@ -550,66 +555,16 @@ interface FilePart {
   source?: Record<string, unknown>;
 }
 
-const GITHUB_ISSUE_LINK_MIME = 'application/vnd.github.issue-link';
-const GITLAB_ISSUE_LINK_MIME = 'application/vnd.openchamber.gitlab-issue-link';
-const GITHUB_PR_LINK_MIME = 'application/vnd.github.pull-request-link';
-const LINEAR_ISSUE_LINK_MIME = 'application/vnd.openchamber.linear-issue-link';
-const GUEST_ISSUE_LINK_MIME = 'application/vnd.openchamber.guest-issue-link';
-const GUEST_PR_LINK_MIME = 'application/vnd.openchamber.guest-pr-link';
+const issueLinkIcon = (kind: Exclude<IssueLinkKind, 'repository-issue' | 'tracker-item'>): 'git-pull-request' | 'attachment-2' => (
+  kind === 'guest-issue' ? 'attachment-2' : 'git-pull-request'
+);
 
-type IssueLinkKind = 'github-issue' | 'gitlab-issue' | 'github-pr' | 'linear-issue' | 'guest-issue' | 'guest-pr';
-
-const getIssueLinkKind = (file: FilePart): IssueLinkKind | null => {
-  if (file.mime === GITHUB_ISSUE_LINK_MIME) {
-    return 'github-issue';
-  }
-  if (file.mime === GITLAB_ISSUE_LINK_MIME) {
-    return 'gitlab-issue';
-  }
-  if (file.mime === GITHUB_PR_LINK_MIME) {
-    return 'github-pr';
-  }
-  if (file.mime === LINEAR_ISSUE_LINK_MIME) {
-    return 'linear-issue';
-  }
-  if (file.mime === GUEST_ISSUE_LINK_MIME) {
-    return 'guest-issue';
-  }
-  if (file.mime === GUEST_PR_LINK_MIME) {
-    return 'guest-pr';
-  }
-  return null;
-};
-
-const issueLinkIcon = (kind: IssueLinkKind): 'github' | 'gitlab' | 'git-pull-request' | 'linear' | 'attachment-2' => {
-  if (kind === 'github-pr' || kind === 'guest-pr') return 'git-pull-request';
-  if (kind === 'gitlab-issue') return 'gitlab';
-  if (kind === 'linear-issue') return 'linear';
-  if (kind === 'guest-issue') return 'attachment-2';
-  return 'github';
-};
-
-const TEXT_LIKE_MIME_PREFIXES = ['text/', 'application/json'];
-
-const isTextLikeFile = (file: FilePart): boolean => {
-  const mime = file.mime;
-  return mime !== undefined && TEXT_LIKE_MIME_PREFIXES.some((prefix) => mime.startsWith(prefix));
-};
-
-/**
- * Decodes the base64 data URL the message pipeline stores for pasted files
- * (`data:<mime>;base64,<data>`) into UTF-8 text. Returns null for any other
- * URL shape, which keeps remote-URI attachments on the image-dialog path.
- */
-const decodeDataUrlText = (url: string): string | null => {
-  const match = /^data:[^,]*;base64,(.+)$/.exec(url);
-  if (!match) return null;
-  try {
-    const bytes = Uint8Array.from(atob(match[1]), (char) => char.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
+/** An issue or PR link chip's mark: a repository issue wears its provider's, a tracker item its tracker's. */
+const IssueLinkIcon: React.FC<{ file: { mime?: string }; kind: IssueLinkKind; className?: string }> = ({ file, kind, className }) => {
+  const provider = useSourceControlProvider(getRepositoryIssueLinkProvider(file));
+  if (kind === 'repository-issue') return <ProviderIcon descriptor={provider} className={className} />;
+  if (kind === 'tracker-item') return <Icon name={trackerPresentation(getTrackerItemLinkProvider(file)).icon} className={className} />;
+  return <Icon name={issueLinkIcon(kind)} className={className} />;
 };
 
 interface MessageFilesDisplayProps {
@@ -622,6 +577,7 @@ interface MessageFilesDisplayProps {
 
 export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, className }: MessageFilesDisplayProps) => {
   const { t } = useI18n();
+  const openAttachment = useOpenAttachment(onShowPopup);
 
   const fileItems = files.filter(f => f.type === 'file' && (f.mime || f.url));
 
@@ -636,8 +592,8 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
   };
 
   const resolveDisplayName = React.useCallback((file: FilePart): string => {
-    const isGitHubLink = getIssueLinkKind(file) !== null;
-    if (isGitHubLink && typeof file.filename === 'string' && file.filename.trim().length > 0) {
+    const isIssueLink = getIssueLinkKind(file) !== null;
+    if (isIssueLink && typeof file.filename === 'string' && file.filename.trim().length > 0) {
       return file.filename.trim();
     }
     return extractFilename(file.filename || file.url);
@@ -646,51 +602,11 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
   const imageFiles = fileItems.filter(f => f.mime?.startsWith('image/') && f.url);
   const otherFiles = fileItems.filter(f => !f.mime?.startsWith('image/'));
 
-  const imageGallery = React.useMemo(
-    () =>
-      imageFiles.flatMap((file) => {
-        if (!file.url) return [];
-        const filename = resolveDisplayName(file) || 'Image';
-        return [{
-          url: file.url,
-          mimeType: file.mime,
-          filename,
-          size: file.size,
-        }];
-      }),
-    [imageFiles, resolveDisplayName]
-  );
-
-  const handleImageClick = React.useCallback((index: number) => {
-    if (!onShowPopup) {
-      return;
-    }
-
-    const file = imageGallery[index];
-    if (!file?.url) return;
-
-    const filename = file.filename || 'Image';
-
-    onShowPopup({
-      open: true,
-      title: filename,
-      content: '',
-      metadata: {
-        tool: 'image-preview',
-        filename,
-        mime: file.mimeType,
-        size: file.size,
-      },
-      image: {
-        url: file.url,
-        mimeType: file.mimeType,
-        filename,
-        size: file.size,
-        gallery: imageGallery,
-        index,
-      },
-    });
-  }, [imageGallery, onShowPopup]);
+  // What a compact chip or thumbnail opens; a preview needs the message's popup.
+  const resolveOpenTarget = (file: FilePart) => {
+    const target = resolveAttachmentOpenTarget(file, fileItems);
+    return target?.kind === 'popup' && !onShowPopup ? null : target;
+  };
 
   const showFilePopup = React.useCallback((file: FilePart, fileName: string) => {
     if (!onShowPopup || !file.url) {
@@ -734,26 +650,25 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
               const ext = fileName.split('.').pop() || '';
               const sizeText = formatFileSize(file.size);
               const issueLinkKind = getIssueLinkKind(file);
+              const openTarget = resolveOpenTarget(file);
               return (
                 <Tooltip key={`file-${file.url || file.filename || index}`}>
                   <TooltipTrigger asChild>
-                    {issueLinkKind && file.url ? (
+                    {issueLinkKind && openTarget ? (
                       <button
                         type="button"
-                        onClick={() => {
-                          void openExternalUrl(file.url || '');
-                        }}
+                        onClick={() => openAttachment(openTarget)}
                         className="inline-flex items-center bg-muted/30 border border-border/30 typography-meta gap-1 px-2 py-0.5 rounded-lg text-foreground hover:text-primary transition-colors"
                       >
-                        <Icon name={issueLinkIcon(issueLinkKind)} className="text-muted-foreground h-3.5 w-3.5" />
+                        <IssueLinkIcon file={file} kind={issueLinkKind} className="text-muted-foreground h-3.5 w-3.5" />
                         <div className="overflow-hidden max-w-[220px]">
                           <span className="truncate block" title={fileName}>{fileName}</span>
                         </div>
                       </button>
-                    ) : onShowPopup && file.url && isTextLikeFile(file) ? (
+                    ) : openTarget ? (
                       <button
                         type="button"
-                        onClick={() => showFilePopup(file, fileName)}
+                        onClick={() => openAttachment(openTarget)}
                         className="inline-flex items-center bg-muted/30 border border-border/30 typography-meta gap-1 px-2 py-0.5 rounded-lg text-foreground hover:text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-ring"
                       >
                         <FileTypeIcon filePath={fileName} extension={ext} className="text-muted-foreground h-3.5 w-3.5" />
@@ -788,13 +703,16 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
             <div className="flex snap-x snap-mandatory gap-2">
               {imageFiles.map((file, index) => {
                 const filename = resolveDisplayName(file) || 'Image';
+                const openTarget = resolveOpenTarget(file);
 
                 return (
                   <Tooltip key={`img-${file.url || file.filename || index}`}>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={() => handleImageClick(index)}
+                        onClick={() => {
+                          if (openTarget) openAttachment(openTarget);
+                        }}
                         className="relative flex-none border border-border/40 bg-muted/10 overflow-hidden snap-start h-12 w-12 sm:h-14 sm:w-14 md:h-16 md:w-16 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-ring"
                         aria-label={filename}
                       >
@@ -872,12 +790,12 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
                     void openExternalUrl(file.url || '');
                   }}
                   className={cn(
-                    "flex items-center gap-2 p-2 rounded-lg border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors text-start",
+                    "flex items-center gap-2 p-2 rounded-lg oc-tile oc-tile-hover text-start",
                     compact ? "text-xs" : "text-sm"
                   )}
                 >
                   <div className="flex-shrink-0">
-                    <Icon name={issueLinkIcon(issueLinkKind)} className={cn("text-muted-foreground", compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
+                    <IssueLinkIcon file={file} kind={issueLinkKind} className={cn("text-muted-foreground", compact ? "h-3.5 w-3.5" : "h-4 w-4")} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-medium truncate">{fileName}</p>
@@ -911,7 +829,7 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
                     }
                   }}
                   className={cn(
-                    "flex items-center gap-2 p-2 rounded-lg border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors text-start cursor-pointer",
+                    "flex items-center gap-2 p-2 rounded-lg oc-tile oc-tile-hover text-start cursor-pointer",
                     compact ? "text-xs" : "text-sm"
                   )}
                 >
@@ -939,7 +857,7 @@ export const MessageFilesDisplay = memo(({ files, onShowPopup, compact = false, 
                   showFilePopup(file, fileName);
                 }}
                 className={cn(
-                  "flex items-center gap-2 p-2 rounded-lg border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors text-start",
+                  "flex items-center gap-2 p-2 rounded-lg oc-tile oc-tile-hover text-start",
                   compact ? "text-xs" : "text-sm"
                 )}
               >

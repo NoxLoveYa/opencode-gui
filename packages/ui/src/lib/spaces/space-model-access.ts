@@ -10,22 +10,21 @@
 // and by the space's project directory. Without an answer from the host nothing is refused, and
 // neither is a provider the grant dialog cannot give a key for, a browser login or OpenCode's own
 // among them: the dialog would be a dead end, and such a model may work inside all the same.
-// One exception: OpenCode's own provider reaches opencode.ai, which a space that allows only
-// chosen addresses blocks unless that name is on its list, so the message would fail inside
-// with a bare 403; it stays in the composer with the name to allow instead.
+// One exception: OpenCode's own provider is refused in every space, whatever its network. Its
+// free models refuse a request from inside a space, measured on 2026-10-14 with the open internet
+// ("free tier can only be used from within OpenCode"), and no grant gives a space anything else.
 
 import { isSpaceGrantableProvider } from './model-access';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { spaceMenuActionsOf } from './space-repair';
 import { spaceIdOfDirectory } from './space-route';
 import { useSpacesStore } from './spaces-store';
 import { providerGrantOf, type SpaceEntry } from './spaces-api';
 
-type SpaceModelRefusal =
-  | { spaceId: string; providerId: string; reason: 'not_granted' | 'needs_again' }
-  | { spaceId: string; providerId: string; reason: 'domain_blocked'; domain: string };
+type SpaceModelRefusal = { spaceId: string; providerId: string; reason: 'not_granted' | 'needs_again' | 'opencode' };
 
-/** The address a provider the dialog cannot grant talks to, for the providers whose address is known. */
-const UNGRANTABLE_PROVIDER_DOMAINS = new Map([['opencode', 'opencode.ai']]);
+const OPENCODE_PROVIDER_ID = 'opencode';
 
 const chosenByDirectory = new Map<string, ReadonlySet<string>>();
 const directoryByRequest = new Map<string, string>();
@@ -84,21 +83,40 @@ const refusalFromList = (entry: SpaceEntry, providerId: string): SpaceModelRefus
  * its directory; a session by its directory.
  */
 export const spaceModelRefusal = (target: SpaceTarget, providerId: string): SpaceModelRefusal | null => {
-  const grantable = isSpaceGrantableProvider(providerId);
-  const domain = UNGRANTABLE_PROVIDER_DOMAINS.get(providerId);
-  if (!grantable && !domain) return null;
   const space = spaceOfTarget(target);
   if (!space) return null;
   const { spaceId, directory } = space;
-  const { journey, creationAccess } = useSpacesStore.getState();
+  if (providerId === OPENCODE_PROVIDER_ID) return { spaceId, providerId, reason: 'opencode' };
+  const { journey, customProviders } = useSpacesStore.getState();
   const entry = journey?.get(spaceId);
-  if (!grantable && domain !== undefined) {
-    // A space that is not listed yet, or whose network the host could not read, refuses nothing.
-    if (entry?.network?.mode !== 'allowlist' || entry.network.domains.includes(domain)) return null;
-    return { spaceId, providerId, reason: 'domain_blocked', domain };
-  }
-  if (entry?.state === 'running' && creationAccess.get(spaceId)?.kind !== 'giving') return refusalFromList(entry, providerId);
+  // A provider of the user's own is grantable when the host lists it for the space's project;
+  // a project not read yet refuses nothing, as the rule above says.
+  const custom = entry?.projectDirectory ? customProviders.get(entry.projectDirectory)?.some((provider) => provider.id === providerId) === true : false;
+  if (!custom && !isSpaceGrantableProvider(providerId)) return null;
+  // The host gives the creation's access before it says "ready", so a running space is judged by the list.
+  if (entry?.state === 'running') return refusalFromList(entry, providerId);
   const chosen = chosenByDirectory.get(directory);
   if (chosen && !chosen.has(providerId)) return { spaceId, providerId, reason: 'not_granted' };
+  return null;
+};
+
+/**
+ * The model the composer moves to when a new space is given access to `providers` and the
+ * composer's model is on none of them: otherwise the first message on it would only come back
+ * with a refusal. The model last used of the first such provider the catalog has, else its first
+ * model the user did not hide; null when the composer's provider is among them or none is known.
+ */
+export const composerModelForSpaceAccess = (providers: readonly string[]): { providerId: string; modelId: string } | null => {
+  const { providers: catalog, currentProviderId } = useConfigStore.getState();
+  if (providers.length === 0 || providers.includes(currentProviderId)) return null;
+  const { recentModels, hiddenModels } = useUIStore.getState();
+  for (const providerId of providers) {
+    const provider = catalog.find((entry) => entry.id === providerId);
+    if (!provider) continue;
+    const recent = recentModels.find((entry) => entry.providerID === providerId && provider.models.some((model) => model.modelID === entry.modelID));
+    if (recent) return { providerId, modelId: recent.modelID };
+    const visible = provider.models.find((model) => !hiddenModels.some((hidden) => hidden.providerID === providerId && hidden.modelID === model.modelID));
+    if (visible) return { providerId, modelId: visible.modelID };
+  }
   return null;
 };

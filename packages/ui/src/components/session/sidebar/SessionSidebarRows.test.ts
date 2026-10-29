@@ -48,7 +48,7 @@ describe('SessionSidebarRows section spacing', () => {
       : null;
     return {
       mode: 'normal', sections, authoritativeSections: sections, chatGroup,
-      workItems: [item('working')], zoneSessionIds: new Set(['working']),
+      workEntries: [{ kind: 'session', item: item('working') }], zoneSessionIds: new Set(['working']),
       foldersMap: {}, groupSearchDataByGroup: new WeakMap(), normalizedQuery: '',
       collapsedProjects: new Set(), collapsedGroups: new Set(), collapsedFolders: new Set(), collapsedActivities: new Set(),
       expandedParents: new Set(), visibleCountByContainer: new Map(), pinnedSessionIds: new Set(), sessionOrderIndex: new Map(),
@@ -61,11 +61,11 @@ describe('SessionSidebarRows section spacing', () => {
     return sectionSpacingAfter(rows[index - 1], rows[index]);
   };
 
-  test('zones and projects open with the same gap', () => {
+  test('a zone opens with a gap, and a project with a wider one that holds its divider', () => {
     for (const withChats of [true, false]) {
       const rows = buildSessionSidebarRowModel(input(withChats)).rows;
       if (withChats) expect(spacingBefore(rows, 'activity-header', 'activity:work:header')).toBe('pb-2');
-      expect(spacingBefore(rows, 'project-header')).toBe('pb-2');
+      expect(spacingBefore(rows, 'project-header')).toBe('pb-4');
     }
   });
 
@@ -74,9 +74,9 @@ describe('SessionSidebarRows section spacing', () => {
     const lastBeforeProjects = rows.findIndex((row) => row.kind === 'project-header') - 1;
     const last = rows[lastBeforeProjects];
     expect(last.kind).toBe('session');
-    expect(estimateSessionSidebarRowSize(last, rows[lastBeforeProjects + 1])).toBe(last.estimateSize + 8);
+    expect(estimateSessionSidebarRowSize(last, rows[lastBeforeProjects + 1])).toBe(last.estimateSize + 16);
     // A sibling measured mid-section tells its height; the gap is added as measured.
-    expect(estimateSessionSidebarRowSize(last, rows[lastBeforeProjects + 1], { height: 30, gapBySpacing: new Map([['pb-2', 10]]) })).toBe(40);
+    expect(estimateSessionSidebarRowSize(last, rows[lastBeforeProjects + 1], { height: 30, gapBySpacing: new Map([['pb-4', 18]]) })).toBe(48);
     expect(estimateSessionSidebarRowSize(last, undefined, { height: 30 })).toBe(30);
   });
 

@@ -10,6 +10,7 @@ import { toast } from '@/components/ui';
 import { Icon } from "@/components/icon/Icon";
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { cn } from '@/lib/utils';
+import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import { isDesktopLocalOriginActive, isDesktopShell, openDesktopPath, openDesktopProjectInApp } from '@/lib/desktop';
 import { DEFAULT_OPEN_IN_APP_ID, OPEN_IN_APPS } from '@/lib/openInApps';
 import { useOpenInAppsStore, type OpenInAppOption } from '@/stores/useOpenInAppsStore';
@@ -60,7 +61,7 @@ const AppIcon = ({
     <span
       className={cn(
         'h-4 w-4 rounded-sm flex items-center justify-center',
-        'bg-[var(--surface-muted)] text-[9px] font-medium text-muted-foreground'
+        'bg-[var(--surface-muted)] text-[0.5625rem] font-medium text-muted-foreground'
       )}
     >
       {initial}
@@ -78,6 +79,7 @@ const OpenInAppButtonComponent = ({ directory }: OpenInAppButtonProps) => {
   const availableApps = useOpenInAppsStore((state) => state.availableApps);
   const isCacheStale = useOpenInAppsStore((state) => state.isCacheStale);
   const isScanning = useOpenInAppsStore((state) => state.isScanning);
+  const blink = useWaitingBlink(isScanning);
   const initialize = useOpenInAppsStore((state) => state.initialize);
   const loadInstalledApps = useOpenInAppsStore((state) => state.loadInstalledApps);
   const selectApp = useOpenInAppsStore((state) => state.selectApp);
@@ -134,7 +136,7 @@ const OpenInAppButtonComponent = ({ directory }: OpenInAppButtonProps) => {
           // glyph, not blocks of colour.
           'inline-flex size-6 items-center justify-center rounded-md opacity-85 transition-opacity hover:opacity-100',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--interactive-focus-ring)]',
-          isScanning && 'animate-pulse'
+          blink
         )}
         aria-label={t('openInApp.actions.openInAria', { app: selectedApp.label })}
         title={t('openInApp.actions.openInAria', { app: selectedApp.label })}
@@ -156,6 +158,7 @@ const OpenInAppButtonComponent = ({ directory }: OpenInAppButtonProps) => {
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
+          data-work-status-popup
           align="end"
           className="w-56 max-h-[70vh] overflow-y-auto"
         >

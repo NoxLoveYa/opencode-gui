@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { Icon } from "@/components/icon/Icon";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from '@/lib/utils';
 import type { UpdateInfo, UpdateProgress } from '@/lib/desktop';
+import { updateProgressPercent } from './updateProgress';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { openExternalUrl } from '@/lib/url';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
@@ -136,9 +138,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
     : GITHUB_RELEASES_URL;
   const mobileUpdateUrl = info?.downloadUrl || releaseUrl;
 
-  const progressPercent = progress?.total
-    ? Math.round((progress.downloaded / progress.total) * 100)
-    : 0;
+  const progressPercent = updateProgressPercent(progress);
 
   const isWebRuntime = runtimeType === 'web';
   // A desktop host installed from a Linux package asks for the password on its own screen.
@@ -270,7 +270,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
           {isWebRuntime && isWebUpdating && (
             <div className="rounded-lg bg-surface-elevated/30 p-5 border border-border">
               <div className="flex items-center gap-3">
-                <Icon name="loader" className="h-5 w-5 animate-spin text-[var(--primary-base)]" />
+                <Spinner className="h-5 w-5 text-[var(--primary-base)]" />
                 <div className="typography-ui-label text-foreground">
                   {webUpdateState === 'updating' && t('updateDialog.status.installingUpdate')}
                   {webUpdateState === 'restarting' && t('updateDialog.status.serverRestarting')}
@@ -429,7 +429,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
                 disabled
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)]/50 text-[var(--primary-foreground)] cursor-not-allowed"
               >
-                <Icon name="loader" className="h-4 w-4 animate-spin" />
+                <Spinner className="h-4 w-4" />
                 {t('updateDialog.status.downloading')}
               </button>
             )}
@@ -439,7 +439,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
                 disabled
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--status-success)]/50 text-white cursor-not-allowed"
               >
-                <Icon name="loader" className="h-4 w-4 animate-spin" />
+                <Spinner className="h-4 w-4" />
                 {t('updateDialog.status.restarting')}
               </button>
             )}
@@ -480,7 +480,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
                 disabled
                 className="flex items-center justify-center gap-2 px-5 py-2 rounded-md text-sm font-medium bg-[var(--primary-base)]/50 text-[var(--primary-foreground)] cursor-not-allowed"
               >
-                <Icon name="loader" className="h-4 w-4 animate-spin" />
+                <Spinner className="h-4 w-4" />
                 {t('updateDialog.status.updating')}
               </button>
             )}

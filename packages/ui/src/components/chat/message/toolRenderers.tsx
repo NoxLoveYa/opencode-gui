@@ -1,4 +1,6 @@
 import { carriesFileDiffs, isFileChangeTool } from '@/lib/opencode/tools';
+import type { JsonValue } from '@/lib/opencode/model';
+import { z } from 'zod';
 
 import { cn } from '@/lib/utils';
 import { typography } from '@/lib/typography';
@@ -112,7 +114,7 @@ const getToolMetadataPatch = (metadata?: Record<string, unknown>): string | unde
     return undefined;
 };
 
-export const tryParseJsonOutput = (output: string): { data: unknown; isJson: boolean } => {
+export const tryParseJsonOutput = (output: string): { data: JsonValue; isJson: boolean } => {
     if (!output || typeof output !== 'string') {
         return { data: null, isJson: false };
     }
@@ -132,7 +134,7 @@ export const tryParseJsonOutput = (output: string): { data: unknown; isJson: boo
     }
 
     try {
-        const parsed = JSON.parse(trimmed);
+        const parsed: JsonValue = JSON.parse(trimmed);
         if (parsed !== null && typeof parsed === 'object') {
             return { data: parsed, isJson: true };
         }
@@ -140,6 +142,74 @@ export const tryParseJsonOutput = (output: string): { data: unknown; isJson: boo
     } catch {
         return { data: null, isJson: false };
     }
+};
+
+const TEXT_BLOCK_UNWRAP_PASSES = 4;
+const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
+type TextBlock = z.infer<typeof textBlockSchema>;
+
+// The content-block envelope, a single block or a list of them, validated one
+// block at a time so the first non-text entry stops the parse (a whole-array
+// schema instead accumulates an error per entry, which stalls on large
+// structured results such as a serialized numeric array).
+const parseTextBlocks = (value: JsonValue): TextBlock[] | null => {
+    const blocks = Array.isArray(value) ? value : [value];
+    if (blocks.length === 0) {
+        return null;
+    }
+    const parsed: TextBlock[] = [];
+    for (const block of blocks) {
+        const result = textBlockSchema.safeParse(block);
+        if (!result.success) {
+            return null;
+        }
+        parsed.push(result.data);
+    }
+    return parsed;
+};
+
+const looksLikeJsonContainer = (text: string): boolean => {
+    const trimmed = text.trim();
+    return (trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'));
+};
+
+/**
+ * The text of a tool result made of text content blocks, joined on newlines.
+ * A finished v2 tool call carries its result as `[{type:"text",text}]`, and
+ * the transport may serialize that list once more, so the joined text is
+ * unwrapped again while it is itself such a list, four passes at most
+ * (issue #5067). Any other result returns null.
+ */
+export const unwrapTextBlocks = (data: JsonValue): string | null => {
+    let blocks = parseTextBlocks(data);
+    if (!blocks) {
+        return null;
+    }
+
+    let text = '';
+    for (let pass = 0; pass < TEXT_BLOCK_UNWRAP_PASSES; pass++) {
+        let joined = '';
+        for (const block of blocks) {
+            joined += (joined ? '\n' : '') + block.text;
+        }
+        text = joined;
+
+        if (!looksLikeJsonContainer(joined)) {
+            break;
+        }
+        let parsed: JsonValue;
+        try {
+            parsed = JSON.parse(joined);
+        } catch {
+            break;
+        }
+        const inner = parseTextBlocks(parsed);
+        if (!inner) {
+            break;
+        }
+        blocks = inner;
+    }
+    return text;
 };
 
 export const formatEditOutput = (output: string, toolName: string, metadata?: Record<string, unknown>): string => {
@@ -261,7 +331,7 @@ export const renderGrepOutput = (output: string, isMobile: boolean, options?: { 
             <div
                 className={cn(
                     'space-y-2 w-full min-w-0',
-                    options?.unstyled ? null : 'p-3 bg-muted/20 rounded-xl border border-border/30'
+                    options?.unstyled ? null : 'p-3 oc-tile rounded-xl'
                 )}
                 style={typography.tool.popup}
             >
@@ -330,7 +400,7 @@ export const renderGlobOutput = (output: string, isMobile: boolean, options?: { 
             <div
                 className={cn(
                     'space-y-2 w-full min-w-0',
-                    options?.unstyled ? null : 'p-3 bg-muted/20 rounded-xl border border-border/30'
+                    options?.unstyled ? null : 'p-3 oc-tile rounded-xl'
                 )}
                 style={typography.tool.popup}
             >
@@ -364,7 +434,7 @@ export const renderWebSearchOutput = (output: string, options?: { unstyled?: boo
         const parsed = parseWebSearchOutput(output);
         if (parsed) {
             return (
-                <div className={cn('w-full min-w-0', options?.unstyled ? null : 'p-2 bg-muted/20 rounded-xl border border-border/20')}>
+                <div className={cn('w-full min-w-0', options?.unstyled ? null : 'p-2 oc-tile rounded-xl')}>
                     <WebSearchResults output={parsed} providerId={null} />
                 </div>
             );
@@ -373,7 +443,7 @@ export const renderWebSearchOutput = (output: string, options?: { unstyled?: boo
             <div
                 className={cn(
                     'typography-code max-w-none w-full min-w-0',
-                    options?.unstyled ? null : 'p-3 bg-muted/20 rounded-xl border border-border/20'
+                    options?.unstyled ? null : 'p-3 oc-tile rounded-xl'
                 )}
                 style={typography.tool.popup}
             >

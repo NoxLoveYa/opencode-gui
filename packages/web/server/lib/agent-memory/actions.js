@@ -30,6 +30,8 @@ const toSummary = (entry, scope) => ({
   scope,
 });
 
+const RELATED_NOTE = 'Stored as a new entry. These stored entries share much of its wording. If it replaces or reverses one of them, rewrite that one by memoryId to what holds now, with a line on what changed and why, then delete the entry just saved. If they are about different things, leave both.';
+
 const toFullEntry = (entry, scope) => ({ ...toSummary(entry, scope), body: entry.body });
 
 export const createAgentMemoryActions = (dependencies) => {
@@ -176,23 +178,42 @@ export const createAgentMemoryActions = (dependencies) => {
       fail('type must be fact, preference, or reference', 400);
     }
 
-    const result = await agentMemoryRuntime.create(target, {
-      title,
-      body,
-      type: input.type,
-      sessionId: asNonEmptyString(input.sessionId),
-    });
+    // With an id the save rewrites exactly that entry. Merging and correcting
+    // need a precise target: matching by wording could land the rewrite as a
+    // new entry, or on a neighbour that happens to share its words.
+    const memoryId = asNonEmptyString(input.memoryId);
+    let saved;
+    if (memoryId) {
+      const rewritten = await agentMemoryRuntime.update(target, memoryId, { title, body, type: input.type });
+      if (!rewritten) {
+        fail('No memory has that id in this scope', 404);
+      }
+      saved = { entry: rewritten.entry, replaced: true };
+    } else {
+      saved = await agentMemoryRuntime.create(target, {
+        title,
+        body,
+        type: input.type,
+        sessionId: asNonEmptyString(input.sessionId),
+      });
+    }
     announce(target.scope, target.projectId);
+    const hasRelated = saved.related?.length > 0;
     // Deliberately does not echo the text back. Handing the model what it just
     // wrote invites it to find something to improve and re-save, and the store
     // is not the place to discover that a save worked — the confirmation is.
     return {
       saved: true,
-      memory: toSummary(result.entry, target.scope),
+      memory: toSummary(saved.entry, target.scope),
       // Told plainly so the agent does not report storing a second memory when
       // it actually corrected one it had already written.
-      replaced: result.replaced,
-      ...(result.entry.flagged
+      replaced: saved.replaced,
+      // Asked at the moment of saving, when the agent still knows whether the
+      // new entry reverses an old one. Left for a later tidy-up, both entries
+      // reach every session in between and contradict each other.
+      related: hasRelated ? saved.related.map((entry) => toSummary(entry, target.scope)) : undefined,
+      relatedNote: hasRelated ? RELATED_NOTE : undefined,
+      ...(saved.entry.flagged
         ? { warning: 'Stored, but held back from future sessions: this text reads as an instruction to the model rather than a fact. The user can see it in the Memory panel.' }
         : {}),
     };

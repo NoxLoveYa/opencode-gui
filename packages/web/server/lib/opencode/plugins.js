@@ -8,8 +8,9 @@ import {
   readConfigLayer,
   writeConfig,
 } from './shared.js';
-import { isPathSpec } from './plugin-spec.js';
+import { isPluginControlSpec, parsedKindForSpec } from './plugin-spec.js';
 import { PLUGIN_SECTION, toPluginEntity, fromPluginEntity, readPluginList } from './config-v2.js';
+import { toLoadablePluginSpec } from './loadable-plugin-spec.js';
 
 // OpenCode 2 reads `plugins` (bare string or `{package, options}`) and still
 // decodes the v1 `plugin` array with its `[spec, options]` tuples. OpenChamber
@@ -19,7 +20,7 @@ const PLUGIN_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$/;
 
 /**
  * @typedef {'user' | 'project'} PluginScope
- * @typedef {'npm' | 'path'} PluginParsedKind
+ * @typedef {'control' | 'npm' | 'path' | 'git'} PluginParsedKind
  * @typedef {Object} PluginEntry
  * @property {string} id base64url encoded "config:scope:spec"
  * @property {string} spec
@@ -58,29 +59,26 @@ function validatePluginSpec(spec) {
   return spec.trim();
 }
 
+function requireLoadablePluginSpec(spec) {
+  const loadable = toLoadablePluginSpec(spec);
+  if (loadable === null) {
+    throw codedError(`OpenCode cannot load plugin "${spec}"`, 'UNLOADABLE_SPEC');
+  }
+  return loadable;
+}
+
 function hasOptions(options) {
   return isRecord(options) && Object.keys(options).length > 0;
 }
 
-function parsedKindForSpec(spec) {
-  // Path indicators must include Windows paths; scoped npm packages also contain '/'.
-  // Do NOT use `includes(path.sep)` — scoped npm packages legitimately contain '/' (e.g. `@gitlab/opencode-gitlab-auth`).
-  return isPathSpec(spec) ? 'path' : 'npm';
-}
 
-function getActiveOpencodeConfigDir() {
-  const customConfigPath = process.env.OPENCODE_CONFIG;
-  if (customConfigPath) {
-    return path.dirname(path.resolve(customConfigPath));
-  }
-  return OPENCODE_CONFIG_DIR;
-}
-
+// `OPENCODE_CONFIG` is one more file OpenCode reads on top of the global
+// config; the global config folder stays where it is, and OpenCode never scans
+// a `plugins/` folder next to the `OPENCODE_CONFIG` file.
 function getActiveUserConfigPaths() {
-  const configDir = getActiveOpencodeConfigDir();
   return [
-    path.join(configDir, 'opencode.json'),
-    path.join(configDir, 'opencode.jsonc'),
+    path.join(OPENCODE_CONFIG_DIR, 'opencode.json'),
+    path.join(OPENCODE_CONFIG_DIR, 'opencode.jsonc'),
   ];
 }
 
@@ -152,12 +150,15 @@ function ensureProjectConfigPath(workingDirectory) {
   return path.join(configDir, 'opencode.json');
 }
 
+/**
+ * The config files OpenCode 2 takes plugins from, in its load order: the global
+ * file, then `OPENCODE_CONFIG`, then the project file. Each one adds its own
+ * entries; `OPENCODE_CONFIG` replaces none of the global ones.
+ */
 function configSources(layers) {
-  const sources = [];
+  const sources = [{ config: layers.userConfig, filePath: layers.paths.userPath, scope: AGENT_SCOPE.USER }];
   if (layers.paths.customPath) {
     sources.push({ config: layers.customConfig, filePath: layers.paths.customPath, scope: AGENT_SCOPE.USER });
-  } else {
-    sources.push({ config: layers.userConfig, filePath: layers.paths.userPath, scope: AGENT_SCOPE.USER });
   }
   if (layers.paths.projectPath) {
     sources.push({ config: layers.projectConfig, filePath: layers.paths.projectPath, scope: AGENT_SCOPE.PROJECT });
@@ -184,7 +185,12 @@ function getPluginTarget(id, workingDirectory) {
   const { scope, value: spec } = splitScopedValue(decoded.value);
   validateScope(scope);
   const layers = readPluginConfigLayers(workingDirectory);
-  const source = configSources(layers).find((candidate) => candidate.scope === scope);
+  // Two user files can both declare the spec; the later one is the entry the
+  // list shows, so it is the one edited.
+  const source = configSources(layers).reverse().find((candidate) => (
+    candidate.scope === scope
+    && readPluginList(candidate.config).some((item) => item.entry.package === spec)
+  ));
   if (!source) {
     return null;
   }
@@ -204,7 +210,7 @@ function pluginDirForScope(scope, workingDirectory) {
     }
     return path.join(workingDirectory, '.opencode', 'plugins');
   }
-  return path.join(getActiveOpencodeConfigDir(), 'plugins');
+  return path.join(OPENCODE_CONFIG_DIR, 'plugins');
 }
 
 /**
@@ -261,6 +267,11 @@ export function parsePluginRaw(raw) {
 /** @public Exposed to tests that dynamically import the plugins module. */
 export function serializePluginEntry(entry) {
   const spec = validatePluginSpec(entry?.spec);
+  // OpenCode reads only a bare `-name` string as a control entry; written as
+  // `{package, options}` it becomes a package to install.
+  if (isPluginControlSpec(spec) && hasOptions(entry?.options)) {
+    throw codedError(`Plugin control entry "${spec}" takes no options`, 'INVALID_SPEC');
+  }
   const serialized = fromPluginEntity({ package: spec, options: hasOptions(entry?.options) ? entry.options : undefined });
   if (serialized === null) {
     throw codedError('Plugin spec must be a non-empty string', 'INVALID_SPEC');
@@ -299,7 +310,7 @@ function pluginArrayForWrite(config) {
 
 function listPluginEntries(workingDirectory) {
   const layers = readPluginConfigLayers(workingDirectory);
-  return configSources(layers).flatMap((source) => {
+  const entries = configSources(layers).flatMap((source) => {
     return readPluginList(source.config).map((item) => {
       const entry = {
         id: encodePluginId('config', `${source.scope}:${item.entry.package}`),
@@ -314,6 +325,9 @@ function listPluginEntries(workingDirectory) {
       return entry;
     });
   });
+  // A spec in both the global file and `OPENCODE_CONFIG` shares one id; the
+  // `OPENCODE_CONFIG` entry is listed, matching `getPluginTarget`.
+  return [...new Map(entries.map((entry) => [entry.id, entry])).values()];
 }
 
 function getPluginEntry(id, workingDirectory) {
@@ -321,7 +335,7 @@ function getPluginEntry(id, workingDirectory) {
 }
 
 function createPluginEntry(entry, workingDirectory) {
-  const spec = validatePluginSpec(entry?.spec);
+  const spec = requireLoadablePluginSpec(validatePluginSpec(entry?.spec));
   const scope = entry?.scope || AGENT_SCOPE.USER;
   validateScope(scope);
 
@@ -354,7 +368,10 @@ function updatePluginEntry(id, updates, workingDirectory) {
     throw codedError('Plugin entry not found', 'NOT_FOUND');
   }
   const existing = parsePluginRaw(target.plugin[target.index]);
-  const nextSpec = updates?.spec === undefined ? existing.spec : validatePluginSpec(updates.spec);
+  let nextSpec = updates?.spec === undefined ? existing.spec : validatePluginSpec(updates.spec);
+  // An entry already in the config keeps its spec as written; only a changed
+  // spec has to be one OpenCode loads.
+  if (nextSpec !== existing.spec) nextSpec = requireLoadablePluginSpec(nextSpec);
   const nextOptions = updates?.options === undefined ? existing.options : updates.options;
   target.plugin[target.index] = serializePluginEntry({ spec: nextSpec, options: nextOptions });
   writeConfig(target.source.config, target.source.filePath);

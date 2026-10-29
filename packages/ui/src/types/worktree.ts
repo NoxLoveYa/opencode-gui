@@ -18,6 +18,15 @@ export interface WorktreeMetadata {
   /** SDK worktree name (slug), if available. */
   name?: string;
 
+  /**
+   * The task this worktree is for, from its branch description: the agent
+   * names it once the task is clear, the user can rename it. Absent until then.
+   */
+  title?: string;
+
+  /** When the user pinned the task to the top of the sidebar; absent while unpinned. */
+  pinnedAt?: number;
+
   kind?: 'pr' | 'standard';
 
   /**

@@ -1,8 +1,11 @@
 import React from 'react';
 import { defaultRangeExtractor, measureElement, useVirtualizer, type VirtualItem, type Virtualizer } from '@tanstack/react-virtual';
 import type { SessionSidebarRow, SessionSidebarRowModel } from './sessionSidebarRowModel';
+import { SessionTreeGuides } from './sessions/SessionTreeGuides';
+import { SESSION_TREE_BASE_PADDING_PX } from './sessions/sessionTreeGeometry';
 import {
   boundaryClipKeyframes,
+  boundaryFadeInKeyframes,
   findSessionSidebarDisclosure,
   SIDEBAR_DISCLOSURE_EASING,
   SIDEBAR_DISCLOSURE_MS,
@@ -13,6 +16,7 @@ import {
   getInitialSessionSidebarRowIndexes,
   mergeSessionSidebarVirtualIndexes,
   sectionSpacingAfter,
+  sectionWrapperClass,
   sessionSidebarRowSizeKey,
   sessionSidebarRowVirtualKey,
 } from './sessionSidebarVirtualization';
@@ -39,6 +43,10 @@ type DisclosureMotion = {
   slidingIndexes: readonly number[];
 };
 
+// Closing rows are gone well before the boundary reaches them; opening rows
+// come up as the boundary uncovers them (`boundaryFadeInKeyframes`).
+const DISCLOSURE_FADE_OUT: Keyframe[] = [{ opacity: 1 }, { opacity: 0, offset: 0.6 }, { opacity: 0 }];
+
 const prefersReducedMotion = (): boolean =>
   globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
@@ -48,6 +56,10 @@ type Props = {
   pinnedRowIndexes: ReadonlySet<number>;
   renderRow: (row: SessionSidebarRow, index: number) => React.ReactNode;
   onFirstVisibleIndexChange: (index: number) => void;
+  /** Where a level 0 row's slot starts, for the tree guides: the phone's rows sit further in. */
+  guideSlotStartPx?: number;
+  /** Brings a row to the middle of the list; a new `id` asks again for the same row. */
+  scrollRequest?: { index: number; id: number } | null;
 };
 
 export function SessionSidebarRows({
@@ -56,6 +68,8 @@ export function SessionSidebarRows({
   pinnedRowIndexes,
   renderRow,
   onFirstVisibleIndexChange,
+  guideSlotStartPx = SESSION_TREE_BASE_PADDING_PX,
+  scrollRequest = null,
 }: Props): React.ReactNode {
   const rows = model.rows;
   const getScrollElement = React.useCallback(() => scrollElement, [scrollElement]);
@@ -124,6 +138,12 @@ export function SessionSidebarRows({
     onFirstVisibleIndexChange(firstVisibleIndex);
   }, [firstVisibleIndex, onFirstVisibleIndexChange]);
 
+  React.useEffect(() => {
+    if (scrollRequest && scrollElement) virtualizer.scrollToIndex(scrollRequest.index, { align: 'center' });
+    // Asked once per request: the rows changing under it must not scroll again.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollRequest, scrollElement]);
+
   const containerRef = React.useRef<HTMLDivElement>(null);
   const lastLayoutRef = React.useRef<{ rows: readonly SessionSidebarRow[]; measurements: readonly VirtualItem[] } | null>(null);
 
@@ -190,8 +210,12 @@ export function SessionSidebarRows({
         // Held shut after the end: the ghost unmounts a render later, and
         // unclipped for that frame it would flash over the rows below.
         animations.push(element.animate(boundaryClipKeyframes(start, element.offsetHeight, motion.from, motion.to), { ...timing, fill: 'forwards' }));
+        // It fades as it goes: kept at full strength, the rows sliding up
+        // read as cutting through text that is still there.
+        animations.push(element.animate(DISCLOSURE_FADE_OUT, { ...timing, fill: 'forwards' }));
       } else if (motion.revealKeys.has(key)) {
         animations.push(element.animate(boundaryClipKeyframes(start, element.offsetHeight, motion.from, motion.to), timing));
+        animations.push(element.animate(boundaryFadeInKeyframes(start, element.offsetHeight, motion.from, motion.to), timing));
       } else if (Number(element.dataset.index) >= motion.followingIndex && distance !== 0) {
         animations.push(element.animate([
           { transform: `translateY(${start + distance}px)` },
@@ -209,6 +233,16 @@ export function SessionSidebarRows({
     };
   }, [motion]);
 
+  // Tree guides draw over the row, so they show on its hover and selection
+  // fills too. The box contains the row's margins, so the lines of
+  // neighbouring rows meet across the gap between them.
+  const renderRowWithGuides = (row: SessionSidebarRow, index: number): React.ReactNode => (row.treeGuides
+    ? <div className="relative flow-root">
+      {renderRow(row, index)}
+      <SessionTreeGuides guides={row.treeGuides} slotStartPx={guideSlotStartPx} />
+    </div>
+    : renderRow(row, index));
+
   if (!scrollElement) {
     const indexes = getInitialSessionSidebarRowIndexes(rows.length);
     const renderedHeight = indexes.reduce((total, index) => total + (rows[index]?.estimateSize ?? 0), 0);
@@ -216,7 +250,7 @@ export function SessionSidebarRows({
     return <div data-sidebar-virtual-pending="true">
       {indexes.map((index) => {
         const row = rows[index];
-        return row ? <div key={row.key} className={sectionSpacingAfter(row, rows[index + 1])}>{renderRow(row, index)}</div> : null;
+        return row ? <div key={row.key} className={sectionWrapperClass(row, rows[index + 1])}>{renderRowWithGuides(row, index)}</div> : null;
       })}
       {estimatedTotal > renderedHeight ? <div aria-hidden="true" style={{ height: estimatedTotal - renderedHeight }} /> : null}
     </div>;
@@ -228,7 +262,7 @@ export function SessionSidebarRows({
       key={ghost.row.key}
       aria-hidden="true"
       inert
-      className={`[&_[data-session-row]]:my-px ${sectionSpacingAfter(ghost.row, ghost.nextRow) ?? ''}`}
+      className={`[&_[data-session-row-box]]:my-px ${sectionWrapperClass(ghost.row, ghost.nextRow)}`}
       data-sidebar-ghost="true"
       data-sidebar-row-key={ghost.row.key}
       data-sidebar-virtual-start={ghost.start}
@@ -241,15 +275,16 @@ export function SessionSidebarRows({
         transform: `translateY(${ghost.start}px)`,
       }}
     >
-      {renderRow(ghost.row, -1)}
+      {renderRowWithGuides(ghost.row, -1)}
     </div>)}
     {virtualItems.map((item) => {
       const row = rows[item.index];
       if (!row) return null;
       return <div
         key={row.key}
-        // Isolated virtual rows cannot collapse neighboring margins: 4px per side preserves the 8px block gap.
-        className={`[&_[data-session-row]]:my-1 ${sectionSpacingAfter(row, rows[item.index + 1]) ?? ''}`}
+        // Isolated virtual rows cannot collapse neighboring margins: 1px per side preserves the 2px gap.
+        // The row box, not the row: a session row in rename keeps the same margins.
+        className={`[&_[data-session-row-box]]:my-px ${sectionWrapperClass(row, rows[item.index + 1])}`}
         data-index={item.index}
         data-sidebar-row-key={row.key}
         data-sidebar-virtual-start={item.start}
@@ -262,7 +297,7 @@ export function SessionSidebarRows({
           transform: `translateY(${item.start}px)`,
         }}
       >
-        {renderRow(row, item.index)}
+        {renderRowWithGuides(row, item.index)}
       </div>;
     })}
   </div>;

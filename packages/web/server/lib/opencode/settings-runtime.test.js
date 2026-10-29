@@ -9,12 +9,15 @@ import { createSettingsRuntime } from './settings-runtime.js';
 const createRuntime = async ({
   mergePersistedSettings = (_current, changes) => changes,
   onManagedPluginSettingsChanged = undefined,
+  onPermissionDefaultModeChanged = undefined,
+  onLastDirectoryChanged = undefined,
   chatRoots = undefined,
+  fs = fsPromises,
 } = {}) => {
   const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-settings-runtime-'));
   const settingsFilePath = path.join(tempRoot, 'settings.json');
   const runtime = createSettingsRuntime({
-    fsPromises,
+    fsPromises: fs,
     path,
     crypto,
     SETTINGS_FILE_PATH: settingsFilePath,
@@ -32,6 +35,8 @@ const createRuntime = async ({
     upsertManagedRemoteTunnelToken: async () => {},
     chatRoots,
     onManagedPluginSettingsChanged,
+    onPermissionDefaultModeChanged,
+    onLastDirectoryChanged,
   });
 
   return {
@@ -45,6 +50,23 @@ const createRuntime = async ({
 };
 
 describe('settings runtime', () => {
+  it('reports the directory the UI moved to, once per change', async () => {
+    const onLastDirectoryChanged = vi.fn();
+    const { runtime, cleanup } = await createRuntime({
+      mergePersistedSettings: (current, changes) => ({ ...current, ...changes }),
+      onLastDirectoryChanged,
+    });
+    try {
+      await runtime.persistSettings({ lastDirectory: '/work/a' });
+      await runtime.persistSettings({ lastDirectory: '/work/a' });
+      await runtime.persistSettings({ lightThemeId: 'flexoki-light' });
+      await runtime.persistSettings({ lastDirectory: '/work/b' });
+      expect(onLastDirectoryChanged.mock.calls).toEqual([['/work/a'], ['/work/b']]);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('refreshes the managed OpenCode config only when a managed plugin setting changed', async () => {
     const onManagedPluginSettingsChanged = vi.fn(async () => {});
     const { runtime, cleanup } = await createRuntime({ onManagedPluginSettingsChanged });
@@ -54,6 +76,32 @@ describe('settings runtime', () => {
 
       await runtime.persistSettings({ agentWebToolEnabled: false });
       expect(onManagedPluginSettingsChanged).toHaveBeenCalledTimes(1);
+
+      // The limit failover plugin loads only while one of its options is set.
+      await runtime.persistSettings({ fallbackModel: 'openai/gpt-5.6' });
+      await runtime.persistSettings({ accountSwitchProviders: ['anthropic'] });
+      expect(onManagedPluginSettingsChanged).toHaveBeenCalledTimes(3);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('tells the running spaces the default permission mode only when it changed, once it is written', async () => {
+    const seen = [];
+    let settingsFilePath = '';
+    const { runtime, cleanup, settingsFilePath: filePath } = await createRuntime({
+      onPermissionDefaultModeChanged: async (mode) => {
+        seen.push([mode, JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8')).permissionDefaultMode]);
+      },
+    });
+    settingsFilePath = filePath;
+    try {
+      await runtime.persistSettings({ lightThemeId: 'flexoki-light' });
+      await runtime.persistSettings({ permissionDefaultMode: 'auto' });
+      await runtime.persistSettings({ permissionDefaultMode: 'auto' });
+      await vi.waitFor(() => expect(seen).toEqual([['auto', 'auto']]));
+      await runtime.persistSettings({ permissionDefaultMode: 'ask' });
+      await vi.waitFor(() => expect(seen).toEqual([['auto', 'auto'], ['ask', 'ask']]));
     } finally {
       await cleanup();
     }
@@ -79,6 +127,23 @@ describe('settings runtime', () => {
         expect(await runtime.readSettingsFromDisk()).toEqual(settings);
         expect(JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8'))).toEqual(settings);
       }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('keeps scheduling off for someone who had switched the control tool off', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      await runtime.persistSettings({ agentControlToolEnabled: false });
+      expect(await runtime.readSettingsFromDiskMigrated()).toMatchObject({ agentControlToolEnabled: false, agentScheduleToolEnabled: false });
+
+      // A choice made after the split stays.
+      await runtime.persistSettings({ agentControlToolEnabled: false, agentScheduleToolEnabled: true });
+      expect((await runtime.readSettingsFromDiskMigrated()).agentScheduleToolEnabled).toBe(true);
+
+      await runtime.persistSettings({ agentControlToolEnabled: true });
+      expect(await runtime.readSettingsFromDiskMigrated()).not.toHaveProperty('agentScheduleToolEnabled');
     } finally {
       await cleanup();
     }
@@ -435,6 +500,70 @@ describe('settings runtime', () => {
     }
   });
 
+  it('writes the next save after one failed with a full disk', async () => {
+    let failNextSettingsWrite = true;
+    const fs = {
+      ...fsPromises,
+      writeFile: async (file, ...rest) => {
+        if (failNextSettingsWrite && path.basename(String(file)).startsWith('settings.json.tmp-')) {
+          failNextSettingsWrite = false;
+          const error = new Error('ENOSPC: no space left on device, write');
+          error.code = 'ENOSPC';
+          throw error;
+        }
+        return fsPromises.writeFile(file, ...rest);
+      },
+    };
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({
+      fs,
+      mergePersistedSettings: (current, changes) => ({ ...current, ...changes }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runtime.persistSettings({ lightThemeId: 'flexoki-light' })).rejects.toThrow('ENOSPC');
+      await expect(runtime.persistSettings({ lastDirectory: '/work/a' })).resolves.toMatchObject({ lastDirectory: '/work/a' });
+      const onDisk = JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8'));
+      expect(onDisk.lastDirectory).toBe('/work/a');
+      expect((await runtime.readSettingsFromDisk()).lightThemeId).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+      await cleanup();
+    }
+  });
+
+  it('writes a save already queued behind one that fails with a full disk', async () => {
+    let failNextSettingsWrite = true;
+    const fs = {
+      ...fsPromises,
+      writeFile: async (file, ...rest) => {
+        if (failNextSettingsWrite && path.basename(String(file)).startsWith('settings.json.tmp-')) {
+          failNextSettingsWrite = false;
+          const error = new Error('ENOSPC: no space left on device, write');
+          error.code = 'ENOSPC';
+          throw error;
+        }
+        return fsPromises.writeFile(file, ...rest);
+      },
+    };
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({
+      fs,
+      mergePersistedSettings: (current, changes) => ({ ...current, ...changes }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const first = runtime.persistSettings({ lightThemeId: 'flexoki-light' });
+      const second = runtime.persistSettings({ lastDirectory: '/work/b' });
+      await expect(first).rejects.toThrow('ENOSPC');
+      await expect(second).resolves.toMatchObject({ lastDirectory: '/work/b' });
+      const onDisk = JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8'));
+      expect(onDisk.lastDirectory).toBe('/work/b');
+      expect((await runtime.readSettingsFromDisk()).lightThemeId).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+      await cleanup();
+    }
+  });
+
   it('removes temp file when writeSettingsToDisk encounters a write error', async () => {
     const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-settings-runtime-'));
     const settingsFilePath = path.join(tempRoot, 'settings.json');
@@ -594,12 +723,12 @@ describe('settings runtime: per-surface profile keys', () => {
   it('a per-surface key set only from one surface has no base and stays absent elsewhere', async () => {
     const { runtime, tempRoot, cleanup } = await createMergingRuntime();
     try {
-      await runtime.persistSettings({ promptNavigatorEnabled: false }, { surface: 'mobile' });
+      await runtime.persistSettings({ stickyUserHeader: false }, { surface: 'mobile' });
       const stored = await readJson(path.join(tempRoot, 'preferences.json'));
-      expect(stored.fields.promptNavigatorEnabled).not.toHaveProperty('value');
-      expect(stored.fields.promptNavigatorEnabled.surfaces.mobile.value).toBe(false);
-      expect((await runtime.readSettingsFromDisk({ surface: 'desktop' })).promptNavigatorEnabled).toBeUndefined();
-      expect((await runtime.readSettingsFromDisk({ surface: 'mobile' })).promptNavigatorEnabled).toBe(false);
+      expect(stored.fields.stickyUserHeader).not.toHaveProperty('value');
+      expect(stored.fields.stickyUserHeader.surfaces.mobile.value).toBe(false);
+      expect((await runtime.readSettingsFromDisk({ surface: 'desktop' })).stickyUserHeader).toBeUndefined();
+      expect((await runtime.readSettingsFromDisk({ surface: 'mobile' })).stickyUserHeader).toBe(false);
     } finally {
       await cleanup();
     }
@@ -627,6 +756,65 @@ describe('settings runtime: per-surface profile keys', () => {
       const stored = await readJson(path.join(tempRoot, 'preferences.json'));
       expect(stored.fields.fontSize.value).toBe(90);
       expect(stored.fields.fontSize.surfaces).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe('settings runtime: notification templates', () => {
+  const emptyTemplates = {
+    completion: { title: '', message: '' },
+    error: { title: '', message: '' },
+    question: { title: '', message: '' },
+    subtask: { title: '', message: '' },
+  };
+  const legacySeed = {
+    completion: { title: '{agent_name} is ready', message: '{model_name} completed the task' },
+    error: { title: 'Tool error', message: '{last_message}' },
+    question: { title: 'Input needed', message: '{last_message}' },
+    subtask: { title: '{agent_name} is ready', message: '{model_name} completed the task' },
+  };
+
+  it('clears the English seed older builds wrote, so the defaults follow the interface language', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ locale: 'zh-CN', notificationTemplates: legacySeed }));
+      const settings = await runtime.readSettingsFromDiskMigrated();
+      expect(settings.notificationTemplates).toEqual(emptyTemplates);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('keeps templates the user wrote', async () => {
+    const custom = {
+      completion: { title: 'Fertig', message: '{last_message}' },
+      error: { title: 'Fehler', message: '{last_message}' },
+      question: { title: 'Eingabe', message: '{last_message}' },
+      subtask: { title: 'Unteraufgabe fertig', message: '' },
+    };
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ notificationTemplates: custom }));
+      const settings = await runtime.readSettingsFromDiskMigrated();
+      expect(settings.notificationTemplates).toEqual(custom);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('fills a missing event with empty fields and leaves the others alone', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({
+        notificationTemplates: { completion: { title: 'Fertig', message: '' } },
+      }));
+      const settings = await runtime.readSettingsFromDiskMigrated();
+      expect(settings.notificationTemplates).toEqual({
+        ...emptyTemplates,
+        completion: { title: 'Fertig', message: '' },
+      });
     } finally {
       await cleanup();
     }

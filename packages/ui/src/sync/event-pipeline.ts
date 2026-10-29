@@ -17,7 +17,7 @@
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client"
 import { z } from "zod"
 import { opencodeClient } from "@/lib/opencode/client"
-import { GLOBAL_EVENT_DIRECTORY, routeWireEvent, syncEventSessionID, type SyncEvent } from "@/lib/opencode/events"
+import { GLOBAL_EVENT_DIRECTORY, hostTurnStart, routeWireEvent, syncEventSessionID, type SyncEvent } from "@/lib/opencode/events"
 import type { Metadata } from "@/lib/opencode/model"
 import { getRuntimeUrlResolver } from "@/lib/runtime-url"
 import { clearRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from "@/lib/runtime-auth"
@@ -26,6 +26,7 @@ import { type RelayTunnelWebSocket } from "@/lib/relay/tunnel-client"
 import { openRuntimeWebSocket } from "@/lib/relay/runtime-socket"
 import { isVSCodeRuntime } from "@/lib/desktop"
 import { spaceCreationStepSchema } from "@/lib/spaces/spaces-api"
+import { workflowRunSchema } from "@/lib/workflows/model"
 import { syncDebug } from "./debug"
 import { countSyncPerformance } from "./performance-diagnostics"
 
@@ -84,6 +85,8 @@ export type EventPipelineInput = {
   onSpaceProgress?: (details: SpaceProgress) => void
   /** Called when the setup commands of an isolated space moved on: began, the next one, or ended. */
   onSpaceSetup?: (spaceId: string) => void
+  /** Called when the host follows an isolated space's permission modes again, after a gap or at first. */
+  onSpacePermissionStream?: (spaceId: string) => void
   /**
    * Called whenever the stream receives anything: an event, a WebSocket frame, or a keepalive
    * that carries no event. Starting an attempt that has received nothing yet does not count.
@@ -120,10 +123,14 @@ const openchamberStatusSchema = z.object({
     sessionId: z.string().min(1).optional(),
     status: z.enum(["idle", "busy", "retry"]),
     metadata: z.object({ attempt: z.number(), message: z.string(), next: z.number() }).partial().optional(),
+    // The host's clock when it sent the event, and when the running turn began on it.
+    timestamp: z.number().optional(),
+    turnStartedAt: z.number().optional(),
   }),
 })
 
-// OpenChamber owns archive state; its server announces changes on the stream.
+// Archive changes the server's archive file made (a session leaving it, or one
+// with no folder to move to); OpenCode announces its own record's changes.
 const openchamberArchivedSchema = z.object({
   type: z.literal("openchamber:session-archived"),
   properties: z.object({ sessionID: z.string().min(1), archivedAt: z.number().nullable() }),
@@ -150,6 +157,45 @@ const openchamberNotificationSchema = z.object({
       desktopStdoutActive: z.boolean(),
     })
     .partial(),
+})
+
+// A page an agent showed that waits for the user's answer; the server holds
+// the waiting call, so it announces both ends of the wait.
+const openchamberPageWaitingSchema = z.object({
+  type: z.literal("openchamber:page-waiting"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    directory: z.string().min(1).nullable().catch(null),
+    page: z.object({ id: z.string().min(1), title: z.string() }),
+  }),
+})
+
+const openchamberPageSettledSchema = z.object({
+  type: z.literal("openchamber:page-settled"),
+  properties: z.object({ sessionID: z.string().min(1), pageID: z.string().min(1) }),
+})
+
+// The server writes a session's recap and suggestion a while after its turn
+// ends, reading the session's directory; it announces both ends of the wait.
+const openchamberSessionAssistSchema = z.object({
+  type: z.literal("openchamber:session-assist"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    directory: z.string().min(1).nullable().catch(null),
+    pending: z.boolean(),
+  }),
+})
+
+// A workflow run the server runs for a session changed (`lib/workflows` on the server).
+const openchamberWorkflowRunSchema = z.object({
+  type: z.literal("openchamber:workflow-run"),
+  properties: z.object({ run: workflowRunSchema }),
+})
+
+// The user deleted a finished workflow run.
+const openchamberWorkflowRunRemovedSchema = z.object({
+  type: z.literal("openchamber:workflow-run-removed"),
+  properties: z.object({ runId: z.string().min(1), parentSessionId: z.string().min(1) }),
 })
 
 // The host's announcement of an isolated space's event connection. It is not an event of any
@@ -181,13 +227,21 @@ const openchamberSpaceSetupSchema = z.object({
   properties: z.object({ spaceId: z.string().regex(/^[0-9a-f]{12}$/) }),
 })
 
+// `spaceId` marks a policy the host forwarded from that isolated space, which keeps its own.
 const openchamberAutoAcceptSchema = z.object({
   type: z.literal("openchamber:permission-auto-accept.updated"),
   properties: z.object({
     sessions: z.record(z.string(), z.boolean()),
     modes: z.record(z.string(), z.enum(["ask", "safety", "auto"])).optional(),
     revision: z.number().optional(),
+    spaceId: z.string().regex(/^[0-9a-f]{12}$/).optional(),
   }),
+})
+
+// The host follows an isolated space's permission modes again; what changed in a gap is read from the space.
+const openchamberSpacePermissionStreamSchema = z.object({
+  type: z.literal("openchamber:space-permission-stream"),
+  properties: z.object({ spaceId: z.string().regex(/^[0-9a-f]{12}$/), status: z.literal("connected") }),
 })
 
 // The server's auto-answer in a `safety` or `auto` session held back or failed:
@@ -198,6 +252,7 @@ const openchamberLeftForUserSchema = z.object({
     permissionId: z.string().min(1),
     sessionId: z.string().min(1),
     directory: z.string().nullable(),
+    spaceId: z.string().regex(/^[0-9a-f]{12}$/).optional(),
   }),
 })
 
@@ -220,17 +275,20 @@ const OPENCHAMBER_TYPE_PREFIX = "openchamber:"
 function translateOpenchamberStatus(payload: unknown): SyncEvent | null {
   const parsed = openchamberStatusSchema.safeParse(payload)
   if (!parsed.success) return null
-  const { sessionID, sessionId, status, metadata } = parsed.data.properties
+  const { sessionID, sessionId, status, metadata, timestamp, turnStartedAt } = parsed.data.properties
   const id = sessionID ?? sessionId
   if (!id) return null
+  const turnStart = status !== "idle" && timestamp !== undefined && turnStartedAt !== undefined
+    ? { turnStart: hostTurnStart(turnStartedAt, timestamp) }
+    : {}
   if (status === "retry") {
     if (metadata?.attempt === undefined || metadata.message === undefined || metadata.next === undefined) return null
     return {
       type: "session.status",
-      properties: { sessionID: id, status: { type: "retry", attempt: metadata.attempt, message: metadata.message, next: metadata.next } },
+      properties: { sessionID: id, status: { type: "retry", attempt: metadata.attempt, message: metadata.message, next: metadata.next }, ...turnStart },
     }
   }
-  return { type: "session.status", properties: { sessionID: id, status: { type: status } } }
+  return { type: "session.status", properties: { sessionID: id, status: { type: status }, ...turnStart } }
 }
 
 /** Translates an `openchamber:*` bridge payload into a sync event, or null when it is not a valid one. */
@@ -260,9 +318,29 @@ function translateOpenchamberEvent(type: string, payload: unknown): SyncEvent | 
       const parsed = openchamberAutoAcceptSchema.safeParse(payload)
       return parsed.success ? { type: "openchamber.permission-auto-accept", properties: parsed.data.properties } : null
     }
+    case "openchamber:page-waiting": {
+      const parsed = openchamberPageWaitingSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.page-waiting", properties: parsed.data.properties } : null
+    }
+    case "openchamber:page-settled": {
+      const parsed = openchamberPageSettledSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.page-settled", properties: parsed.data.properties } : null
+    }
+    case "openchamber:session-assist": {
+      const parsed = openchamberSessionAssistSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.session-assist", properties: parsed.data.properties } : null
+    }
     case "openchamber:permission-auto-accept.left-for-user": {
       const parsed = openchamberLeftForUserSchema.safeParse(payload)
       return parsed.success ? { type: "openchamber.permission-left-for-user", properties: parsed.data.properties } : null
+    }
+    case "openchamber:workflow-run": {
+      const parsed = openchamberWorkflowRunSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.workflow-run", properties: parsed.data.properties } : null
+    }
+    case "openchamber:workflow-run-removed": {
+      const parsed = openchamberWorkflowRunRemovedSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.workflow-run-removed", properties: parsed.data.properties } : null
     }
     default:
       return null
@@ -288,6 +366,7 @@ type ClassifiedStreamPayload =
   | { kind: "space-stream"; properties: z.infer<typeof openchamberSpaceStreamSchema>["properties"] }
   | { kind: "space-progress"; properties: SpaceProgress }
   | { kind: "space-setup"; spaceId: string }
+  | { kind: "space-permission-stream"; spaceId: string }
   | { kind: "events"; events: Array<{ directory: string; event: SyncEvent }> }
 
 const NO_EVENTS: ClassifiedStreamPayload = { kind: "events", events: [] }
@@ -315,6 +394,10 @@ export function classifyStreamPayload(payload: unknown, frameDirectory: string |
     case "openchamber:space-setup": {
       const parsed = openchamberSpaceSetupSchema.safeParse(payload)
       return parsed.success ? { kind: "space-setup", spaceId: parsed.data.properties.spaceId } : NO_EVENTS
+    }
+    case "openchamber:space-permission-stream": {
+      const parsed = openchamberSpacePermissionStreamSchema.safeParse(payload)
+      return parsed.success ? { kind: "space-permission-stream", spaceId: parsed.data.properties.spaceId } : NO_EVENTS
     }
   }
   const bridged = translateOpenchamberEvent(type, payload)
@@ -382,6 +465,14 @@ function coalesceKey(event: SyncEvent): string | undefined {
 
 /** Merges a later event into the queued one it coalesces with. */
 function mergeCoalesced(previous: SyncEvent, next: SyncEvent): SyncEvent {
+  // A later step of the same turn knows nothing of its start; the turn that
+  // began in this flush keeps it until something reports the turn over.
+  if (previous.type === "session.status" && next.type === "session.status") {
+    const turnStart = next.properties.turnStart ?? previous.properties.turnStart
+    return turnStart && next.properties.status.type !== "idle"
+      ? { ...next, properties: { ...next.properties, turnStart } }
+      : next
+  }
   if (previous.type === "message.part.delta" && next.type === "message.part.delta") {
     return { ...next, properties: { ...next.properties, delta: previous.properties.delta + next.properties.delta } }
   }
@@ -411,6 +502,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     onSpaceStream,
     onSpaceProgress,
     onSpaceSetup,
+    onSpacePermissionStream,
     onStreamActivity,
     routeDirectory,
     transport = "auto",
@@ -669,6 +761,10 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     }
     if (classified.kind === "space-setup") {
       onSpaceSetup?.(classified.spaceId)
+      return
+    }
+    if (classified.kind === "space-permission-stream") {
+      onSpacePermissionStream?.(classified.spaceId)
       return
     }
     for (const { directory, event } of classified.events) {

@@ -20,7 +20,7 @@ jobs:
     steps:
       - name: Generate access-check token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.OC_REVIEW_APP_ID }}
           private-key: ${{ secrets.OC_REVIEW_APP_PRIVATE_KEY }}
@@ -60,7 +60,7 @@ jobs:
       # for it and posts its summary (see .opencode/agent/summarize.md).
       - name: Generate bot app token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.OC_REVIEW_APP_ID }}
           private-key: ${{ secrets.OC_REVIEW_APP_PRIVATE_KEY }}
@@ -117,6 +117,12 @@ jobs:
             gh issue view "$ITEM_NUMBER" --repo "$GITHUB_REPOSITORY" \
               --json title,body,author,state,labels,comments > "$context/item.json"
           fi
+          # JSON keeps each body on one line, and the agent's read tool cuts a
+          # line at 2,000 characters, so a long body arrived truncated.
+          jq -r '"# \(.title)\n\nBy @\(.author.login)\n\n\(.body // "")",
+            (.comments[] | "\n## Comment by @\(.author.login), \(.createdAt)\n\n\(.body)"),
+            ((.reviews // [])[] | select((.body // "") != "") | "\n## Review by @\(.author.login), \(.state), \(.submittedAt)\n\n\(.body)")' \
+            "$context/item.json" > "$context/item.md"
 
           ls -la "$context"
 

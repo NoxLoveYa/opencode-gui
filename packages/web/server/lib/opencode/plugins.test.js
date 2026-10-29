@@ -5,8 +5,10 @@ import path from 'path';
 
 let rootDir;
 let projectDir;
+let globalDir;
 let userConfigPath;
 let plugins;
+const originalConfigDir = process.env.OPENCODE_CONFIG_DIR;
 
 function thrownBy(fn) {
   try {
@@ -30,6 +32,9 @@ describe('opencode plugins data layer', () => {
   beforeAll(async () => {
     rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-plugins-'));
     userConfigPath = path.join(rootDir, 'user-opencode.json');
+    // The global config folder is read at import; keep it off the real one.
+    globalDir = path.join(rootDir, 'global');
+    process.env.OPENCODE_CONFIG_DIR = globalDir;
     process.env.OPENCODE_CONFIG = userConfigPath;
     plugins = await import('./plugins.js');
   });
@@ -38,11 +43,14 @@ describe('opencode plugins data layer', () => {
     process.env.OPENCODE_CONFIG = userConfigPath;
     projectDir = fs.mkdtempSync(path.join(rootDir, 'project-'));
     fs.rmSync(userConfigPath, { force: true });
+    fs.rmSync(globalDir, { recursive: true, force: true });
   });
 
   afterAll(() => {
     fs.rmSync(rootDir, { recursive: true, force: true });
     delete process.env.OPENCODE_CONFIG;
+    if (originalConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = originalConfigDir;
   });
 
   test('parses v1 tuples and v2 objects into the same entry', () => {
@@ -62,6 +70,12 @@ describe('opencode plugins data layer', () => {
     expect(plugins.serializePluginEntry({ spec: 'foo', options: { a: 1 } })).toEqual({ package: 'foo', options: { a: 1 } });
   });
 
+  test('keeps a control entry a bare string and refuses options for it', () => {
+    // OpenCode reads `{package: "-hooks"}` as a package to install.
+    expect(plugins.serializePluginEntry({ spec: '-hooks' })).toBe('-hooks');
+    expect(() => plugins.serializePluginEntry({ spec: '-hooks', options: { a: 1 } })).toThrow('takes no options');
+  });
+
   test('rejects invalid specs and file names', () => {
     expect(() => plugins.createPluginEntry({ spec: 123, scope: 'user' }, projectDir)).toThrow('Plugin spec');
     expect(() => plugins.writePluginDirFile({ fileName: '', content: '', scope: 'project' }, projectDir)).toThrow('Plugin file name');
@@ -79,6 +93,45 @@ describe('opencode plugins data layer', () => {
     expect(readJson(userConfigPath).plugin).toBeUndefined();
     expect(() => plugins.createPluginEntry({ spec: 'plain-plugin', scope: 'user' }, projectDir)).toThrow('already exists');
     expect(thrownBy(() => plugins.createPluginEntry({ spec: 'plain-plugin', scope: 'user' }, projectDir))).toHaveProperty('code', 'ENTRY_EXISTS');
+  });
+
+  test('writes a plain repository address in the form OpenCode loads', () => {
+    plugins.createPluginEntry({ spec: ' https://github.com/owner/repo.git ', scope: 'user' }, projectDir);
+
+    expect(readJson(userConfigPath).plugins).toEqual(['git+https://github.com/owner/repo.git']);
+    expect(thrownBy(() => plugins.createPluginEntry({ spec: 'git+https://github.com/owner/repo.git', scope: 'user' }, projectDir)))
+      .toHaveProperty('code', 'ENTRY_EXISTS');
+  });
+
+  test('refuses a spec OpenCode cannot load and leaves the config untouched', () => {
+    writeJson(userConfigPath, { plugins: ['alpha'] });
+
+    expect(thrownBy(() => plugins.createPluginEntry({ spec: 'https://example.com/plugin.tgz', scope: 'user' }, projectDir)))
+      .toHaveProperty('code', 'UNLOADABLE_SPEC');
+    expect(thrownBy(() => plugins.updatePluginEntry(plugins.encodePluginId('config', 'user:alpha'), { spec: 'my plugin' }, projectDir)))
+      .toHaveProperty('code', 'UNLOADABLE_SPEC');
+    expect(readJson(userConfigPath)).toEqual({ plugins: ['alpha'] });
+  });
+
+  test('keeps an existing entry OpenCode cannot load when only its options change', () => {
+    const legacy = 'https://example.com/plugin.tgz';
+    writeJson(userConfigPath, { plugins: [legacy] });
+
+    plugins.updatePluginEntry(plugins.encodePluginId('config', `user:${legacy}`), { spec: legacy, options: { a: 1 } }, projectDir);
+    expect(readJson(userConfigPath).plugins).toEqual([{ package: legacy, options: { a: 1 } }]);
+  });
+
+  test('keeps control entries in place when other entries are written', () => {
+    writeJson(userConfigPath, { plugins: ['-hooks', 'alpha', '*'] });
+
+    plugins.createPluginEntry({ spec: 'beta', scope: 'user' }, projectDir);
+    plugins.updatePluginEntry(plugins.encodePluginId('config', 'user:alpha'), { spec: 'alpha', options: { a: 1 } }, projectDir);
+    expect(readJson(userConfigPath).plugins).toEqual(['-hooks', { package: 'alpha', options: { a: 1 } }, '*', 'beta']);
+    expect(plugins.listPluginEntries(projectDir).filter((entry) => entry.parsedKind === 'control').map((entry) => entry.spec))
+      .toEqual(['-hooks', '*']);
+
+    plugins.deletePluginEntry(plugins.encodePluginId('config', 'user:-hooks'), projectDir);
+    expect(readJson(userConfigPath).plugins).toEqual([{ package: 'alpha', options: { a: 1 } }, '*', 'beta']);
   });
 
   test('routes project entries to project config and user entries to custom user config', () => {
@@ -103,8 +156,43 @@ describe('opencode plugins data layer', () => {
 
     expect(readJson(firstConfigPath).plugins).toEqual(['first-plugin']);
     expect(readJson(secondConfigPath).plugins).toEqual(['second-plugin']);
-    expect(fs.existsSync(path.join(path.dirname(firstConfigPath), 'plugins', 'first.js'))).toBe(true);
-    expect(fs.existsSync(path.join(path.dirname(secondConfigPath), 'plugins', 'second.js'))).toBe(true);
+    // OpenCode scans only the global `plugins/` folder for user plugin files.
+    expect(fs.readdirSync(path.join(globalDir, 'plugins')).sort()).toEqual(['first.js', 'second.js']);
+    expect(fs.existsSync(path.join(rootDir, 'first', 'plugins'))).toBe(false);
+  });
+
+  test('lists the global config and plugins folder when OPENCODE_CONFIG names a missing file', () => {
+    const globalConfigPath = path.join(globalDir, 'opencode.json');
+    writeJson(globalConfigPath, { plugins: ['global-plugin'] });
+    fs.mkdirSync(path.join(globalDir, 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(globalDir, 'plugins', 'global-file.js'), '', 'utf8');
+    process.env.OPENCODE_CONFIG = path.join(rootDir, 'missing', 'opencode.json');
+
+    expect(plugins.listPluginEntries(projectDir)).toEqual([
+      expect.objectContaining({ spec: 'global-plugin', scope: 'user', sourcePath: globalConfigPath }),
+    ]);
+    expect(plugins.listPluginDirFiles(projectDir)).toEqual([
+      expect.objectContaining({ fileName: 'global-file.js', scope: 'user', kind: 'file', absolutePath: path.join(globalDir, 'plugins', 'global-file.js') }),
+    ]);
+  });
+
+  test('lists global and OPENCODE_CONFIG entries together and edits each in its own file', () => {
+    const globalConfigPath = path.join(globalDir, 'opencode.json');
+    writeJson(globalConfigPath, { plugins: ['global-plugin', 'shared-plugin'] });
+    writeJson(userConfigPath, { plugins: ['custom-plugin', 'shared-plugin'] });
+
+    expect(plugins.listPluginEntries(projectDir).map((entry) => [entry.spec, entry.sourcePath])).toEqual([
+      ['global-plugin', globalConfigPath],
+      ['shared-plugin', userConfigPath],
+      ['custom-plugin', userConfigPath],
+    ]);
+    expect(thrownBy(() => plugins.createPluginEntry({ spec: 'global-plugin', scope: 'user' }, projectDir)))
+      .toHaveProperty('code', 'ENTRY_EXISTS');
+
+    plugins.updatePluginEntry(plugins.encodePluginId('config', 'user:global-plugin'), { options: { a: 1 } }, projectDir);
+    plugins.deletePluginEntry(plugins.encodePluginId('config', 'user:shared-plugin'), projectDir);
+    expect(readJson(globalConfigPath).plugins).toEqual([{ package: 'global-plugin', options: { a: 1 } }, 'shared-plugin']);
+    expect(readJson(userConfigPath).plugins).toEqual(['custom-plugin']);
   });
 
   test('rewrites a v1 plugin array into v2 plugins when one entry is updated', () => {
@@ -153,7 +241,7 @@ describe('opencode plugins data layer', () => {
   });
 
   test('lists entries from user and project layers with scopes and parsed kinds', () => {
-    writeJson(userConfigPath, { plugin: ['npm-plugin', '/abs/plugin.js', '@scope/pkg@1.0.0'] });
+    writeJson(userConfigPath, { plugin: ['npm-plugin', '/abs/plugin.js', '@scope/pkg@1.0.0', 'github:acme/opencode-plugin'] });
     writeJson(path.join(projectDir, '.opencode', 'opencode.json'), { plugin: ['./local-plugin.js'] });
 
     const entries = plugins.listPluginEntries(projectDir);
@@ -161,6 +249,7 @@ describe('opencode plugins data layer', () => {
       expect.objectContaining({ spec: 'npm-plugin', scope: 'user', kind: 'config', parsedKind: 'npm', sourcePath: userConfigPath }),
       expect.objectContaining({ spec: '/abs/plugin.js', scope: 'user', kind: 'config', parsedKind: 'path', sourcePath: userConfigPath }),
       expect.objectContaining({ spec: '@scope/pkg@1.0.0', scope: 'user', kind: 'config', parsedKind: 'npm', sourcePath: userConfigPath }),
+      expect.objectContaining({ spec: 'github:acme/opencode-plugin', scope: 'user', kind: 'config', parsedKind: 'git', sourcePath: userConfigPath }),
       expect.objectContaining({ spec: './local-plugin.js', scope: 'project', kind: 'config', parsedKind: 'path', sourcePath: path.join(projectDir, '.opencode', 'opencode.json') }),
     ]);
     fs.rmSync(userConfigPath, { force: true });

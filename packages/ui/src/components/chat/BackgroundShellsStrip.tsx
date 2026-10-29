@@ -21,7 +21,6 @@ interface BackgroundShellsStripProps {
   directory?: string;
 }
 
-const ELAPSED_TICK_MS = 1000;
 const COMMAND_TOOLTIP_DELAY_MS = 500;
 
 /**
@@ -45,7 +44,7 @@ const useSessionTreeShells = (sessionId: string): TrackedShell[] => {
 /** Its own leaf, so the once-a-second tick re-renders this text alone. */
 const ShellElapsed: React.FC<{ startedAt: number }> = ({ startedAt }) => {
   const { t } = useI18n();
-  const now = useDurationTickerNow(true, ELAPSED_TICK_MS);
+  const now = useDurationTickerNow(true);
   const label = formatSessionActivityDuration(now - startedAt, t);
   return (
     <span className="shrink-0 typography-meta tabular-nums text-muted-foreground" title={t('chat.backgroundShells.elapsed', { duration: label })}>
@@ -111,18 +110,18 @@ const ShellRow: React.FC<{
   const { t } = useI18n();
 
   return (
-    <div className="flex h-10 items-center gap-2 ps-3 pe-1.5">
+    <div className="flex oc-composer-row items-center gap-2 ps-3 pe-1.5">
       <Icon name="terminal-box" className="size-3.5 shrink-0 text-muted-foreground" />
       <Tooltip delayDuration={COMMAND_TOOLTIP_DELAY_MS}>
         <TooltipTrigger asChild>
-          <span className="min-w-0 flex-1 truncate font-mono typography-meta text-foreground">
+          <span className="min-w-0 flex-1 truncate font-mono typography-code text-foreground">
             {shell.command}
           </span>
         </TooltipTrigger>
         {/* The row shows one truncated line; the tooltip keeps the command's
             own line breaks and indentation and wraps only overlong lines. */}
         <TooltipContent side="top" sideOffset={6} className="max-w-[min(36rem,90vw)] [text-wrap:wrap]">
-          <pre className="max-h-[50vh] overflow-y-auto whitespace-pre-wrap break-words font-mono typography-meta">
+          <pre className="max-h-[50vh] overflow-y-auto whitespace-pre-wrap break-words font-mono typography-code">
             {shell.command}
           </pre>
         </TooltipContent>
@@ -185,7 +184,7 @@ export const BackgroundShellsStrip: React.FC<BackgroundShellsStripProps> = React
   // command in it at once.
   return (
     <div role="group" className="border-b border-border/60" aria-label={t('chat.backgroundShells.aria')}>
-      <div className="flex h-10 items-center gap-2 ps-3 pe-1.5">
+      <div className="flex oc-composer-row items-center gap-2 ps-3 pe-1.5">
         <Button
           type="button"
           variant="ghost"

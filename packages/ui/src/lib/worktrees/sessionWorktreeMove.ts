@@ -1,10 +1,13 @@
 import type { Session } from '@/lib/opencode/model';
 import type { I18nKey } from '@/lib/i18n';
 import { toast } from '@/components/ui';
-import { checkIsGitRepository, getGitStatus } from '@/lib/gitApi';
+import { checkIsGitRepository, getGitStatus, setGitWorktreeTitle } from '@/lib/gitApi';
+import { hasWorkTitle } from '@/lib/sessionWorkTitle';
 import { normalizePath } from '@/lib/pathNormalization';
-import { createQuickWorktree, resolveProjectRef } from '@/lib/worktreeSessionCreator';
+import { createQuickWorktree, resolveFolderProjectRef, resolveProjectRef } from '@/lib/worktreeSessionCreator';
 import { getLatestWorktreeMetadata, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
+import { checkoutHoldsDirectory, findWorktreeHoldingDirectory } from '@/lib/worktrees/worktreePaths';
+import { resolveWorktreeStartDirectory } from '@/lib/worktrees/worktreeStartDirectory';
 import { refreshGlobalSessionsForDirectories } from '@/stores/useGlobalSessionsStore';
 import { isAmbiguousSendFailure } from '@/sync/send-failure-classification';
 import { getSessionLiveActivity, isSessionBusyNow, moveSessionToDirectory } from '@/sync/session-actions';
@@ -101,8 +104,10 @@ const resolveSourceBranch = async (directory: string, projectDirectory: string):
   const normalizedDirectory = normalizePath(directory);
   const normalizedProjectDirectory = normalizePath(projectDirectory) ?? projectDirectory;
   const worktrees = useSessionUIStore.getState().availableWorktreesByProject;
-  const metadata = (worktrees.get(normalizedProjectDirectory) ?? worktrees.get(projectDirectory) ?? [])
-    .find((worktree) => normalizePath(worktree.path) === normalizedDirectory);
+  const metadata = findWorktreeHoldingDirectory(
+    worktrees.get(normalizedProjectDirectory) ?? worktrees.get(projectDirectory) ?? [],
+    normalizedDirectory ?? directory,
+  );
   const mappedBranch = metadata?.branch?.trim();
   if (mappedBranch) return mappedBranch;
 
@@ -158,7 +163,7 @@ const rollbackMovedSessions = async (
     }
     try {
       await moveSessionToDirectory(session, worktreeDirectory, sourceDirectory);
-      useSessionUIStore.getState().setWorktreeMetadata(session.id, previousMetadata.get(session.id) ?? null);
+      useSessionUIStore.getState().setWorktreeMetadata(session.id, previousMetadata.get(session.id) ?? null, sourceDirectory);
     } catch (error) {
       failures.push({
         sessionId: session.id,
@@ -242,7 +247,7 @@ const moveSessionTreeTransaction = async (
         }
         moved.push(session);
         if (session.id === input.root.id) continue;
-        useSessionUIStore.getState().setWorktreeMetadata(session.id, destination.metadata ? getLatestWorktreeMetadata(destination.metadata) : null);
+        useSessionUIStore.getState().setWorktreeMetadata(session.id, destination.metadata ? getLatestWorktreeMetadata(destination.metadata) : null, destination.directory);
       }
     } catch (error) {
       const moveError = error instanceof Error ? error : new Error(String(error));
@@ -273,7 +278,7 @@ const moveSessionTreeTransaction = async (
       }
       throw moveError;
     }
-    useSessionUIStore.getState().setWorktreeMetadata(input.root.id, destination.metadata ? getLatestWorktreeMetadata(destination.metadata) : null);
+    useSessionUIStore.getState().setWorktreeMetadata(input.root.id, destination.metadata ? getLatestWorktreeMetadata(destination.metadata) : null, destination.directory);
 
     await refreshMovedDirectories(input.sourceDirectory, destination.directory);
     return destination.directory;
@@ -290,17 +295,22 @@ export const moveSessionTreeToExistingWorktree = async (input: {
 }): Promise<string> => {
   const normalizedSourceDirectory = normalizePath(input.sourceDirectory) ?? input.sourceDirectory;
   const normalizedDestinationDirectory = normalizePath(input.destination.path) ?? input.destination.path;
-  if (normalizedSourceDirectory === normalizedDestinationDirectory) {
+  if (checkoutHoldsDirectory(normalizedDestinationDirectory, normalizedSourceDirectory)) {
     throw new Error('Source and destination are the same');
   }
   if (input.destination.worktreeStatus !== 'ready') {
     throw new Error('Destination worktree is not ready');
   }
 
-  return moveSessionTreeTransaction(input, async () => ({
-    directory: input.destination.path,
-    metadata: input.destination,
-  }));
+  return moveSessionTreeTransaction(input, async () => {
+    // The project of the session being moved decides the folder, as the server does;
+    // the destination worktree can be shared by several projects of one repository.
+    const project = await resolveFolderProjectRef(input.sourceDirectory);
+    return {
+      directory: project ? await resolveWorktreeStartDirectory(project, input.destination.path) : input.destination.path,
+      metadata: input.destination,
+    };
+  });
 };
 
 const moveSessionTreeToProject = async (input: {
@@ -320,7 +330,7 @@ const moveSessionTreeToQuickWorktree = async (input: {
   descendants: Session[];
   sourceDirectory: string;
 }): Promise<string> => {
-  return moveSessionTreeTransaction(input, async () => {
+  const directory = await moveSessionTreeTransaction(input, async () => {
     const project = resolveProjectRef(input.sourceDirectory);
     if (!project) throw new Error('Unable to find the project for this session');
 
@@ -328,14 +338,17 @@ const moveSessionTreeToQuickWorktree = async (input: {
       ? await resolveSourceBranch(input.sourceDirectory, project.path)
       : null;
     const worktree = await createQuickWorktree(project, sourceBranch ? { startRef: sourceBranch } : {});
+    if (!worktree) throw new Error('Worktree creation cancelled');
     try {
       await waitForWorktreeGitReady(worktree.path);
     } catch (error) {
       const setupError = error instanceof Error ? error : new Error(String(error));
       return removeFailedWorktree(project, worktree, setupError);
     }
+    // The worktree belongs to the project that owns the list; the session keeps its own project's folder.
+    const folderProject = await resolveFolderProjectRef(input.sourceDirectory) ?? project;
     return {
-      directory: worktree.path,
+      directory: await resolveWorktreeStartDirectory(folderProject, worktree.path),
       metadata: worktree,
       // removeFailedWorktree force-deletes the worktree and its branch; the
       // session's files never move, so nothing of the user's is in it yet.
@@ -344,6 +357,16 @@ const moveSessionTreeToQuickWorktree = async (input: {
       onMoveFailure: async (error) => removeFailedWorktree(project, worktree, error),
     };
   });
+  // A named task keeps its name in the new worktree, whose row would otherwise
+  // show the bare placeholder branch: the agent does not name a task twice.
+  // Any folder of the worktree names its branch.
+  const taskTitle = input.root.title?.trim();
+  if (taskTitle && hasWorkTitle(input.root.metadata)) {
+    await setGitWorktreeTitle(directory, taskTitle).catch((error) => {
+      console.warn('[session-worktree-move] Failed to carry the task name into the new worktree', error);
+    });
+  }
+  return directory;
 };
 
 const executeSessionTreeMove = (intent: SessionTreeMoveIntent): void => {

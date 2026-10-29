@@ -27,8 +27,6 @@
 
 ### Status
 
-Use status colors only for actual feedback.
-
 - `status.error`: errors and validation failures
 - `status.warning`: cautions
 - `status.success`: successful outcomes
@@ -47,7 +45,7 @@ Button variants, whose labels are contrast-adjusted independently of the fill.
 - `primary.hover`: primary hover
 - `primary.foreground`: content on primary
 
-Primary means “act”; selection means “currently active.” Do not use primary to mark ordinary selected tabs or rows.
+Primary means "act"; selection means "currently active."
 
 ### Syntax
 
@@ -58,14 +56,14 @@ visible color when allocating syntax colors to other agents.
 
 ## Usage
 
-Prefer semantic utility classes when available:
+Utility classes:
 
 ```tsx
 <div className="bg-[var(--surface-elevated)] text-foreground" />
 <button className="hover:bg-interactive-hover" />
 ```
 
-Use `useThemeSystem()` when a library/API requires actual color values:
+Resolved values:
 
 ```tsx
 const { currentTheme } = useThemeSystem();
@@ -97,8 +95,10 @@ Use `oc-surface-code` for code text and `syntax.background` for its painted body
 Fields retain their elevated base on hover and layer `interactive.hover` over it;
 `subtle` is neither hover nor disabled state. Dividers use `interactive.border`.
 
-Focus uses `interactive.focusRing` (`ring-ring`), not the primary action color.
-Keep focus indicators on the real focused control; global rules must not erase them.
+Depth, borders, surface classes (`oc-raised`, `oc-field`, `oc-tile*`,
+`oc-glass-floating`, …) and keyboard focus without rings belong to
+`openchamber-ui-guidance` (`references/surfaces.md`); this file covers only the
+tokens underneath them.
 
 ### Active Item
 
@@ -131,5 +131,3 @@ Keep focus indicators on the real focused control; global rules must not erase t
 <div className="hover:bg-interactive-hover">Static content</div>
 <Tab className="bg-primary">Active</Tab>
 ```
-
-Use theme tokens, apply hover only to interactive elements, and distinguish selection from primary actions.

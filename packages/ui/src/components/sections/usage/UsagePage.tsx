@@ -2,6 +2,7 @@ import React from 'react';
 import { UsageCard } from './UsageCard';
 import { QuotaCredentials } from './QuotaCredentials';
 import { ClaudeCodeSignIn } from './ClaudeCodeSignIn';
+import { ConsoleBudgetsSection } from './ConsoleBudgetsSection';
 import { QUOTA_PROVIDERS } from '@/lib/quota';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -15,6 +16,8 @@ import type { UsageWindows, QuotaProviderId } from '@/types';
 import { getAllModelFamilies, getDisplayModelName, sortModelFamilies, groupModelsByFamilyWithGetter } from '@/lib/quota/model-families';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
+import { useWaitingBlink } from '@/hooks/useDurationTicker';
+import { cn } from '@/lib/utils';
 import { formatTimeForPreference } from '@/lib/timeFormat';
 import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
@@ -47,6 +50,7 @@ export const UsagePage: React.FC = () => {
   const fetchAllQuotas = useQuotaStore((state) => state.fetchAllQuotas);
   const fetchProviderQuota = useQuotaStore((state) => state.fetchProviderQuota);
   const isLoading = useQuotaStore((state) => state.isLoading);
+  const blink = useWaitingBlink(isLoading);
   const lastUpdated = useQuotaStore((state) => state.lastUpdated);
   const refreshErrors = useQuotaStore((state) => state.refreshErrors);
   const dropdownProviderIds = useQuotaStore((state) => state.dropdownProviderIds);
@@ -83,7 +87,8 @@ export const UsagePage: React.FC = () => {
     ? usage
       ? t('header.services.usageRefreshFailedStale', { error: refreshError })
       : refreshError
-    : selectedResult?.configured && !selectedResult.ok
+    // OpenCode Go reports a failed Go read beside the Console budgets it still has.
+    : selectedResult?.configured && selectedResult.error
       ? selectedResult.error
       : null;
   const showInDropdown = selectedProviderId ? dropdownProviderIds.includes(selectedProviderId) : false;
@@ -162,7 +167,7 @@ export const UsagePage: React.FC = () => {
   if (!selectedProviderId) {
     return (
         <div className="flex h-full items-center justify-center text-muted-foreground">
-        <p className="typography-body">{t('settings.usage.page.empty.selectProvider')}</p>
+        <p className="typography-ui-label">{t('settings.usage.page.empty.selectProvider')}</p>
       </div>
     );
   }
@@ -173,7 +178,7 @@ export const UsagePage: React.FC = () => {
       titleLeading={<ProviderLogo providerId={selectedProviderId} className="h-5 w-5 shrink-0" />}
       description={
         isLoading ? (
-          <span className="animate-pulse typography-settings-description text-muted-foreground">{t('settings.usage.page.header.refreshing')}</span>
+          <span className={cn('typography-settings-description text-muted-foreground', blink)}>{t('settings.usage.page.header.refreshing')}</span>
         ) : selectedResult?.planLabel ? (
           t('settings.usage.page.header.lastUpdatedWithPlan', {
             plan: selectedResult.planLabel,
@@ -204,7 +209,7 @@ export const UsagePage: React.FC = () => {
           UI consumer left; shown here it labeled DeepSeek with Claude's
           rate-limit message. */}
       {selectedProviderError && (
-        <div className="mb-8 rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] px-4 py-3">
+        <div className="mb-8 rounded-lg bg-[var(--status-error-background)] px-4 py-3">
           <p className="typography-ui-label font-medium text-[var(--status-error)]">{t('settings.usage.page.state.refreshFailedTitle')}</p>
           <p className="typography-meta text-[var(--status-error)]/80 mt-1">{selectedProviderError}</p>
         </div>
@@ -212,7 +217,7 @@ export const UsagePage: React.FC = () => {
 
       {/* Providers with an inline credentials form don't need the "go to Providers" banner — the form IS the fix. */}
       {selectedResult && !selectedResult.configured && !hasCredentialsForm && (
-        <div className="mb-8 rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] px-4 py-3">
+        <div className="mb-8 rounded-lg bg-[var(--status-warning-background)] px-4 py-3">
           {/* Claude usage comes from Claude Code's own login, which Providers cannot add. */}
           {selectedProviderId === 'claude' ? (
             <>
@@ -243,6 +248,8 @@ export const UsagePage: React.FC = () => {
           </div>
         </SettingsSection>
       )}
+
+      {usage?.consoleBudgets && <ConsoleBudgetsSection consoleBudgets={usage.consoleBudgets} />}
 
       {providerModels.length > 0 && (
         <SettingsSection
@@ -356,7 +363,7 @@ export const UsagePage: React.FC = () => {
       )}
 
       {selectedResult?.configured && usage && Object.keys(usage.windows ?? {}).length === 0 &&
-        providerModels.length === 0 && (
+        providerModels.length === 0 && !usage.consoleBudgets && (
         <div className="pb-8">
           <p className="typography-ui-label text-foreground">{t('settings.usage.page.state.noQuotaWindowsTitle')}</p>
           <p className="typography-meta text-muted-foreground mt-1">{t('settings.usage.page.state.noQuotaWindowsDescription')}</p>

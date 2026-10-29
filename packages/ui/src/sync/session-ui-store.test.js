@@ -1053,7 +1053,7 @@ describe('createSession draft lifecycle', () => {
     opencodeClient.getDirectoryAvailability = async () => 'missing';
     opencodeClient.createSession = async (_params, directory) => {
       createSessionCalls.push(directory);
-      return { id: 'session-fallback', directory };
+      return { id: 'session-fallback', directory, time: { created: 1, updated: 1 } };
     };
 
     await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
@@ -1074,12 +1074,34 @@ describe('createSession draft lifecycle', () => {
     opencodeClient.getDirectoryAvailability = async () => 'missing';
     opencodeClient.createSession = async (_params, directory) => {
       createSessionCalls.push(directory);
-      return { id: 'session-pinned', directory };
+      return { id: 'session-pinned', directory, time: { created: 1, updated: 1 } };
     };
 
     await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
 
     expect(createSessionCalls).toEqual(['/private/deleted-worktree']);
+  });
+
+  test('never moves a draft in an isolated space to the project, pinned or not', async () => {
+    const createSessionCalls = [];
+    const spaceDirectory = '/spaces/0123456789ab/main';
+    useProjectsStore.setState({
+      projects: [{ id: 'project-main', path: '/projects/main', label: 'Main' }],
+      activeProjectId: 'project-main',
+    });
+    // The host's probe cannot see inside a space and calls its directory missing.
+    opencodeClient.getDirectoryAvailability = async () => 'missing';
+    opencodeClient.createSession = async (_params, directory) => {
+      createSessionCalls.push(directory);
+      return { id: 'session-space', directory, time: { created: 1, updated: 1 } };
+    };
+    useSessionUIStore.getState().openNewSessionDraft({ selectedProjectId: 'project-main', directoryOverride: spaceDirectory });
+    expect(useSessionUIStore.getState().newSessionDraft.preserveDirectoryOverride).toBe(true);
+    useSessionUIStore.getState().setDraftPreserveDirectoryOverride(false);
+
+    await useSessionUIStore.getState().createSession('Draft title', spaceDirectory);
+
+    expect(createSessionCalls).toEqual([spaceDirectory]);
   });
 
   test('keeps a ChatInput-style current-directory draft recoverable when that path is missing', async () => {
@@ -1094,7 +1116,7 @@ describe('createSession draft lifecycle', () => {
     opencodeClient.getDirectoryAvailability = async () => 'missing';
     opencodeClient.createSession = async (_params, directory) => {
       createSessionCalls.push(directory);
-      return { id: 'session-chat-input', directory };
+      return { id: 'session-chat-input', directory, time: { created: 1, updated: 1 } };
     };
 
     await useSessionUIStore.getState().createSession('Draft title', '/private/deleted-worktree');
@@ -1113,7 +1135,7 @@ describe('createSession draft lifecycle', () => {
     opencodeClient.getDirectoryAvailability = async () => 'unknown';
     opencodeClient.createSession = async (_params, directory) => {
       createSessionCalls.push(directory);
-      return { id: 'session-unavailable', directory };
+      return { id: 'session-unavailable', directory, time: { created: 1, updated: 1 } };
     };
 
     await useSessionUIStore.getState().createSession('Draft title', '/private/unavailable-worktree');
@@ -1135,7 +1157,7 @@ describe('createSession draft lifecycle', () => {
     });
     opencodeClient.createSession = async (_params, directory) => {
       createSessionCalls.push(directory);
-      return { id: 'session-race', directory };
+      return { id: 'session-race', directory, time: { created: 1, updated: 1 } };
     };
 
     useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: '/private/deleted-worktree' });
@@ -1207,9 +1229,10 @@ describe('sendMessage draft snapshot (issues #2222 / #2315)', () => {
       sendMessageCalls.push(params);
       return 'msg';
     };
-    opencodeClient.createSession = async (_params, directory) => {
+    opencodeClient.createSession = async (params, directory) => {
       createSessionCalls.push(directory);
-      return { id: 'session-materialized', directory: directory ?? '/projects/alpha' };
+      // A draft's first send mints the id and OpenCode creates the session under it.
+      return { id: params?.id ?? 'session-materialized', directory: directory ?? '/projects/alpha', time: { created: 1, updated: 1 } };
     };
   });
 
@@ -1268,7 +1291,7 @@ describe('sendMessage draft snapshot (issues #2222 / #2315)', () => {
     expect(createSessionCalls).toHaveLength(1);
     expect(createSessionCalls[0]).toBe('/projects/alpha');
     expect(sendMessageCalls).toHaveLength(1);
-    expect(sendMessageCalls[0].id).toBe('session-materialized');
+    expect(sendMessageCalls[0].id.startsWith('ses_')).toBe(true);
     expect(sendMessageCalls[0].directory).toBe('/projects/alpha');
     expect(useSessionDisplayStore.getState().singleProjectId).toBe('project-alpha');
   });
@@ -1602,7 +1625,7 @@ describe('routeMessage skill invocation', () => {
     expect(sendCommandCalls[0].context[0].metadata.openchamberContext.kind).toBe('code-comment');
   });
 
-  test('includes pinned knowledge with the skill prompt', async () => {
+  test('includes attached context with the skill prompt', async () => {
     useSkillsStore.setState({
       skillsByDirectory: { '/skills/project': [{ name: 'grill-with-docs', path: '/skills/grill-with-docs/SKILL.md', scope: 'user', source: 'opencode' }] },
     });
@@ -1613,12 +1636,12 @@ describe('routeMessage skill invocation', () => {
       content: '/grill-with-docs focus on auth',
       providerID: 'provider-a',
       modelID: 'model-a',
-      additionalParts: [{ text: 'Pinned project knowledge', synthetic: true, systemContext: 'session-knowledge' }],
+      additionalParts: [{ text: 'Attached context', synthetic: true }],
     });
 
     expect(sendCommandCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(1);
-    expect(sendMessageCalls[0].context).toEqual([{ id: expect.stringMatching(/^msg_/), text: 'Pinned project knowledge', metadata: undefined }]);
+    expect(sendMessageCalls[0].context).toEqual([{ id: expect.stringMatching(/^msg_/), text: 'Attached context', metadata: undefined }]);
     expect(route).toBe('prompt');
   });
 
@@ -1640,7 +1663,7 @@ describe('routeMessage skill invocation', () => {
       providerID: 'provider-a',
       modelID: 'model-a',
       files,
-      additionalParts: [{ text: 'Pinned project knowledge', synthetic: true, systemContext: 'session-knowledge' }],
+      additionalParts: [{ text: 'Attached context', synthetic: true }],
     });
 
     expect(route).toBe('prompt');
@@ -1879,6 +1902,34 @@ describe('goal objective directory scoping', () => {
     expect(metadataWrites).toHaveLength(1);
     expect(metadataWrites[0].directory).toBe('/repo/worktree');
     expect(metadataWrites[0].patch.openchamber.goal.objective).toBe('Worktree inspects auth flow.');
+  });
+
+  const sendQueued = (content, queuedGoal) => useSessionUIStore.getState().sendMessage(
+    content,
+    'provider-a',
+    'model-a',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'normal',
+    { target: { runtimeKey: getRuntimeKey(), sessionId: 'session-worktree', directory: '/repo/worktree' }, queuedGoal },
+  );
+
+  test('a queued message starts the goal it was queued with and leaves the composer arm alone', async () => {
+    await sendQueued('Implement this plan: X', { objective: 'the whole plan', tokenBudget: 5000 });
+
+    expect(metadataWrites).toHaveLength(1);
+    expect(metadataWrites[0].patch.openchamber.goal).toMatchObject({ objective: 'the whole plan', tokenBudget: 5000 });
+    expect(useSessionGoalArmStore.getState().armed).toBe(true);
+  });
+
+  test('a queued message without a goal starts none, even while the composer is armed', async () => {
+    await sendQueued('plain queued message', null);
+
+    expect(metadataWrites).toHaveLength(0);
+    expect(useSessionGoalArmStore.getState().armed).toBe(true);
   });
 });
 
@@ -2169,7 +2220,7 @@ describe('send does not wait for session knowledge before showing the message', 
     globalThis.fetch = originalFetch;
   });
 
-  test('inserts the user message before the knowledge request resolves, then sends the knowledge first', async () => {
+  test('inserts the user message before the knowledge write finishes, and sends the prompt after it', async () => {
     let state = { session: [], message: {}, part: {}, session_status: {} };
     const childStore = {
       getState: () => state,
@@ -2184,17 +2235,14 @@ describe('send does not wait for session knowledge before showing the message', 
       sendCalls.push(params);
       return 'msg';
     };
-    let releaseKnowledge = null;
-    const delivered = [];
+    let finishWrite = null;
+    const writes = [];
     globalThis.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes('/api/session-knowledge/delivered')) {
-        delivered.push(JSON.parse(init.body));
-        return Response.json({});
-      }
-      if (url.includes('/api/session-knowledge?')) {
+      if (url.includes('/api/session-knowledge/sync')) {
+        writes.push(JSON.parse(init.body));
         return new Promise((resolve) => {
-          releaseKnowledge = () => resolve(Response.json({ text: 'Pinned notes', signature: 'sig-1' }));
+          finishWrite = () => resolve(Response.json({ synced: true }));
         });
       }
       return Response.json({});
@@ -2212,27 +2260,22 @@ describe('send does not wait for session knowledge before showing the message', 
       'normal',
       { target: { runtimeKey: getRuntimeKey(), sessionId: 'session-knowledge', directory: '/repo' } },
     );
-    for (let tick = 0; tick < 50 && (added.length === 0 || !releaseKnowledge); tick += 1) {
+    for (let tick = 0; tick < 50 && (added.length === 0 || !finishWrite); tick += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
-    // The bubble is already there; the prompt request waits for the knowledge.
+    // The bubble is already there; the prompt request waits for the write.
     expect(added.map((message) => message.role)).toEqual(['user']);
-    expect(releaseKnowledge).not.toBe(null);
+    expect(writes).toEqual([{ directory: '/repo', sessionId: 'session-knowledge' }]);
     expect(sendCalls).toHaveLength(0);
 
-    releaseKnowledge();
+    finishWrite();
     await sending;
 
-    expect(added.map((message) => message.role)).toEqual(['user', 'synthetic']);
-    const [userMessage, knowledgeMessage] = added;
-    expect(knowledgeMessage.id < userMessage.id).toBe(true);
+    // The knowledge lives in the session's instruction entries, never in a message.
+    expect(added.map((message) => message.role)).toEqual(['user']);
     expect(sendCalls).toHaveLength(1);
-    expect(sendCalls[0].messageId).toBe(userMessage.id);
-    expect(sendCalls[0].context).toEqual([{ id: knowledgeMessage.id, text: 'Pinned notes' }]);
-    for (let tick = 0; tick < 50 && delivered.length === 0; tick += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    expect(delivered).toEqual([{ directory: '/repo', sessionId: 'session-knowledge', signature: 'sig-1' }]);
+    expect(sendCalls[0].messageId).toBe(added[0].id);
+    expect(sendCalls[0].context).toBeUndefined();
   });
 });

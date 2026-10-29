@@ -127,6 +127,8 @@ require('node:http').createServer((request, response) => {
     path: request.url,
     authorization: hash(request.headers.authorization),
     apiKey: hash(request.headers['x-api-key']),
+    // A header of the user's own, as a custom provider's grant sets it beside the key.
+    team: hash(request.headers['x-team']),
     headerNames: Object.keys(request.headers).sort(),
   };
   // One line per request in the container's log, so the host can read what a client it does
@@ -161,6 +163,9 @@ require('node:http').createServer((request, response) => {
         stop: () => docker(['rm', '--force', name]),
       };
     },
+
+    /** Puts the stand-in upstream on another space's outer network as well, under the same name. */
+    connectWindowUpstream: (spaceId) => docker(['network', 'connect', '--alias', 'upstream', spaceResourceName(spaceId, ROLE_OUTER_NETWORK), `openchamber-test-upstream-${owner}`]),
 
     /**
      * Runs a Node script in a helper container on the space's outer network, where the stand-in

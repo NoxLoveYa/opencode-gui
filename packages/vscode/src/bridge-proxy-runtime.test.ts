@@ -5,6 +5,7 @@ import { handleProxyBridgeMessage } from './bridge-proxy-runtime';
 
 const deps = {
   tryHandleLocalFsProxy: async () => null,
+  waitForWorktreeRemoval: async () => {},
   buildUnavailableApiResponse: () => ({ status: 503, headers: {}, bodyText: '' }),
   sanitizeForwardHeaders: (input: Record<string, string> | undefined) => input ?? {},
   collectHeaders: (headers: Headers) => {
@@ -241,6 +242,107 @@ describe('VS Code API proxy Git initialization', () => {
       assert.equal(fetchCount, 1);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('VS Code API proxy during a worktree removal', () => {
+  test('holds a request for a folder of the worktree being removed until the removal settles', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetched: string[] = [];
+    const asked: string[] = [];
+    let settle: () => void = () => {};
+    const removal = new Promise<void>((resolve) => { settle = resolve; });
+    const worktree = '/repo/worktrees/removal hold';
+
+    try {
+      // SAFETY: test double for the global fetch; the proxy only reads the response.
+      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+        fetched.push(new URL(String(input)).pathname);
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+      const holdingDeps = {
+        ...deps,
+        waitForWorktreeRemoval: async (directory: string) => {
+          asked.push(directory);
+          if (directory.startsWith(worktree)) await removal;
+        },
+      };
+
+      // The UI sends the header encoded without the marker; OpenCode decodes it.
+      const held = handleProxyBridgeMessage(
+        { id: 'h1', type: 'api:proxy', payload: { method: 'GET', path: '/api/mcp', headers: { 'x-opencode-directory': encodeURIComponent(`${worktree}/sub`) } } },
+        ctx,
+        holdingDeps,
+      );
+      const other = await handleProxyBridgeMessage(
+        { id: 'h2', type: 'api:proxy', payload: { method: 'GET', path: '/api/mcp', headers: { 'x-opencode-directory': '/repo' } } },
+        ctx,
+        holdingDeps,
+      );
+
+      // SAFETY: api:proxy always answers with an ApiProxyResponsePayload; only status is read.
+      assert.equal((other?.data as { status?: number } | undefined)?.status, 200);
+      assert.deepEqual(asked, [`${worktree}/sub`, '/repo']);
+      assert.deepEqual(fetched, ['/api/mcp']);
+
+      settle();
+      await held;
+      assert.deepEqual(fetched, ['/api/mcp', '/api/mcp']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+type ProxyAnswer = { status: number; bodyText: string };
+type ProxyRequest = { method: string; path: string; headers?: { [name: string]: string }; bodyBase64?: string };
+
+describe('VS Code API proxy folder trust', () => {
+  test('refuses an untrusted folder before OpenCode sees it and answers the trust route itself', async () => {
+    const { mkdir, mkdtemp, realpath, rm, writeFile } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { createOpenCodeTrust } = await import('../../web/server/lib/opencode-trust/index.js');
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'vscode-opencode-trust-')));
+    const repo = path.join(root, 'repo');
+    await mkdir(path.join(repo, '.opencode', 'plugins'), { recursive: true });
+    await writeFile(path.join(repo, '.opencode', 'plugins', 'probe.js'), 'export default {}');
+    const trustDeps = {
+      ...deps,
+      openCodeTrust: createOpenCodeTrust({ storePath: path.join(root, 'trust.json'), homeDirectory: path.join(root, 'home') }),
+    };
+    const proxy = async (payload: ProxyRequest): Promise<ProxyAnswer> => {
+      const response = await handleProxyBridgeMessage({ id: 'trust', type: 'api:proxy', payload }, ctx, trustDeps);
+      assert.ok(response);
+      // SAFETY: api:proxy always answers with an ApiProxyResponsePayload, and every answer here is JSON text.
+      return response.data as ProxyAnswer;
+    };
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    try {
+      // SAFETY: test double for the global fetch; the proxy only reads the status, headers and text.
+      globalThis.fetch = (async () => {
+        fetchCount += 1;
+        return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+
+      const headers = { 'x-opencode-directory': encodeURIComponent(repo) };
+      const refused = await proxy({ method: 'GET', path: '/api/agent', headers });
+      assert.equal(refused.status, 403);
+      assert.equal(JSON.parse(refused.bodyText).code, 'opencode_trust_required');
+      assert.equal(fetchCount, 0);
+
+      const shown = await proxy({ method: 'GET', path: `/api/opencode/trust?directory=${encodeURIComponent(repo)}` });
+      const { fingerprint } = JSON.parse(shown.bodyText);
+      const body = Buffer.from(JSON.stringify({ directory: repo, fingerprint })).toString('base64');
+      assert.equal((await proxy({ method: 'POST', path: '/api/opencode/trust', bodyBase64: body })).status, 200);
+
+      assert.equal((await proxy({ method: 'GET', path: '/api/agent', headers })).status, 200);
+      assert.equal(fetchCount, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

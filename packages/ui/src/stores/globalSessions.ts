@@ -21,15 +21,10 @@ export const filterManagedChatsForRuntime = (sessions: Session[], vscode: boolea
         : sessions
 );
 
-/** OpenChamber owns archive state; a session is archived when it carries a timestamp. */
+/** A session is archived when it carries a timestamp. */
 const isArchivedSession = (session: GlobalSessionRecord): boolean => Boolean(session.time?.archived);
 
-/**
- * Split a session list into active and archived buckets. Restored sessions
- * carry `time.archived === 0` (see `UNARCHIVED_TIMESTAMP` in
- * `sync/session-actions.ts`), so the truthiness check classifies them as
- * active.
- */
+/** Split a session list into active and archived buckets. */
 export const splitGlobalSessionsByArchived = <T extends GlobalSessionRecord>(
     sessions: T[],
 ): { active: T[]; archived: T[] } => {
@@ -48,14 +43,16 @@ export type SessionPageLister = (options: SessionListOptions) => Promise<Session
 /**
  * Walks every page of a session list and returns the records.
  *
- * v2 lists sessions newest-first and pages by an opaque cursor; it has no
- * archived filter, so callers take the whole list and split it with
- * `splitGlobalSessionsByArchived`.
+ * v2 lists sessions newest-first and pages by an opaque cursor. Callers take
+ * the whole list and split it with `splitGlobalSessionsByArchived`: OpenCode's
+ * archived filter cannot see sessions the server's archive file marks.
  */
 export async function listGlobalSessionPages(
     listPage: SessionPageLister,
     options: {
         directory?: string;
+        /** Only the direct children of this session. */
+        parentID?: string;
         pageSize: number;
         onPage?: (sessions: GlobalSessionRecord[]) => void;
         /** The first page's isolated-space marks: `null` when the page carried none. */
@@ -78,6 +75,7 @@ export async function listGlobalSessionPages(
                 attempts += 1;
                 return await listPage({
                     ...(options.directory ? { directory: options.directory } : { global: true }),
+                    parentID: options.parentID,
                     limit: options.pageSize,
                     ...(cursor !== undefined ? { cursor } : {}),
                 });

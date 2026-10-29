@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 import type { AssistantMessage, Message, Part, Session, SyntheticMessage, TextPart } from '@/lib/opencode/model';
 import { collectSessionTitleTurns, formatSessionTitleContext, generatedSessionTitleSchema, generateSessionTitle } from './sessionTitle';
 import { configureRuntimeUrlResolver } from './runtime-url';
@@ -247,18 +248,36 @@ describe('generation lifecycle', () => {
       const request = new Request(input, init);
       expect(new URL(request.url).pathname).toBe('/api/small-model/generate');
       expect(request.method).toBe('POST');
-      expect(await request.json()).toMatchObject({
+      const body = await request.json();
+      expect(body).toMatchObject({
         directory: '/project', preferredProviderID: 'provider', preferredModelID: 'model', restrictToPreferredProvider: true,
       });
+      const { prompt } = z.object({ prompt: z.string() }).parse(body);
+      expect(prompt.startsWith('**Current title:** Original\n\n---\n\n**User**')).toBe(true);
       calls += 1;
       return calls === 1 ? Response.json({ text: 'A useful title' }) : new Response('Unavailable', { status: 503 });
     };
     configureRuntimeUrlResolver({ apiBaseUrl: 'http://session-title.test' });
     try {
-      const input = { turns, directory: '/project', signal: new AbortController().signal };
+      const input = { turns, currentTitle: 'Original', directory: '/project', signal: new AbortController().signal };
       expect(await generateSessionTitle(input)).toBe('A useful title');
       await expect(generateSessionTitle(input)).rejects.toThrow('Session title generation failed');
       expect(calls).toBe(2);
+    } finally { globalThis.fetch = originalFetch; configureRuntimeUrlResolver({ apiBaseUrl: '' }); }
+  });
+
+  test('asks the server inside the space for a session in an isolated space', async () => {
+    const paths: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      paths.push(`${new URL(request.url).pathname} ${request.headers.get('x-opencode-directory')}`);
+      return Response.json({ text: 'A useful title' });
+    };
+    configureRuntimeUrlResolver({ apiBaseUrl: 'http://session-title.test' });
+    try {
+      await generateSessionTitle({ turns, currentTitle: 'Original', directory: '/spaces/a1b2c3d4e5f6/repo', signal: new AbortController().signal });
+      expect(paths).toEqual([`/api/small-model/generate ${encodeURIComponent('/spaces/a1b2c3d4e5f6/repo')}`]);
     } finally { globalThis.fetch = originalFetch; configureRuntimeUrlResolver({ apiBaseUrl: '' }); }
   });
 

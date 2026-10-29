@@ -15,6 +15,7 @@ type BuiltInContextSurfaceId =
   | 'notes'
   | 'context'
   | 'browser'
+  | 'workflows'
   | 'chat';
 
 export type ContextSurfaceId = BuiltInContextSurfaceId | `plugin:${string}`;
@@ -38,19 +39,12 @@ export type ContextSurfaceDescriptor = {
   availability: 'always' | 'has-content';
   /** Short tooltip explanation shown on the rail. */
   descriptionKey: I18nKey;
-  /**
-   * Default panel width in px, used until the user resizes this surface. The
-   * panel never takes more than the chat area leaves after a minimum chat
-   * column, so a small window shows it narrower.
-   */
-  defaultWidth: number;
 };
 
 export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'context',
     descriptionKey: 'contextRail.surface.context.description',
-    defaultWidth: 540,
     mode: 'context',
     icon: 'donut-chart-fill',
     labelKey: 'contextPanel.mode.context',
@@ -59,7 +53,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'git',
     descriptionKey: 'contextRail.surface.git.description',
-    defaultWidth: 480,
     mode: 'git',
     icon: 'git-branch',
     labelKey: 'layout.rightSidebar.git',
@@ -68,7 +61,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'pr',
     descriptionKey: 'contextRail.surface.pr.description',
-    defaultWidth: 540,
     mode: 'pr',
     icon: 'github',
     labelKey: 'contextPanel.mode.pr',
@@ -77,7 +69,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'diff',
     descriptionKey: 'contextRail.surface.diff.description',
-    defaultWidth: 640,
     mode: 'diff',
     icon: 'arrow-left-right',
     labelKey: 'contextPanel.mode.diff',
@@ -86,7 +77,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'walkthrough',
     descriptionKey: 'contextRail.surface.walkthrough.description',
-    defaultWidth: 640,
     mode: 'walkthrough',
     icon: 'route',
     labelKey: 'contextPanel.mode.walkthrough',
@@ -95,7 +85,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'editor',
     descriptionKey: 'contextRail.surface.editor.description',
-    defaultWidth: 640,
     mode: 'file',
     icon: 'file-edit',
     labelKey: 'contextPanel.mode.files',
@@ -104,7 +93,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'terminal',
     descriptionKey: 'contextRail.surface.terminal.description',
-    defaultWidth: 640,
     mode: 'terminal',
     icon: 'terminal-box',
     labelKey: 'layout.mainTab.terminal',
@@ -113,10 +101,6 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'notes',
     descriptionKey: 'contextRail.surface.notes.description',
-    // As wide as the files surface: this panel carries a sidebar and a
-    // content column, and a narrower panel leaves the content column too
-    // narrow to read a note in.
-    defaultWidth: 640,
     mode: 'notes',
     icon: 'book-marked',
     labelKey: 'contextRail.surface.notes',
@@ -125,16 +109,22 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   {
     id: 'browser',
     descriptionKey: 'contextRail.surface.browser.description',
-    defaultWidth: 540,
     mode: 'browser',
     icon: 'global',
     labelKey: 'contextPanel.mode.browser',
     availability: 'always',
   },
   {
+    id: 'workflows',
+    descriptionKey: 'contextRail.surface.workflows.description',
+    mode: 'workflows',
+    icon: 'flow-chart',
+    labelKey: 'contextPanel.mode.workflows',
+    availability: 'always',
+  },
+  {
     id: 'chat',
     descriptionKey: 'contextRail.surface.chat.description',
-    defaultWidth: 540,
     mode: 'chat',
     icon: 'chat-4',
     labelKey: 'contextPanel.mode.chat',
@@ -142,19 +132,9 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
   },
 ];
 
-const DEFAULT_WIDTH_BY_MODE = new Map(CONTEXT_SURFACES.map((surface) => [surface.mode, surface.defaultWidth]));
-
-/** A guest panel's default width, and the fallback for any unlisted mode. */
-export const GUEST_SURFACE_DEFAULT_WIDTH = 540;
-
 // Tablet width and up: below this the walkthrough cannot show a stop and its
 // code side by side, which is the whole point of the surface.
 export const WALKTHROUGH_MIN_WIDTH = 768;
-
-export const getContextSurfaceDefaultWidth = (mode: ContextPanelMode): number => {
-  if (isPluginContextPanelMode(mode)) return GUEST_SURFACE_DEFAULT_WIDTH;
-  return DEFAULT_WIDTH_BY_MODE.get(mode) ?? GUEST_SURFACE_DEFAULT_WIDTH;
-};
 
 const isKnownSurfaceId = (value: string, byId: ReadonlyMap<string, ContextSurfaceDescriptor>): boolean => {
   return byId.has(value);
@@ -200,11 +180,16 @@ type VisibleRailSurfacesOptions = {
   hiddenSurfaces?: readonly string[];
   isVSCode: boolean;
   screenWidth: number;
-  tabs: readonly { mode: ContextPanelMode }[];
-  /** The pull-request rail icon stays off until a GitHub or GitLab account is
-      connected (OAuth, a token, or a detected `gh`/`glab` login). Accounts are
-      connected from Settings, so hiding the surface removes no entry point. */
+  tabs: readonly { mode: ContextPanelMode; targetPath?: string | null }[];
+  /** The Tracker rail icon stays off until a GitHub or GitLab account is
+      connected (OAuth, a token, or a detected `gh`/`glab` login), or an item
+      such as a Linear issue is open in it. Accounts are connected from
+      Settings, so hiding the surface removes no entry point. */
   sourceControlConnected: boolean;
+  /** The Workflows icon shows while the session on screen has a workflow run,
+      or a Workflows tab is open, and never in a build without workflows. Runs
+      start from the chat, so hiding it removes no entry point. */
+  workflowsShown: boolean;
   /** Installed guest panels. Empty on VS Code and when the catalog has not
       loaded or failed. */
   extras?: readonly ContextSurfaceDescriptor[];
@@ -239,7 +224,11 @@ export const getVisibleContextRailSurfaces = (options: VisibleRailSurfacesOption
     if (surface.id === 'browser' && options.isVSCode) {
       return false;
     }
-    if (surface.id === 'pr' && !options.sourceControlConnected) {
+    if (surface.id === 'pr' && !options.sourceControlConnected
+      && !options.tabs.some((tab) => tab.mode === 'pr' && tab.targetPath)) {
+      return false;
+    }
+    if (surface.id === 'workflows' && (options.isVSCode || !options.workflowsShown)) {
       return false;
     }
     if (surface.availability === 'has-content') {

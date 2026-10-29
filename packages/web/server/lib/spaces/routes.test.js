@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 /** An app with the routes over `journey`, or with the feature off when `journey` is null. */
-const serve = async ({ journey, places = [], switchState = { enabled: true }, machinePlace = null } = {}) => {
+const serve = async ({ journey, places = [], switchState = { enabled: true }, machinePlace = null, dockerSetup = null } = {}) => {
   const app = express();
   app.use(express.json());
   const calls = [];
@@ -24,6 +24,7 @@ const serve = async ({ journey, places = [], switchState = { enabled: true }, ma
   registerSpaceRoutes(app, {
     getJourney: () => state.journey,
     getPlaces: () => places,
+    getDockerSetup: () => (dockerSetup && state.journey ? { placeId: 'docker', setup: dockerSetup } : null),
     readSwitch: async () => ({ enabled: state.enabled, spaces: state.enabled ? [{ id: ID, name: 'One', state: 'running' }] : [] }),
     setSwitch: async (enabled) => {
       calls.push(['setSwitch', enabled]);
@@ -68,6 +69,7 @@ const journeyOf = (overrides = {}) => {
     runSetup: record('runSetup', { id: ID, state: 'running', setup: { state: 'running', index: 0, total: 1, command: 'npm ci' } }),
     readSetup: record('readSetup', { setup: null, output: null }),
     readHostLogins: record('readHostLogins', { logins: [{ provider: 'openai', method: 'chatgpt-token-sharing', expires: '2026-09-26T11:00:00.000Z', state: 'usable' }] }),
+    readHostCustomProviders: record('readHostCustomProviders', { providers: [{ id: 'ollama-local', name: 'Ollama (local)', hasKey: false }] }),
     readDisk: record('readDisk', { imageBytes: null, toolsBytes: 0, spacesBytes: 0, freeBytes: 0, freesImage: false }),
     cleanUpDisk: record('cleanUpDisk', { freedBytes: 0, kept: [], disk: null }),
     pullImage: record('pullImage', { imageBytes: null, imagePulling: true, imageFailure: null, toolsBytes: 0, spacesBytes: 0, freeBytes: 0, freesImage: false }),
@@ -78,7 +80,7 @@ const journeyOf = (overrides = {}) => {
 describe('space routes', () => {
   it('answers every journey route with 404 and isolated_spaces_off while the feature is off, and the switch still works', async () => {
     const { call, calls } = await serve({ journey: null, switchState: { enabled: false } });
-    for (const [method, path] of [['GET', ''], ['POST', ''], ['GET', '/places'], ['POST', `/${ID}/start`], ['POST', `/${ID}/stop`], ['POST', `/${ID}/restart`], ['POST', `/${ID}/restart-opencode`], ['POST', `/${ID}/grants`], ['GET', '/logins'], ['DELETE', `/${ID}`], ['GET', `/${ID}/journal`], ['GET', `/${ID}/apply`], ['POST', `/${ID}/apply`], ['GET', '/idle-stop'], ['PUT', '/idle-stop'], ['POST', `/${ID}/setup`], ['GET', `/${ID}/setup`], ['GET', '/places/docker/disk'], ['POST', '/places/docker/clean-up'], ['POST', '/places/docker/image']]) {
+    for (const [method, path] of [['GET', ''], ['POST', ''], ['GET', '/places'], ['POST', `/${ID}/start`], ['POST', `/${ID}/stop`], ['POST', `/${ID}/restart`], ['POST', `/${ID}/restart-opencode`], ['POST', `/${ID}/grants`], ['GET', '/logins'], ['GET', '/custom-providers'], ['DELETE', `/${ID}`], ['GET', `/${ID}/journal`], ['GET', `/${ID}/apply`], ['POST', `/${ID}/apply`], ['GET', '/idle-stop'], ['PUT', '/idle-stop'], ['POST', `/${ID}/setup`], ['GET', `/${ID}/setup`], ['GET', '/places/docker/disk'], ['POST', '/places/docker/clean-up'], ['POST', '/places/docker/image'], ['GET', '/places/local/setup'], ['POST', '/places/local/setup']]) {
       expect(await call(method, `${SPACES_ROUTE}${path}`, method === 'GET' || method === 'DELETE' ? undefined : {}), `${method} ${path}`).toEqual({ status: 404, body: { code: 'isolated_spaces_off', message: 'Isolated spaces are turned off.', details: null } });
     }
     expect(await call('GET', `${SPACES_ROUTE}/switch`)).toEqual({ status: 200, body: { enabled: false, spaces: [] } });
@@ -97,6 +99,34 @@ describe('space routes', () => {
     expect(await call('GET', SPACES_ROUTE)).toMatchObject({ status: 404, body: { code: 'isolated_spaces_off' } });
   });
 
+  it('says what gets Docker going on this computer, and starts only a known action', async () => {
+    const started = [];
+    const dockerSetup = {
+      describe: async (checked) => ({ remedy: checked.available ? null : 'start_colima', job: null, memory: null }),
+      readJob: () => ({ action: 'start_colima', running: true, failure: null }),
+      start: async (action) => {
+        started.push(action);
+        if (action === 'install_all') throw new SpaceError('docker_setup_not_offered', 'Docker is in another state now. Check again.');
+        return { action, running: true, failure: null };
+      },
+    };
+    const places = [
+      { id: 'docker', machine: null, check: async () => ({ available: false, code: 'docker_daemon_unreachable', message: 'down' }) },
+      { id: 'docker-ssh', machine: 'box', check: async () => ({ available: false, code: 'docker_daemon_unreachable', message: 'down there' }) },
+    ];
+    const { call } = await serve({ journey: journeyOf(), places, dockerSetup });
+    expect(await call('GET', `${SPACES_ROUTE}/places`)).toEqual({ status: 200, body: { places: [
+      { id: 'docker', machine: null, available: false, code: 'docker_daemon_unreachable', message: 'down', setup: { remedy: 'start_colima', job: null, memory: null } },
+      // The other machine is the user's to set up.
+      { id: 'docker-ssh', machine: 'box', available: false, code: 'docker_daemon_unreachable', message: 'down there', setup: null },
+    ] } });
+    expect(await call('GET', `${SPACES_ROUTE}/places/local/setup`)).toEqual({ status: 200, body: { job: { action: 'start_colima', running: true, failure: null } } });
+    expect(await call('POST', `${SPACES_ROUTE}/places/local/setup`, { action: 'start_colima' })).toEqual({ status: 202, body: { job: { action: 'start_colima', running: true, failure: null } } });
+    expect(await call('POST', `${SPACES_ROUTE}/places/local/setup`, { action: 'install_all' })).toMatchObject({ status: 409, body: { code: 'docker_setup_not_offered' } });
+    expect(await call('POST', `${SPACES_ROUTE}/places/local/setup`, { action: 'sudo rm' })).toMatchObject({ status: 400, body: { code: 'invalid_request_body' } });
+    expect(started).toEqual(['start_colima', 'install_all']);
+  });
+
   it('passes a refusal of the switch on with its status', async () => {
     const { call } = await serve({ journey: journeyOf(), switchState: { enabled: true, failWith: new SpaceError('space_preparing', 'A space is still being made.', { spaces: [ID] }) } });
     expect(await call('PUT', `${SPACES_ROUTE}/switch`, { enabled: false })).toEqual({ status: 409, body: { code: 'space_preparing', message: 'A space is still being made.', details: { spaces: [ID] } } });
@@ -111,8 +141,8 @@ describe('space routes', () => {
     const machinePlace = { id: 'docker-ssh', machine: 'other', available: true, version: '29.2.1', hostIsolation: true };
     const { call, calls } = await serve({ journey, places, machinePlace });
     expect(await call('GET', `${SPACES_ROUTE}/places`)).toEqual({ status: 200, body: { places: [
-      { id: 'docker', machine: null, available: true, version: '29.2.1', hostIsolation: true },
-      { id: 'docker-ssh', machine: 'box', available: false, code: 'place_unreachable', message: 'box did not answer' },
+      { id: 'docker', machine: null, available: true, version: '29.2.1', hostIsolation: true, setup: null },
+      { id: 'docker-ssh', machine: 'box', available: false, code: 'place_unreachable', message: 'box did not answer', setup: null },
     ] } });
     expect(await call('PUT', `${SPACES_ROUTE}/machine`, { machine: 'other' })).toEqual({ status: 200, body: { place: machinePlace } });
     expect(await call('PUT', `${SPACES_ROUTE}/machine`, { machine: 7 })).toMatchObject({ status: 400, body: { code: 'invalid_request_body' } });
@@ -130,6 +160,7 @@ describe('space routes', () => {
     expect(await call('POST', `${SPACES_ROUTE}/${ID}/grants`, { kind: 'domain', upstream: 'https://registry.example.com/' })).toEqual({ status: 200, body: { grant: { id: 'open-1' } } });
     expect(await call('POST', `${SPACES_ROUTE}/${ID}/network/domains`, { domain: 'registry.npmjs.org' })).toEqual({ status: 200, body: { network: { mode: 'allowlist', domains: ['registry.npmjs.org'] } } });
     expect(await call('GET', `${SPACES_ROUTE}/logins`)).toEqual({ status: 200, body: { logins: [{ provider: 'openai', method: 'chatgpt-token-sharing', expires: '2026-09-26T11:00:00.000Z', state: 'usable' }] } });
+    expect(await call('GET', `${SPACES_ROUTE}/custom-providers?directory=%2Fhome%2Fme%2Fproject`)).toEqual({ status: 200, body: { providers: [{ id: 'ollama-local', name: 'Ollama (local)', hasKey: false }] } });
     expect(await call('GET', `${SPACES_ROUTE}/${ID}/journal`)).toEqual({ status: 200, body: { records: [], dropped: 0, since: 'now' } });
     expect(await call('GET', `${SPACES_ROUTE}/${ID}/apply`)).toEqual({ status: 200, body: { changedPaths: 2 } });
     expect(await call('POST', `${SPACES_ROUTE}/${ID}/apply`, { as: 'branch', branch: 'b' })).toEqual({ status: 200, body: { applied: { status: 'applied' } } });
@@ -137,7 +168,7 @@ describe('space routes', () => {
     expect(await call('GET', `${SPACES_ROUTE}/${ID}/setup`)).toEqual({ status: 200, body: { setup: null, output: null } });
     expect(await call('DELETE', `${SPACES_ROUTE}/${ID}`)).toEqual({ status: 200, body: { id: ID, removed: true } });
     expect(journey.calls).toEqual([
-      ['listSpaces', { access: true }], ['readDisk', 'docker'], ['cleanUpDisk', 'docker'], ['pullImage', 'docker'], ['createSpace', request], ['startSpace', ID], ['stopSpace', ID], ['restartSpace', ID], ['restartOpenCode', ID], ['grantAccess', ID, { kind: 'domain', upstream: 'https://registry.example.com/' }], ['openDomain', ID, { domain: 'registry.npmjs.org' }], ['readHostLogins'], ['readJournal', ID], ['previewApply', ID], ['applySpace', ID, { as: 'branch', branch: 'b' }], ['runSetup', ID, { commands: ['npm ci'] }], ['readSetup', ID], ['removeSpace', ID, { allowUnsaved: false }],
+      ['listSpaces', { access: true }], ['readDisk', 'docker'], ['cleanUpDisk', 'docker'], ['pullImage', 'docker'], ['createSpace', request], ['startSpace', ID], ['stopSpace', ID], ['restartSpace', ID], ['restartOpenCode', ID], ['grantAccess', ID, { kind: 'domain', upstream: 'https://registry.example.com/' }], ['openDomain', ID, { domain: 'registry.npmjs.org' }], ['readHostLogins'], ['readHostCustomProviders', '/home/me/project'], ['readJournal', ID], ['previewApply', ID], ['applySpace', ID, { as: 'branch', branch: 'b' }], ['runSetup', ID, { commands: ['npm ci'] }], ['readSetup', ID], ['removeSpace', ID, { allowUnsaved: false }],
     ]);
   });
 

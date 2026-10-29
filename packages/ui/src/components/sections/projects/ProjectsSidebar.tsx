@@ -1,5 +1,6 @@
 import React from 'react';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useProjectsInSidebarOrder } from '@/components/session/sidebar/list/useProjectsInSidebarOrder';
 import { useUIStore } from '@/stores/useUIStore';
 import { Button } from '@/components/ui/button';
 import { SettingsSidebarLayout } from '@/components/sections/shared/SettingsSidebarLayout';
@@ -15,7 +16,7 @@ import { SETTINGS_SECTION_TITLE_CLASS } from '@/components/sections/shared/Setti
 
 export const ProjectsSidebar: React.FC<{ onItemSelect?: () => void }> = ({ onItemSelect }) => {
   const { t } = useI18n();
-  const projects = useProjectsStore((state) => state.projects);
+  const projects = useProjectsInSidebarOrder(useProjectsStore((state) => state.projects));
   const selectedId = useUIStore((state) => state.settingsProjectsSelectedId);
   const setSelectedId = useUIStore((state) => state.setSettingsProjectsSelectedId);
   const { currentTheme } = useThemeSystem();
@@ -69,10 +70,10 @@ export const ProjectsSidebar: React.FC<{ onItemSelect?: () => void }> = ({ onIte
         const color = resolveProjectColor(project.color);
         const fallbackIcon = iconName
           ? (
-            <Icon name={iconName} className={cn('h-4 w-4', selected ? 'text-foreground' : 'text-muted-foreground/70')} style={color ? { color } : undefined} />
+            <Icon name={iconName} className={cn('h-4 w-4', selected ? 'text-foreground' : 'text-muted-foreground')} style={color ? { color } : undefined} />
           )
           : (
-            <Icon name="folder" className={cn('h-4 w-4', selected ? 'text-foreground' : 'text-muted-foreground/70')} style={color ? { color } : undefined} />
+            <Icon name="folder" className={cn('h-4 w-4', selected ? 'text-foreground' : 'text-muted-foreground')} style={color ? { color } : undefined} />
           );
         const icon = project.iconImage
           ? (

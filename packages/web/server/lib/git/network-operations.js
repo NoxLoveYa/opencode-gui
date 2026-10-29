@@ -9,7 +9,7 @@ import os from 'node:os';
 import { createGitCredentialBroker, GIT_CREDENTIAL_NONCE_ENV } from './credential-broker.js';
 import { helperShellCommand } from './helper-launch.js';
 import { gitLfsCredentialEndpointAliases, normalizeGitRemoteEndpoint, parseGitCredentialReference } from './credential-resolver.js';
-import { createNetworkOperationPlanner } from './network-operation-plan.js';
+import { createNetworkOperationPlanner, isChangeReviewRemote } from './network-operation-plan.js';
 import { createNetworkOperationRegistry } from './network-operation-registry.js';
 import { createGitRedactor, redactGitText } from './redaction.js';
 import { parseSubmoduleManifest, SUBMODULE_DISCOVERY_LIMITS } from './submodule-discovery.js';
@@ -55,6 +55,12 @@ const readTreeListing = (treeOutput) => ({
   treeObjects: parseTreeObjects(treeOutput),
 });
 const terminal = (state, code, message) => ({ state, error: publicError(code, message) });
+// A remote-tracking ref mirrors the remote, so it follows a force-pushed
+// branch the way `git fetch` with the default refspec does. A local branch
+// destination is never moved backwards.
+const singleRefFetchRefspec = (sourceRef, destinationRef) => (
+  `${destinationRef.startsWith('refs/remotes/') ? '+' : ''}${sourceRef}:${destinationRef}`
+);
 const fileIdentity = (stats) => `${stats.dev}:${stats.ino}`;
 // Linux reuses an inode number when a directory is removed and recreated in the
 // same parent, so device and inode alone cannot tell a replaced directory from
@@ -324,10 +330,29 @@ const awaitMutation = async (work, controls, deadline, record = async () => {}) 
   return value;
 };
 
+// What a remote said when it refused a push: Git's `! [remote rejected]` /
+// `! [rejected]` lines and the host's own `remote: error` lines.
+const REJECTED_LINE_RE = /^!\s*\[(?:remote )?rejected\]/;
+const REMOTE_ERROR_LINE_RE = /^remote:\s*(?:error|fatal)\b/i;
+/**
+ * A refused push's message: the rejection lines first, then the remote's
+ * error lines, each once, without the progress and hints around them. Null
+ * when the output names no rejection, so other failures read as before.
+ */
+const remoteRejection = (detail) => {
+  const lines = [...new Set(detail.split('\n').map((line) => line.trim()).filter(Boolean))];
+  const rejected = lines.filter((line) => REJECTED_LINE_RE.test(line));
+  const errors = lines.filter((line) => REMOTE_ERROR_LINE_RE.test(line));
+  return rejected.length || errors.length ? [...rejected, ...errors].slice(0, 12).join('\n') : null;
+};
+/** A redacted failure text, led by the remote's rejection when it refused a push. */
+const leadWithRejection = (text) => remoteRejection(text) ?? text;
+
 export function createNetworkOperations({
   validateGitTransportContext,
   validateManagedSshCredential,
   resolveSourceControlAccount,
+  sourceControlProviders,
   contributorProvenance,
   resolveRef,
   resolveSymbolicRef,
@@ -533,14 +558,26 @@ export function createNetworkOperations({
     }
     return result.stdout;
   });
+  // Git's own branch-name rule for a review push's target; null when Git refuses the name.
+  const checkBranchNameImpl = async (directory, name) => {
+    const result = await run({
+      cwd: directory,
+      args: ['check-ref-format', '--branch', name],
+      env: { ...inheritedEnv, GIT_ALLOW_PROTOCOL: '', GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1' },
+      deadline: Date.now() + timeoutMs,
+    });
+    return result.code === 0 && !result.timedOut && !result.cancelled ? result.stdout.trim() : null;
+  };
   const planner = createNetworkOperationPlanner({
     validateGitTransportContext,
     validateManagedSshCredential,
     resolveSourceControlAccount,
+    sourceControlProviders,
     contributorProvenance,
     resolveRef: resolveRefImpl,
     resolveSymbolicRef: resolveSymbolicRefImpl,
     resolveRemoteFetchMapping: resolveRemoteFetchMappingImpl,
+    checkBranchName: checkBranchNameImpl,
     inspectCheckoutHydration: (input) => inspectCheckoutHydration(input),
     runtimeIdentity,
     idFactory,
@@ -597,6 +634,11 @@ export function createNetworkOperations({
       || authority.transportRevision !== plan.transportRevision
       || (authority.credentialId ?? null) !== (plan.credentialId ?? null)) {
       throw operationError('REMOTE_CHANGED', 'Git remote or transport binding changed', 409);
+    }
+    // Review refs stay behind the gate they were planned under: the remote is
+    // still the primary remote of a ready change-host association.
+    if (plan.changeReviewRemote && !isChangeReviewRemote(authority, sourceControlProviders)) {
+      throw operationError('REMOTE_CHANGED', 'The remote is no longer a change host\'s primary remote', 409);
     }
     if (plan.sourceSha) {
       const sourceSha = String(await awaitPhase(
@@ -799,17 +841,35 @@ export function createNetworkOperations({
    * successful push, and as unpulled after a pull. A branch that was deleted
    * on the remote loses its tracking ref the same way.
    */
+  const trackingRefOf = (plan, remoteRef) => (remoteRef.startsWith('refs/heads/')
+    ? `refs/remotes/${plan.target.remote.name}/${remoteRef.slice('refs/heads/'.length)}`
+    : null);
+  /** The tracking ref it wrote, or null when there is none or it could not be written. */
   const recordRemoteTrackingRef = async (plan, controls, context, deadline, sha, remoteRef = plan.target.destinationRef) => {
-    if (!remoteRef.startsWith('refs/heads/')) return;
-    const trackingRef = `refs/remotes/${plan.target.remote.name}/${remoteRef.slice('refs/heads/'.length)}`;
+    const trackingRef = trackingRefOf(plan, remoteRef);
+    if (!trackingRef) return null;
     try {
       await commandResult(plan, controls, sha ? ['update-ref', trackingRef, sha] : ['update-ref', '-d', trackingRef], context, deadline);
+      return sha ? trackingRef : null;
     } catch (error) {
       // The transfer itself is done; a bookkeeping ref that could not be
       // written costs one stale badge until the next fetch, not the result.
       if (error?.cancelled || error?.timedOut || error?.code === 'CANCELLED' || error?.code === 'TIMEOUT') throw error;
+      return null;
     }
   };
+
+  /**
+   * Pull replays only the commits made here since the remote copy was last
+   * seen, found as the fork point in the tracking ref's reflog, the way
+   * `git pull --rebase` does. A remote branch rewritten by its host (GitHub
+   * rebasing a stacked branch after the layer below it merged) then brings
+   * its new commits in, and its old ones are not replayed on top of their
+   * rewritten selves. Without a tracking ref, the fetched commit is the base.
+   */
+  const pullRebaseArgs = (fetchedSha, trackingRef) => (trackingRef
+    ? ['rebase', '--no-verify', '--no-autostash', '--fork-point', '--onto', fetchedSha, trackingRef]
+    : ['rebase', '--no-verify', '--no-autostash', fetchedSha]);
 
   const commandResult = async (plan, controls, args, context, deadline, options = {}) => {
     const localRefCleanup = options.localRefCleanup === true
@@ -833,6 +893,26 @@ export function createNetworkOperations({
     });
     const detail = redactor.error(`${result.stderr}\n${result.stdout}`, 'Git transport failed');
     throw operationError(transportFailureCode(detail), detail, 500, result);
+  };
+
+  // The remote's default branch is never deleted, whatever asked for it: some
+  // hosts refuse that deletion and some carry it out. The remote itself says
+  // which branch its HEAD names; local `refs/remotes/<remote>/HEAD` can be
+  // missing or stale. The question gets its own transport, released before the
+  // push gets one: a managed HTTPS lease answers a single credential request,
+  // as between sync's fetch and push.
+  const refuseRemoteDefaultBranch = async (plan, controls, deadline) => {
+    const probe = await transport(plan, controls, deadline);
+    let output;
+    try {
+      output = await commandResult(plan, controls, ['ls-remote', '--symref', '--', plan.rawEndpoint, 'HEAD'], probe, deadline);
+    } finally {
+      if (await safeRevoke(probe, plan.operationId)) throw operationError('UNKNOWN', 'Git credential cleanup failed', 500);
+    }
+    const defaultRef = /^ref: (\S+)\tHEAD$/m.exec(String(output.stdout))?.[1];
+    if (defaultRef === plan.target.destinationRef) {
+      throw operationError('INVALID_REQUEST', "The remote's default branch can't be deleted", 409);
+    }
   };
 
   const localIntegrationContext = async (directory, controls, deadline) => {
@@ -1579,6 +1659,7 @@ export function createNetworkOperations({
       if (controls.isCancellationRequested()) result = cancellationResult(plan, controls, {});
       else {
         lfsUploaded = await prepareLfsPublication(plan, controls, deadline);
+        if (plan.target.operation === 'delete-remote-branch') await refuseRemoteDefaultBranch(plan, controls, deadline);
         context = await transport(plan, controls, deadline);
         if (plan.transportMode === 'managed') await controls.markStepCompleted('authenticated');
         await revalidate(plan, controls, deadline);
@@ -1594,7 +1675,8 @@ export function createNetworkOperations({
             'push', ...lease, '--', plan.rawEndpoint,
             plan.target.operation === 'delete-remote-branch'
               ? `:${plan.target.destinationRef}`
-              : `${plan.sourceSha}:${plan.target.destinationRef}`,
+              // A push for review carries the options the planner composed.
+              : plan.pushRefspec ?? `${plan.sourceSha}:${plan.target.destinationRef}`,
           ], context, deadline, { transfer: true });
           pushTransferred = true;
           await controls.markStepCompleted('transferred');
@@ -1623,7 +1705,7 @@ export function createNetworkOperations({
           temporaryRef = plan.target.operation === 'pull' ? `refs/openchamber/network/${plan.operationId}` : plan.target.destinationRef;
           await commandResult(plan, controls, [
             'fetch', '--no-tags', ...(plan.target.operation === 'pull' ? ['--no-recurse-submodules'] : []),
-            '--', plan.rawEndpoint, `${plan.target.sourceRef}:${temporaryRef}`,
+            '--', plan.rawEndpoint, singleRefFetchRefspec(plan.target.sourceRef, temporaryRef),
           ], context, deadline, { transfer: true });
           await controls.markStepCompleted('transferred');
           if (plan.target.operation === 'fetch') result = { state: 'succeeded' };
@@ -1643,11 +1725,11 @@ export function createNetworkOperations({
             if (!SHA_PATTERN.test(fetchedSha)) throw operationError('STALE_CONFIG', 'Fetched ref is invalid', 409);
             // The managed credential context is already revoked here; the
             // tracking ref is local bookkeeping and uses the credential-free one.
-            await recordRemoteTrackingRef(plan, controls, integrationContext, deadline, fetchedSha, plan.target.sourceRef);
+            const trackingRef = await recordRemoteTrackingRef(plan, controls, integrationContext, deadline, fetchedSha, plan.target.sourceRef);
             mergeStarted = true;
             await controls.markIntegrationStarted();
             // Local commits are replayed on top of the fetched ones, as pull always did here.
-            await commandResult(plan, controls, ['rebase', '--no-verify', '--no-autostash', fetchedSha], integrationContext, deadline);
+            await commandResult(plan, controls, pullRebaseArgs(fetchedSha, trackingRef), integrationContext, deadline);
             mergeStarted = false;
             await controls.markStepCompleted('updated-local-repository');
             result = { state: 'succeeded' };
@@ -1680,7 +1762,7 @@ export function createNetworkOperations({
           'AUTHENTICATION_REQUIRED', 'AUTHENTICATION_FAILED', 'GIT_LFS_CLIENT_MISSING', 'INVALID_REQUEST', 'RUNTIME_UNSUPPORTED', 'UNKNOWN',
         ].includes(error.code) ? error.code : 'TRANSPORT_FAILED';
         result = terminal(code.startsWith('STALE_') || code === 'REMOTE_CHANGED' ? 'conflicted' : 'failed', code,
-          `${lfsUploaded ? 'LFS objects were uploaded, but Git ref publication failed. ' : ''}${createGitRedactor({ secrets: [...(context?.secrets ?? []), plan.directory] }).error(error)}`);
+          `${lfsUploaded ? 'LFS objects were uploaded, but Git ref publication failed. ' : ''}${leadWithRejection(createGitRedactor({ secrets: [...(context?.secrets ?? []), plan.directory] }).error(error))}`);
       }
     }
 
@@ -1747,7 +1829,7 @@ export function createNetworkOperations({
       await revalidatePullHead(headPlan, controls, deadline);
       await commandResult(fetchPlan, controls, [
         'fetch', '--no-tags', '--no-recurse-submodules', '--', fetchPlan.rawEndpoint,
-        `${fetchPlan.target.sourceRef}:${fetchPlan.target.destinationRef}`,
+        singleRefFetchRefspec(fetchPlan.target.sourceRef, fetchPlan.target.destinationRef),
       ], context, deadline, { transfer: true, transferRole: 'fetch' });
       await controls.markStepCompleted('transferred');
       if (await safeRevoke(context, plan.operationId)) {
@@ -1773,7 +1855,8 @@ export function createNetworkOperations({
       )).trim().toLowerCase();
       mergeStarted = true;
       await controls.markIntegrationStarted();
-      await commandResult(fetchPlan, controls, ['rebase', '--no-verify', '--no-autostash', fetchedSha], integrationContext, deadline);
+      const fetchedTrackingRef = fetchPlan.target.destinationRef.startsWith('refs/remotes/') ? fetchPlan.target.destinationRef : null;
+      await commandResult(fetchPlan, controls, pullRebaseArgs(fetchedSha, fetchedTrackingRef), integrationContext, deadline);
       mergeStarted = false;
       await controls.markStepCompleted('updated-local-repository');
       const hydrated = await hydrateIntegration(fetchPlan, controls, deadline);
@@ -1834,9 +1917,9 @@ export function createNetworkOperations({
     } catch (error) {
       const cleanupFailed = await safeRevoke(context, plan.operationId);
       const output = `${error.stderr ?? ''}\n${error.stdout ?? ''}`;
-      const redacted = createGitRedactor({
+      const redacted = leadWithRejection(createGitRedactor({
         secrets: [...(context?.secrets ?? []), plan.directory],
-      }).error(error);
+      }).error(error));
       if (activeStep === 'pull' && /\bCONFLICT\b|automatic merge failed|unmerged files|could not apply/i.test(output)) {
         const publicFailure = publicError('CONFLICT', 'Sync pull left conflicts in the local repository; resolve them and continue the rebase');
         step('pull', 'conflicted', publicFailure);
@@ -2227,7 +2310,7 @@ export function createNetworkOperations({
       await controls.markStepCompleted('authenticated');
       await revalidateContributorSource(plan, controls, deadline);
       await commandResult(plan, controls, [
-        'fetch', '--no-tags', '--', plan.rawEndpoint, `${plan.target.sourceRef}:${plan.target.destinationRef}`,
+        'fetch', '--no-tags', '--', plan.rawEndpoint, singleRefFetchRefspec(plan.target.sourceRef, plan.target.destinationRef),
       ], context, deadline, { transfer: true });
       await controls.markStepCompleted('transferred');
       const fetchedSha = String(await awaitPhase(

@@ -1,18 +1,18 @@
 // The dispatcher: a thin layer in front of the host's routes that forwards a request addressed
 // to a space to the OpenChamber server inside that space, over the place's `connect` channel.
 //
-// The client addresses the space. A request goes to a space only when its path starts with
-// `/api/spaces/<id>/` and the id is in the label-derived list of spaces. The dispatcher reads the
-// path and nothing else to decide that: no directory, no body, no session id. It runs after the
-// host has authenticated the user, strips the prefix and the user's credentials, adds the
-// space's own session, and streams the rest untouched, HTTP and SSE alike. WebSocket upgrades
-// under the prefix are forwarded by `websocket.js`, which shares the rules and the session
-// of this module; the merged session list and the event connection of a space use
-// `requestInside` for their own requests to the server inside.
+// The client addresses the space. A request goes to a space when it names a directory under
+// `/spaces/<id>` in its query or its directory header, or when its path starts with
+// `/api/spaces/<id>/`, the older form clients of earlier versions still send. The dispatcher
+// reads the path, the query and the headers and nothing else to decide that: no body, no
+// session id. It runs after the host has authenticated the user, strips the prefix and the
+// user's credentials, adds the space's own session, and streams the rest untouched, HTTP and
+// SSE alike. WebSocket upgrades to a space are forwarded by `websocket.js`, which shares the
+// rules and the session of this module; the merged session list and the event connection of a
+// space use `requestInside` for their own requests to the server inside.
 //
-// Two guards only reject. A prefixed request whose directory lies outside that space's root is
-// refused, and an unprefixed request whose directory lies under `/spaces/` is refused before
-// any host route sees it. Neither guard routes anything.
+// One guard only rejects: a request to a space that also names a directory outside that space's
+// root, the host's or another space's, is refused rather than sent to either side.
 //
 // Everything that comes back from a space is untrusted. A response cannot set a cookie on the
 // app's origin, and nothing from a space renders as a page under it.
@@ -50,7 +50,10 @@ const FREE_SOCKET_TIMEOUT_MS = 4_000;
 const ERROR_TEXT_CHARACTERS = 300;
 
 // Route families that exist on the host only, never in a space: provider and login pages,
-// settings, GitHub, Linear, voice, guests, project routes, and the host's own system routes.
+// settings, the legacy GitHub auth routes, trackers (Linear and its legacy routes), voice,
+// guests, project routes, and the host's own system routes. `/api/source-control` is forwarded:
+// the UI reads a space directory's binding and repository context there, and the server inside
+// answers from its own token store, never the host's.
 // A prefixed request for one of them is refused, whatever the server inside would answer.
 const HOST_ONLY_ROUTES = Object.freeze([
   '/api/provider',
@@ -63,6 +66,7 @@ const HOST_ONLY_ROUTES = Object.freeze([
   '/api/themes',
   '/api/github',
   '/api/linear',
+  '/api/tracker',
   '/api/voice',
   '/api/tts',
   '/api/dictation',
@@ -145,9 +149,12 @@ const RAW_FILE_CONTENT_TYPES = /^\s*(?:image\/(?:png|jpeg|gif|webp|avif|bmp|x-ic
 const RAW_FILE_ROUTE = '/api/fs/raw';
 const isRawFileRoute = (pathname) => pathname.toLowerCase() === RAW_FILE_ROUTE;
 
-/** `/api/spaces/<id>/<rest>` as `{ spaceId, path }` with `path` being `/api/<rest>` inside, or null. */
+/**
+ * `/api/spaces/<id>/<rest>` as `{ spaceId, path }` with `path` being `/api/<rest>` inside, or null.
+ * The prefix is read without regard to case, as Express routes the host's `/api` mounts.
+ */
 export function parseSpaceRoute(pathname) {
-  if (!pathname.startsWith(SPACE_ROUTE_PREFIX)) {
+  if (!pathname.toLowerCase().startsWith(SPACE_ROUTE_PREFIX)) {
     return null;
   }
   const rest = pathname.slice(SPACE_ROUTE_PREFIX.length);
@@ -157,9 +164,6 @@ export function parseSpaceRoute(pathname) {
   }
   return { spaceId: rest.slice(0, slash), path: `/api${rest.slice(slash)}` };
 }
-
-/** Whether a request path is one the dispatcher owns. Body parsers leave such a request alone. */
-export const isSpaceRequestPath = (pathname) => parseSpaceRoute(pathname) !== null;
 
 // A directory as a client wrote it, normalised the way a POSIX path is, with no `..` left in it.
 const normalizeDirectory = (value) => {
@@ -175,6 +179,9 @@ export const isSpaceDirectory = (value) => {
   const directory = normalizeDirectory(value);
   return directory !== null && isUnder(directory, SPACES_ROOT);
 };
+
+/** The space id a directory under `/spaces/` names, the empty string when it names none. */
+const spaceIdOfDirectory = (value) => normalizeDirectory(value).slice(SPACES_ROOT.length + 1).split('/')[0];
 
 /** Whether a directory lies inside this space's root, `/spaces/<id>`. */
 export const isDirectoryOfSpace = (value, spaceId) => {
@@ -221,6 +228,24 @@ export function requestedDirectories(req, url) {
   }
   return directories;
 }
+
+/**
+ * The space a request is addressed to, as `{ spaceId, path }` with `path` being the path inside,
+ * or null for the host: by the `/api/spaces/<id>/` prefix, or else by the first directory under
+ * `/spaces/` that a request under `/api/` names. Whether every directory the request names lies
+ * in that space is the guard's question, asked after the route rules.
+ */
+export function spaceRouteOf(req, url) {
+  const prefixed = parseSpaceRoute(url.pathname);
+  if (prefixed) return prefixed;
+  // Without regard to case: the host's `/api` mounts, the OpenCode proxy among them, take `/API/` too.
+  if (!url.pathname.toLowerCase().startsWith('/api/')) return null;
+  const named = requestedDirectories(req, url).find(isSpaceDirectory);
+  return named === undefined ? null : { spaceId: spaceIdOfDirectory(named), path: url.pathname };
+}
+
+/** Whether a request goes to a space. Body parsers leave such a request alone. */
+export const isSpaceRequest = (req) => spaceRouteOf(req, new URL(req.originalUrl ?? req.url, 'http://localhost')) !== null;
 
 const shortText = (text) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, ERROR_TEXT_CHARACTERS);
 
@@ -297,7 +322,8 @@ export const stripCredentialQuery = (url) => {
 
 /**
  * `transport` is `{ listSpaceIds(), connect(spaceId), readToken(spaceId) }`: the ids from the
- * runtime's labels, the place's `connect`, and the token read back over `exec`. `now` and
+ * runtime's labels with the failure of a place that could not be asked, `{ ids, failure }`, the
+ * place's `connect`, and the token read back over `exec`. `now` and
  * `logger` are injectable for the tests.
  */
 export function createSpaceDispatcher({ transport, now = Date.now, logger = console, freeSocketTimeoutMs = FREE_SOCKET_TIMEOUT_MS }) {
@@ -305,25 +331,31 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
   const tokens = new Map();
   const sessions = new Map();
   const logins = new Map();
-  let known = { ids: new Set(), readAt: -Infinity };
+  let known = { ids: new Set(), failure: null, readAt: -Infinity };
   let listing = null;
 
   const readSpaceIds = async () => {
     if (!listing) {
       listing = transport.listSpaceIds()
-        .then((ids) => { known = { ids: new Set(ids), readAt: now() }; })
+        .then(({ ids, failure }) => { known = { ids: new Set(ids), failure, readAt: now() }; })
         .finally(() => { listing = null; });
     }
     await listing;
   };
 
-  /** Whether the runtime's labels name this space, read again when the answer is stale or a miss. */
+  /**
+   * Whether the runtime's labels name this space, read again when the answer is stale or a miss.
+   * A miss while a place could not be asked rejects with that place's failure: the space may well
+   * be there, so it is never called gone on a guess.
+   */
   const isKnownSpace = async (spaceId) => {
     const age = now() - known.readAt;
     if (age >= LIST_TTL_MS || (!known.ids.has(spaceId) && age >= LIST_MISS_RETRY_MS)) {
       await readSpaceIds();
     }
-    return known.ids.has(spaceId);
+    if (known.ids.has(spaceId)) return true;
+    if (known.failure) throw known.failure;
+    return false;
   };
 
   const agentFor = (spaceId) => {
@@ -633,17 +665,13 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
 
   /**
    * The Express middleware. Mount it after the host has authenticated the request and before
-   * every route that reads a directory: it dispatches prefixed requests and guards the rest.
+   * every route that reads a directory: a request that names a space's directory never reaches
+   * a host route or the host's last-directory fallback.
    */
   const middleware = (req, res, next) => {
     const url = new URL(req.originalUrl ?? req.url, 'http://localhost');
-    const route = parseSpaceRoute(url.pathname);
+    const route = spaceRouteOf(req, url);
     if (!route) {
-      // Guard two. A space's directory never runs on the host, whatever fallback would follow.
-      if (url.pathname.startsWith('/api/') && requestedDirectories(req, url).some(isSpaceDirectory)) {
-        answer(res, 400, 'space_directory_needs_prefix', 'A directory under /spaces/ belongs to an isolated space and is addressed as /api/spaces/<id>/... only.');
-        return;
-      }
       next();
       return;
     }
@@ -660,7 +688,8 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
       answer(res, 403, 'refused_across_boundary', 'This action does not cross the boundary of an isolated space.');
       return;
     }
-    // Guard one. A prefixed request names this space's directories or none.
+    // The guard. A request to a space names this space's directories or none: one that also
+    // names the host's or another space's is refused rather than sent to either side.
     if (requestedDirectories(req, url).some((directory) => !isDirectoryOfSpace(directory, route.spaceId))) {
       answer(res, 400, 'directory_outside_space', `A request to space ${route.spaceId} may name a directory under ${spaceWorkPath(route.spaceId)} only.`);
       return;
@@ -690,5 +719,5 @@ export function createSpaceDispatcher({ transport, now = Date.now, logger = cons
     },
   };
 
-  return { middleware, close, isSpaceDirectory, isSpaceRequestPath, requestInside, spaceSessions };
+  return { middleware, close, isSpaceDirectory, isSpaceRequest, requestInside, spaceSessions };
 }

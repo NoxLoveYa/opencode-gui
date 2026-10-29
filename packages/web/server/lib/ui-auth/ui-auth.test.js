@@ -169,6 +169,7 @@ describe('ui auth client credential seam', () => {
     expect(typeof mintRes.body.token).toBe('string');
     expect(mintRes.body.token.startsWith('oc_url_')).toBe(true);
     expect(mintRes.body.expiresAt).toBeGreaterThan(Date.now());
+    expect(mintRes.body.expiresIn).toBe(60_000);
     expect(mintRes.getHeader('cache-control')).toBe('no-store');
 
     const urlToken = mintRes.body.token;
@@ -306,6 +307,15 @@ describe('ui auth client credential seam', () => {
       url: `/api/spaces/a1b2c3d4e5f6/fs/raw?path=x.png&oc_url_token=${encodeURIComponent(urlToken)}`,
       headers: { accept: 'image/png' },
     }, null)).toBe('client:device-1');
+    // A provider's uploads take the URL token only where its descriptor says it serves uploads.
+    const uploadOf = (provider) => ({
+      method: 'GET',
+      path: `/api/source-control/${provider}/uploads/abc/clip.png`,
+      url: `/api/source-control/${provider}/uploads/abc/clip.png?owner=o&repo=r&oc_url_token=${encodeURIComponent(urlToken)}`,
+      headers: { accept: 'image/png' },
+    });
+    expect(await auth.ensureSessionToken(uploadOf('gitlab'), null)).toBe('client:device-1');
+    expect(await auth.ensureSessionToken(uploadOf('github'), null)).toBe(null);
     expect(await auth.ensureSessionToken({
       method: 'GET',
       path: '/api/spaces/a1b2c3d4e5f6/session',
@@ -504,5 +514,36 @@ describe('ui auth login rate limit', () => {
 
     expect(statuses.slice(0, 10)).toEqual(Array(10).fill(401));
     expect(statuses.slice(10)).toEqual([429, 429]);
+  });
+
+  it('counts rejected passkey assertions against the same budget as passwords', async () => {
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+
+    try {
+      const statuses = [];
+      for (let index = 0; index < 12; index += 1) {
+        const req = {
+          method: 'POST',
+          ip: '198.51.100.99',
+          headers: { host: '127.0.0.1:3000' },
+          body: index % 2 === 0
+            ? { response: { id: 'invalid-passkey-credential' } }
+            : { password: 'wrong' },
+        };
+        const res = createResponse();
+        if (index % 2 === 0) {
+          await auth.handlePasskeyAuthenticationVerify(req, res);
+        } else {
+          await auth.handleSessionCreate(req, res);
+        }
+        statuses.push(res.statusCode);
+      }
+
+      expect(statuses.slice(0, 10).every((status) => status !== 429)).toBe(true);
+      expect(statuses.slice(10)).toEqual([429, 429]);
+    } finally {
+      auth.dispose();
+    }
   });
 });

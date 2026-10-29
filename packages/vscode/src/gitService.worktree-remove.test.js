@@ -9,7 +9,7 @@ mock.module('vscode', () => ({
   Uri: { file: (fsPath) => ({ fsPath }) },
 }));
 
-const { removeWorktree } = await import('./gitService.ts?worktree-remove-test');
+const { createWorktree, getWorktreeBootstrapStatus, removeWorktree, waitForWorktreeRemoval } = await import('./gitService.ts?worktree-remove-test');
 
 const tempDirs = [];
 
@@ -93,6 +93,68 @@ describe('VS Code worktree removal instance disposal', () => {
     });
   });
 
+  it('holds requests for the worktree folders from the release until the removal settles', async () => {
+    if (!canRunGit()) return;
+
+    await withIsolatedOpenCodeData(async () => {
+      const { repo, worktreePath } = createRepositoryWithWorktree();
+      const settledAfter = (promise) => promise.then(() => 'settled');
+      const pendingAfter = (ms) => new Promise((resolve) => setTimeout(() => resolve('pending'), ms));
+      let insideHold = null;
+      const observed = {};
+      const disposeInstance = mock(async () => {
+        insideHold = waitForWorktreeRemoval(path.join(worktreePath, 'sub'));
+        observed.inside = await Promise.race([settledAfter(insideHold), pendingAfter(50)]);
+        observed.project = await Promise.race([settledAfter(waitForWorktreeRemoval(repo)), pendingAfter(50)]);
+      });
+
+      await expect(removeWorktree(repo, { directory: worktreePath, disposeInstance })).resolves.toBe(true);
+
+      expect(observed).toEqual({ inside: 'pending', project: 'settled' });
+      await expect(insideHold).resolves.toBeUndefined();
+    });
+  });
+
+  // Windows reports a folder held by another process as "Permission denied";
+  // a read-only directory gives git the same failure on macOS and Linux.
+  it('releases the worktree instance again before retrying a busy removal', async () => {
+    if (!canRunGit() || process.platform === 'win32' || process.getuid?.() === 0) return;
+
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    await withIsolatedOpenCodeData(async () => {
+      const repo = createTempDir();
+      runGit(repo, ['init', '-b', 'main']);
+      runGit(repo, ['config', 'user.email', 'test@example.com']);
+      runGit(repo, ['config', 'user.name', 'Test']);
+      runGit(repo, ['commit', '--allow-empty', '-m', 'init']);
+      // Created the way the app does, inside the data-dir worktree root.
+      const { path: worktreePath } = await createWorktree(repo, { mode: 'new', branchName: 'busy-release', worktreeName: 'busy-release' });
+      // Its background checkout must finish before the platform is faked below.
+      const deadline = Date.now() + 10_000;
+      while ((await getWorktreeBootstrapStatus(worktreePath)).status === 'pending' && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const held = path.join(worktreePath, 'held');
+      fs.mkdirSync(held);
+      fs.writeFileSync(path.join(held, 'file.txt'), 'held');
+      fs.chmodSync(held, 0o555);
+
+      // The second release is the one that frees the folder.
+      const disposeInstance = mock(async () => {
+        if (disposeInstance.mock.calls.length === 2) fs.chmodSync(held, 0o755);
+      });
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+      try {
+        await expect(removeWorktree(repo, { directory: worktreePath, disposeInstance })).resolves.toBe(true);
+      } finally {
+        Object.defineProperty(process, 'platform', platform);
+      }
+
+      expect(disposeInstance).toHaveBeenCalledTimes(2);
+      expect(fs.existsSync(worktreePath)).toBe(false);
+    });
+  }, 30_000);
+
   it('warns about a failed instance disposal and still removes the worktree', async () => {
     if (!canRunGit()) return;
 
@@ -122,6 +184,35 @@ describe('VS Code worktree removal instance disposal', () => {
       } finally {
         warnSpy.mockRestore();
       }
+    });
+  });
+
+  it('keeps a branch another checkout holds and still removes the worktree', async () => {
+    if (!canRunGit()) return;
+
+    await withIsolatedOpenCodeData(async () => {
+      const { repo, worktreePath } = createRepositoryWithWorktree();
+      runGit(worktreePath, ['checkout', '--ignore-other-worktrees', 'main']);
+
+      await expect(removeWorktree(repo, { directory: worktreePath, deleteLocalBranch: true })).resolves.toBe(true);
+
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(runGit(repo, ['branch', '--list', 'main']).trim()).toContain('main');
+    });
+  });
+
+  it('keeps the branch a remote names as its default', async () => {
+    if (!canRunGit()) return;
+
+    await withIsolatedOpenCodeData(async () => {
+      const { repo, worktreePath } = createRepositoryWithWorktree();
+      runGit(repo, ['update-ref', 'refs/remotes/origin/feature', 'feature']);
+      runGit(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/feature']);
+
+      await expect(removeWorktree(repo, { directory: worktreePath, deleteLocalBranch: true })).resolves.toBe(true);
+
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(runGit(repo, ['branch', '--list', 'feature']).trim()).toContain('feature');
     });
   });
 

@@ -5,7 +5,6 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useContextStore } from '@/stores/contextStore';
-import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { queuedContextToParts } from '@/components/chat/composer/submit/buildOutgoingMessage';
 import { getAllSyncSessionMap, getDirectoryState } from '@/sync/sync-refs';
 import { hasActiveSubagent } from '@/sync/global-session-status';
@@ -95,6 +94,7 @@ export const buildQueuedAutoSendPayload = (queue: QueuedMessage[]) => {
     agentMentionName: queued.agentMention,
     additionalParts: queuedContextToParts(queued.context ?? []),
     sendConfig: queued.sendConfig,
+    goal: queued.goal ?? null,
   };
 };
 
@@ -121,7 +121,7 @@ export const sendQueuedAutoSendPayload = (
     payload.additionalParts.length > 0 ? payload.additionalParts : undefined,
     resolved.variant,
     'normal',
-    { target, historySubmissions: payload.historySubmissions },
+    { target, historySubmissions: payload.historySubmissions, queuedGoal: payload.goal },
   );
 };
 
@@ -233,7 +233,6 @@ export const resolveQueuedSessionStatusType = (
 export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?: boolean }) {
   const enabled = typeof enabledOrOptions === 'boolean' ? enabledOrOptions : (enabledOrOptions?.enabled ?? true);
   const queuedMessages = useMessageQueueStore((state) => state.queuedMessages);
-  const autoReviewRuns = useAutoReviewStore((state) => state.runsByOriginalSessionID);
   const sessionStatusRecord = useDirectorySync((state) => state.session_status);
   const sessions = useDirectorySync((state) => state.session);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
@@ -261,7 +260,6 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
   const inFlightSessionsRef = React.useRef<Set<string>>(new Set());
   const sendFailuresRef = React.useRef<Map<string, QueuedAutoSendFailure>>(new Map());
   const previousStatusRef = React.useRef<Map<string, SessionStatusType>>(new Map());
-  const autoReviewBlockedSessionsRef = React.useRef<Set<string>>(new Set());
   const [retryTick, setRetryTick] = React.useState(0);
   const retryScheduler = React.useMemo(
     () => createQueuedAutoSendRetryScheduler(() => setRetryTick((value) => value + 1)),
@@ -287,10 +285,6 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
       const abortHoldUntil = getAbortHoldUntil(sessionId);
       if (abortHoldUntil !== null) {
         retryScheduler.schedule(abortHoldUntil);
-        return;
-      }
-      if (useAutoReviewStore.getState().isRunningForSession(sessionId)) {
-        autoReviewBlockedSessionsRef.current.add(sessionId);
         return;
       }
 
@@ -374,18 +368,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
       const { sessionId } = target;
       const currentStatusType = resolveQueuedSessionStatusType(sessionId, target.directory);
       const previousStatusType = previousStatusRef.current.get(sessionId);
-      const wasAutoReviewBlocked = autoReviewBlockedSessionsRef.current.has(sessionId);
-      const isAutoReviewRunning = useAutoReviewStore.getState().isRunningForSession(sessionId);
-      if (isAutoReviewRunning) {
-        autoReviewBlockedSessionsRef.current.add(sessionId);
-      } else if (wasAutoReviewBlocked) {
-        autoReviewBlockedSessionsRef.current.delete(sessionId);
-      }
-
-      if (queue.length > 0 && (
-        shouldDispatchQueuedAutoSend(previousStatusType, currentStatusType, queue.length > 0)
-        || (wasAutoReviewBlocked && !isAutoReviewRunning && currentStatusType === 'idle')
-      )) {
+      if (queue.length > 0 && shouldDispatchQueuedAutoSend(previousStatusType, currentStatusType, queue.length > 0)) {
         void dispatchSessionQueue(target, queue);
       }
 
@@ -393,5 +376,5 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     });
 
     previousStatusRef.current = nextStatusMap;
-  }, [enabled, queuedMessages, sessionStatusRecord, sessions, trailingMessageSignature, autoReviewRuns, currentDirectory, retryTick, retryScheduler]);
+  }, [enabled, queuedMessages, sessionStatusRecord, sessions, trailingMessageSignature, currentDirectory, retryTick, retryScheduler]);
 }

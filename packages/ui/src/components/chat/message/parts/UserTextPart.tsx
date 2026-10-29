@@ -1,27 +1,39 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
+import { isInvisibleText } from '@/lib/invisibleText';
 import { Icon } from '@/components/icon/Icon';
-import type { Part } from '@/lib/opencode/model';
-import type { AgentMentionInfo } from '../types';
+import type { FilePart, Part } from '@/lib/opencode/model';
+import {
+    collectOpenableAttachmentNames,
+    findAttachmentPart,
+    isOpenableAttachmentName,
+    resolveAttachmentOpenTarget,
+} from '@/lib/messages/attachmentPreview';
+import type { AgentMentionInfo, ToolPopupContent } from '../types';
+import { useOpenAttachment } from '../useOpenAttachment';
 import { SimpleMarkdownRenderer } from '../../MarkdownRenderer';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { getDirectoryForFilePath } from '@/lib/path-utils';
+import { hasTextSelectionInside } from '@/lib/textSelection';
 import { useI18n } from '@/lib/i18n';
 import {
     INTERACTIVE_REFERENCE_CHIP_CLASS,
+    REFERENCE_CHIP_LABEL_CLASS,
     buildAgentMentionUrl,
     parseSkillHref,
     type AttachmentCitationLink,
 } from '@/lib/messages/inlineMessageLinks';
 import { getFileTypeIconHref } from '@/lib/fileTypeIcons';
 import { useOptionalThemeSystem } from '@/contexts/useThemeSystem';
-import { withAttachmentChips, type InlineTextNode } from './attachmentCitationChips';
+import { glueChipPunctuation, withAttachmentChips, type InlineTextNode } from './attachmentCitationChips';
 import { prepareUserMarkdownContent, SKILL_TOKEN_PATTERN } from './userTextPartContent';
 import { extractTerminalContexts } from '@/lib/messages/terminalContext';
 import { readContextPart } from '@/lib/messages/contextParts';
 import UserContextPart from './UserContextPart';
+import { SessionMentionChipsContext, withSessionMentionChips, type SessionMentionChips } from './sessionMentionChips';
+import { appOwnOrigins } from '@/lib/router/appOrigins';
 
 type PartWithText = Part & { text?: string; content?: string; value?: string };
 
@@ -42,9 +54,18 @@ type UserTextPartProps = {
     onTruncationChange: (partIndex: number, truncated: boolean) => void;
     /** Names of the files attached to this message; `[name]` in the text renders as a file chip. */
     attachmentFilenames: readonly string[];
+    /** The message's file parts; a citation of one the app can show opens it on click. */
+    attachmentFiles?: readonly FilePart[];
+    /** The message's popup opener, for images and inline text. */
+    onShowPopup?: (content: ToolPopupContent) => void;
+    /** Sessions and messages the message mentioned; their links in the text draw as chips. */
+    sessionMentionChips?: SessionMentionChips;
 };
 
+const NO_SESSION_MENTIONS: SessionMentionChips = new Map();
+
 const EMPTY_ATTACHMENT_LINKS: AttachmentCitationLink[] = [];
+const EMPTY_ATTACHMENT_FILES: readonly FilePart[] = [];
 
 
 const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' => {
@@ -60,6 +81,9 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
     partIndex,
     onTruncationChange,
     attachmentFilenames,
+    attachmentFiles = EMPTY_ATTACHMENT_FILES,
+    onShowPopup,
+    sessionMentionChips = NO_SESSION_MENTIONS,
 }) => {
     // Structured context (inline comments, terminal selections, annotations,
     // PR context) renders as a dedicated block instead of raw prompt text.
@@ -84,34 +108,35 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
     const skillByName = React.useMemo(() => new Map(skills.map((skill) => [skill.name, skill])), [skills]);
     const themeSystem = useOptionalThemeSystem();
     const themeVariant = themeSystem?.currentTheme.metadata.variant === 'light' ? 'light' : 'dark';
+    const openableAttachmentNames = React.useMemo(() => collectOpenableAttachmentNames(attachmentFiles), [attachmentFiles]);
+    const isOpenableAttachment = React.useCallback(
+        (filename: string) => isOpenableAttachmentName(openableAttachmentNames, filename),
+        [openableAttachmentNames],
+    );
     const attachmentLinks = React.useMemo<AttachmentCitationLink[]>(() => (
         attachmentFilenames.length === 0
             ? EMPTY_ATTACHMENT_LINKS
             : attachmentFilenames.map((filename) => ({
                 filename,
                 iconId: getFileTypeIconHref(filename, { themeVariant }).slice(1),
+                openable: isOpenableAttachment(filename),
             }))
-    ), [attachmentFilenames, themeVariant]);
+    ), [attachmentFilenames, isOpenableAttachment, themeVariant]);
+    const openAttachment = useOpenAttachment(onShowPopup);
+
+    const openCitedAttachment = React.useCallback((chip: HTMLElement) => {
+        const target = resolveAttachmentOpenTarget(
+            findAttachmentPart(chip.getAttribute('data-attachment-open'), attachmentFiles),
+            attachmentFiles,
+        );
+        if (target) openAttachment(target);
+    }, [attachmentFiles, openAttachment]);
 
     const openSkill = React.useCallback((name: string) => {
         const skill = skillByName.get(name);
         if (!skill?.path) return;
         openContextFile(effectiveDirectory || getDirectoryForFilePath('', skill.path) || '/', skill.path);
     }, [effectiveDirectory, openContextFile, skillByName]);
-
-    const hasActiveSelectionInElement = React.useCallback((element: HTMLElement): boolean => {
-        if (typeof window === 'undefined') {
-            return false;
-        }
-
-        const selection = window.getSelection();
-        if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-            return false;
-        }
-
-        const range = selection.getRangeAt(0);
-        return element.contains(range.startContainer) || element.contains(range.endContainer);
-    }, []);
 
     // Measured before paint, and reported to the message (which renders the
     // show-full-message link) before paint too: measured after it, a sent
@@ -181,6 +206,18 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
 
     const handleClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>) => {
         const target = event.target as HTMLElement | null;
+
+        // A file-name citation opens what its attachment chip opens, unless
+        // the click ends a text selection over it.
+        const citationChip = target?.closest<HTMLElement>('[data-attachment-open]');
+        if (citationChip) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (textRef.current && hasTextSelectionInside(textRef.current)) return;
+            openCitedAttachment(citationChip);
+            return;
+        }
+
         const skillLink = target?.closest<HTMLElement>('[data-skill-name]');
         const skillName = skillLink?.dataset.skillName
             ?? parseSkillHref(target?.closest<HTMLAnchorElement>('a[href]')?.getAttribute('href'));
@@ -196,7 +233,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
             return;
         }
 
-        if (hasActiveSelectionInElement(element)) {
+        if (hasTextSelectionInside(element)) {
             return;
         }
 
@@ -206,7 +243,18 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
         if (collapsibleUserMessages && !messageExpanded && element.scrollHeight > element.clientHeight) {
             handleExpand();
         }
-    }, [collapsibleUserMessages, messageExpanded, handleExpand, hasActiveSelectionInElement, openSkill]);
+    }, [collapsibleUserMessages, messageExpanded, handleExpand, openCitedAttachment, openSkill]);
+
+    // The Markdown chip is a focusable span with the button role; the plain
+    // one is a real button, which turns Enter and Space into a click itself.
+    const handleKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (!(event.target instanceof HTMLElement) || event.target.tagName === 'BUTTON') return;
+        if (!event.target.hasAttribute('data-attachment-open')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openCitedAttachment(event.target);
+    }, [openCitedAttachment]);
 
     const processedMarkdownContent = React.useMemo(() => {
         return prepareUserMarkdownContent({
@@ -214,8 +262,9 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
             agentMention,
             skillNames: new Set(skillByName.keys()),
             attachments: attachmentLinks,
+            sessionMentions: { chips: sessionMentionChips, origins: appOwnOrigins() },
         });
-    }, [agentMention, attachmentLinks, skillByName, textContent]);
+    }, [agentMention, attachmentLinks, sessionMentionChips, skillByName, textContent]);
 
     const plainTextNodes = React.useMemo(() => {
         const nodes: InlineTextNode[] = [];
@@ -247,7 +296,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
                     }}
                 >
                     <Icon name="book-open" className="h-[1.1em] w-[1.1em] shrink-0" />
-                    {skillName}
+                    <span className={REFERENCE_CHIP_LABEL_CLASS}>{skillName}</span>
                 </button>
             );
             cursor = slashIndex + skillName.length + 1;
@@ -283,13 +332,19 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
         });
     }, [agentMention, openSkill, skillByName, textContent]);
 
-    // Attachment citations become file chips in the plain-text path too.
-    const plainTextContent = React.useMemo(() => {
-        if (attachmentFilenames.length === 0) return plainTextNodes;
-        return plainTextNodes.flatMap((node, nodeIndex) => (
-            React.isValidElement<unknown>(node) ? node : withAttachmentChips(node, attachmentFilenames, `attachment-${nodeIndex}`)
-        ));
-    }, [attachmentFilenames, plainTextNodes]);
+    // Attachment citations and mentioned sessions become chips in the plain-text path too.
+    const plainTextContent = React.useMemo(() => glueChipPunctuation(
+        attachmentFilenames.length === 0 && sessionMentionChips.size === 0 ? plainTextNodes : plainTextNodes.flatMap((node, nodeIndex) => (
+            React.isValidElement<unknown>(node)
+                ? node
+                : withSessionMentionChips(node, sessionMentionChips, `session-${nodeIndex}`).flatMap((run, runIndex) => (
+                    React.isValidElement<unknown>(run)
+                        ? run
+                        : withAttachmentChips(run, attachmentFilenames, `attachment-${nodeIndex}-${runIndex}`, isOpenableAttachment)
+                ))
+        )),
+        'chip-glue',
+    ), [attachmentFilenames, isOpenableAttachment, plainTextNodes, sessionMentionChips]);
 
     if (contextPayload) {
         return (
@@ -302,7 +357,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
         );
     }
 
-    if ((!textContent || textContent.trim().length === 0) && terminalContextState.contexts.length === 0) {
+    if (isInvisibleText(textContent) && terminalContextState.contexts.length === 0) {
         return null;
     }
 
@@ -317,31 +372,39 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
                 )}
                 ref={textRef}
                 onClick={handleClick}
+                onKeyDown={handleKeyDown}
             >
                 {normalizedRenderingMode === 'markdown' ? (
-                    <SimpleMarkdownRenderer
-                        content={processedMarkdownContent}
-                        className={cn(
-                            "[&_.markdown-content>*:first-child]:mt-0 [&_.markdown-content>*:last-child]:mb-0",
-                            isCollapsed && [
-                                "[&_.markdown-content>*]:my-0",
-                                "[&_[data-component='markdown-code']]:my-0",
-                                "[&_[data-component='markdown-code']]:inline",
-                                "[&_[data-component='markdown-code']]:border-0",
-                                "[&_[data-component='markdown-code']]:bg-transparent",
-                                "[&_[data-component='markdown-code']>*:first-child]:hidden",
-                                "[&_[data-component='markdown-code']>div]:inline",
-                                 "[&_[data-component='markdown-code']>div]:p-0",
-                                 "[&_[data-component='markdown-code']_pre]:inline",
-                                 "[&_[data-component='markdown-code']_code]:inline",
-                                 "[&_[data-md-code-lines]]:!ps-0",
-                                 "[&_[data-md-code-lines]]:![background-image:none]",
-                                 "[&_[data-md-code-lines]>.line]:before:!hidden",
-                             ]
-                        )}
-                        disableLinkSafety
-                        enableFileReferences={false}
-                    />
+                    <SessionMentionChipsContext.Provider value={sessionMentionChips}>
+                        <SimpleMarkdownRenderer
+                            content={processedMarkdownContent}
+                            className={cn(
+                                "[&_.markdown-content>*:first-child]:mt-0 [&_.markdown-content>*:last-child]:mb-0",
+                                isCollapsed && [
+                                    "[&_.markdown-content>*]:my-0",
+                                    "[&_[data-oc-streamdown]>*]:![margin-block:0]",
+                                    "[&_[data-oc-markdown-block]>*]:![margin-block:0]",
+                                    "[&_[data-streamdown='code-block']]:!my-0",
+                                    "[&_[data-streamdown='code-block']]:!inline",
+                                    "[&_[data-streamdown='code-block']]:!border-0",
+                                    "[&_[data-streamdown='code-block']]:!bg-transparent",
+                                    "[&_[data-streamdown='code-block-header']]:!hidden",
+                                    "[&_[data-streamdown='code-block-actions']]:!hidden",
+                                    "[&_[data-streamdown='code-block-body']]:!inline",
+                                    "[&_[data-streamdown='code-block-body']]:!p-0",
+                                    "[&_[data-streamdown='code-block-body']_pre]:!inline",
+                                    "[&_[data-streamdown='code-block-body']_pre]:!p-0",
+                                    "[&_[data-streamdown='code-block-body']_code]:!inline",
+                                    "[&_[data-streamdown='code-block-body']_code]:!ps-0",
+                                    "[&_[data-streamdown='code-block-body']_code]:![background-image:none]",
+                                    "[&_[data-streamdown='code-block-body']_code>span]:!block",
+                                    "[&_[data-streamdown='code-block-body']_code>span]:before:!hidden",
+                                 ]
+                            )}
+                            disableLinkSafety
+                            enableFileReferences={false}
+                        />
+                    </SessionMentionChipsContext.Provider>
                 ) : (
                     plainTextContent
                 )}
@@ -349,7 +412,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
             {terminalContextState.contexts.length > 0 ? (
                 <div className="mt-2 space-y-1.5">
                     {terminalContextState.contexts.map((context, index) => (
-                        <details key={`${context.terminalLabel}-${context.startLine}-${index}`} className="rounded-md border border-[var(--interactive-border)] bg-[var(--surface-elevated)] px-2 py-1.5 text-xs">
+                        <details key={`${context.terminalLabel}-${context.startLine}-${index}`} className="oc-tile rounded-md px-2 py-1.5 text-xs">
                             <summary className="cursor-pointer text-muted-foreground">
                                 {t('chat.message.terminalContext', { terminal: context.terminalLabel, start: context.startLine, end: context.endLine })}
                             </summary>

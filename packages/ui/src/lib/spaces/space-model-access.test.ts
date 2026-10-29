@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 
-import { noteSpaceModelAccess, resetSpaceModelAccess, spaceModelRefusal, stoppedSpaceOfTarget } from './space-model-access';
+import { composerModelForSpaceAccess, noteSpaceModelAccess, resetSpaceModelAccess, spaceModelRefusal, stoppedSpaceOfTarget } from './space-model-access';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useUIStore } from '@/stores/useUIStore';
 import type { SpaceEntry } from './spaces-api';
 import { useSpacesStore } from './spaces-store';
 
@@ -23,6 +25,7 @@ const running = (change: Partial<SpaceEntry> = {}): SpaceEntry => ({
   grants: [anthropic],
   access: 'granted',
   needsAccess: [],
+  accessFailures: [],
   damage: null,
   setup: null,
   ...change,
@@ -43,6 +46,19 @@ describe('spaceModelRefusal', () => {
     expect(spaceModelRefusal(session, 'openai')).toEqual({ spaceId: ID, providerId: 'openai', reason: 'not_granted' });
     // A host directory is never a space's business.
     expect(spaceModelRefusal({ requestId: null, directory: '/home/me/app' }, 'openai')).toBeNull();
+  });
+
+  test('a provider of the user\'s own counts once the host lists it for the space\'s project, and not before', () => {
+    listed(running());
+    // The host has not been asked about this project yet: nothing is refused on a guess.
+    expect(spaceModelRefusal(session, 'ollama-local')).toBeNull();
+    useSpacesStore.getState().noteCustomProviders('/home/me/app', [{ id: 'ollama-local', name: 'Ollama (local)', package: 'aisdk:@ai-sdk/openai-compatible', baseURL: 'http://localhost:11434/v1', loopback: true, models: ['qwen3:8b'], hasKey: false, supported: true }]);
+    expect(spaceModelRefusal(session, 'ollama-local')).toEqual({ spaceId: ID, providerId: 'ollama-local', reason: 'not_granted' });
+    const custom = { kind: 'custom' as const, id: 'ollama-local', provider: 'ollama-local', url: 'http://gatekeeper:8080/model/ollama-local' };
+    listed(running({ grants: [anthropic, custom] }));
+    expect(spaceModelRefusal(session, 'ollama-local')).toBeNull();
+    listed(running({ grants: [anthropic, custom], access: 'needs_access', needsAccess: ['ollama-local'] }));
+    expect(spaceModelRefusal(session, 'ollama-local')).toEqual({ spaceId: ID, providerId: 'ollama-local', reason: 'needs_again' });
   });
 
   test('a key the gatekeeper lost after a restart needs the user again', () => {
@@ -70,27 +86,24 @@ describe('spaceModelRefusal', () => {
     expect(spaceModelRefusal(session, 'anthropic')).toEqual({ spaceId: ID, providerId: 'anthropic', reason: 'not_granted' });
   });
 
-  test('never refuses a provider the grant dialog cannot give a key for, when the space can reach it', () => {
+  test('never refuses a provider the grant dialog cannot give a key for, other than OpenCode\'s own', () => {
     listed(running({ grants: [], access: null, network: { mode: 'open', domains: [] } }));
-    expect(spaceModelRefusal(session, 'opencode')).toBeNull();
     expect(spaceModelRefusal(session, 'azure')).toBeNull();
-    listed(running({ grants: [], access: null, network: { mode: 'allowlist', domains: ['opencode.ai'] } }));
-    expect(spaceModelRefusal(session, 'opencode')).toBeNull();
   });
 
-  test("refuses OpenCode's own provider in a space that allows only chosen addresses without its name, while it is made and once it runs", () => {
-    const blocked = { spaceId: ID, providerId: 'opencode', reason: 'domain_blocked', domain: 'opencode.ai' };
+  test("refuses OpenCode's own provider in every space, whatever the network, while it is made and once it runs", () => {
+    const refused = { spaceId: ID, providerId: 'opencode', reason: 'opencode' };
     noteSpaceModelAccess({ requestId: 'r1', directory: DIRECTORY }, ['anthropic']);
     listed(running({ state: 'preparing', step: 'creating', grants: [], access: null }));
-    expect(spaceModelRefusal({ requestId: 'r1', directory: '/home/me/app' }, 'opencode')).toEqual(blocked);
-    listed(running());
-    expect(spaceModelRefusal(session, 'opencode')).toEqual(blocked);
-    // A provider whose address nobody knows is not refused by the network; a space not listed yet, or
-    // one whose network the host could not read, refuses nothing.
-    expect(spaceModelRefusal(session, 'azure')).toBeNull();
-    expect(spaceModelRefusal({ requestId: null, directory: '/spaces/ffffffffffff/app' }, 'opencode')).toBeNull();
-    listed(running({ network: null }));
-    expect(spaceModelRefusal(session, 'opencode')).toBeNull();
+    expect(spaceModelRefusal({ requestId: 'r1', directory: '/home/me/app' }, 'opencode')).toEqual(refused);
+    for (const network of [{ mode: 'open' as const, domains: [] }, { mode: 'allowlist' as const, domains: ['opencode.ai'] }, { mode: 'allowlist' as const, domains: [] }, null]) {
+      listed(running({ network }));
+      expect(spaceModelRefusal(session, 'opencode')).toEqual(refused);
+    }
+    // A space not listed yet refuses it too: no grant can give a space OpenCode's free models.
+    expect(spaceModelRefusal({ requestId: null, directory: '/spaces/ffffffffffff/app' }, 'opencode')).toEqual({ ...refused, spaceId: 'ffffffffffff' });
+    // The host's own chats are not a space's business.
+    expect(spaceModelRefusal({ requestId: null, directory: '/home/me/app' }, 'opencode')).toBeNull();
   });
 
   test('refuses nothing without an answer: a list not read yet, or a gatekeeper that did not say', () => {
@@ -127,11 +140,41 @@ describe('spaceModelRefusal', () => {
     expect(stoppedSpaceOfTarget(session)).toBeNull();
   });
 
-  test('while the creation in this window is still giving access, what it chose decides', () => {
+  test('while the space is still being made, what the creation in this window chose decides', () => {
     noteSpaceModelAccess({ requestId: 'r1', directory: DIRECTORY }, ['anthropic']);
-    listed(running({ grants: [], access: null }));
-    useSpacesStore.getState().noteCreationAccess(ID, { kind: 'giving' });
+    listed(running({ state: 'preparing', step: 'giving_access', grants: [], access: null }));
     expect(spaceModelRefusal(session, 'anthropic')).toBeNull();
     expect(spaceModelRefusal(session, 'openai')).toEqual({ spaceId: ID, providerId: 'openai', reason: 'not_granted' });
+  });
+});
+
+describe('the composer model for a new space', () => {
+  // A provider as the config store keeps it, in the shape its own tests use.
+  const model = (providerID: string, modelID: string) => ({
+    id: `${providerID}/${modelID}`, modelID, providerID, name: modelID,
+    capabilities: { tools: true, input: ['text'], output: ['text'] }, variants: [], time: { released: 0 },
+    cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }], status: 'active' as const, enabled: true, limit: { context: 0, output: 0 },
+  });
+  const catalog = (providers: Array<{ id: string; models: string[] }>) => {
+    useConfigStore.setState({ providers: providers.map((provider) => ({ id: provider.id, name: provider.id, activation: 'enabled' as const, package: provider.id, models: provider.models.map((modelID) => model(provider.id, modelID)) })) });
+  };
+
+  test('moves off a provider the space was not given, to the model last used of one it was', () => {
+    catalog([{ id: 'opencode', models: ['big-pickle'] }, { id: 'openai', models: ['gpt-a', 'gpt-b'] }]);
+    useConfigStore.setState({ currentProviderId: 'opencode' });
+    useUIStore.setState({ recentModels: [{ providerID: 'openai', modelID: 'gpt-b' }], hiddenModels: [] });
+    expect(composerModelForSpaceAccess(['openai'])).toEqual({ providerId: 'openai', modelId: 'gpt-b' });
+
+    useUIStore.setState({ recentModels: [], hiddenModels: [{ providerID: 'openai', modelID: 'gpt-a' }] });
+    expect(composerModelForSpaceAccess(['openai'])).toEqual({ providerId: 'openai', modelId: 'gpt-b' });
+  });
+
+  test('stays when the composer is on a given provider, or none is known', () => {
+    catalog([{ id: 'openai', models: ['gpt-a'] }]);
+    useConfigStore.setState({ currentProviderId: 'openai' });
+    expect(composerModelForSpaceAccess(['openai'])).toBeNull();
+    useConfigStore.setState({ currentProviderId: 'opencode' });
+    expect(composerModelForSpaceAccess(['anthropic'])).toBeNull();
+    expect(composerModelForSpaceAccess([])).toBeNull();
   });
 });

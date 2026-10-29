@@ -9,6 +9,7 @@ import {
   setSessionParentResolver,
   useGlobalSessionStatusStore,
   replaceGlobalSessionStatusById,
+  resolveSessionTurnActivity,
 } from "./global-session-status"
 import { resetSessionOrdering, useSessionOrderingStore } from "./session-ordering"
 import { resetSessionActivityTiming, useSessionActivityTimingStore } from "./session-activity-timing"
@@ -202,7 +203,7 @@ describe("global session status index", () => {
     const unsubscribeTiming = useSessionActivityTimingStore.subscribe(() => { timingPublications += 1 })
     const events = Array.from({ length: 1_000 }, (_, index) => ({
       type: "session.status",
-      properties: { sessionID: `session-${index}`, status: { type: "busy" } },
+      properties: { sessionID: `session-${index}`, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
     } as SyncEvent))
 
     applyGlobalSessionStatusEvents("/repo", events)
@@ -234,8 +235,29 @@ describe("global session status index", () => {
   })
 })
 
+describe("what a session row says keeps its turn open", () => {
+  test("its own run first, then a running workflow over its agents' subagent state, then a command", () => {
+    expect(resolveSessionTurnActivity("running", true, true)).toBe("running")
+    // A workflow's agents are subagents; the row names the workflow instead.
+    expect(resolveSessionTurnActivity("subagent", true, false)).toBe("workflow")
+    // Between phases no agent is busy, and the workflow still runs.
+    expect(resolveSessionTurnActivity(null, true, false)).toBe("workflow")
+    expect(resolveSessionTurnActivity("subagent", false, true)).toBe("subagent")
+    expect(resolveSessionTurnActivity(null, false, true)).toBe("shell")
+    expect(resolveSessionTurnActivity(null, false, false)).toBeNull()
+    // An agent waiting on its pull request reads as working, after anything that really runs.
+    expect(resolveSessionTurnActivity(null, false, false, true)).toBe("pullRequest")
+    expect(resolveSessionTurnActivity(null, false, true, true)).toBe("shell")
+    expect(resolveSessionTurnActivity("running", false, false, true)).toBe("running")
+  })
+})
+
 describe("background subagent keeps its parent's turn open", () => {
-  const busy = (sessionID: string): SyncEvent => ({ type: "session.status", properties: { sessionID, status: { type: "busy" } } } as SyncEvent)
+  // Turns this client saw begin: the start rides on the event.
+  const busy = (sessionID: string): SyncEvent => ({
+    type: "session.status",
+    properties: { sessionID, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
+  })
   const idle = (sessionID: string): SyncEvent => ({ type: "session.idle", properties: { sessionID } } as SyncEvent)
   const timing = () => useSessionActivityTimingStore.getState()
 
@@ -256,6 +278,19 @@ describe("background subagent keeps its parent's turn open", () => {
     applyGlobalSessionStatusEvents("/repo", [idle("child")])
     expect(timing().startedAt.has("parent")).toBe(false)
     expect(timing().settledMs.has("parent")).toBe(true)
+  })
+
+  test("the parent's resumed run does not move the start of the turn it belongs to", () => {
+    const hostBusy = (sessionID: string, at: number): SyncEvent => ({
+      type: "session.status",
+      properties: { sessionID, status: { type: "busy" }, turnStart: { at, source: "host" } },
+    })
+    applyGlobalSessionStatusEvents("/repo", [hostBusy("parent", Date.now() - 60_000), busy("child")])
+    applyGlobalSessionStatusEvents("/repo", [idle("parent")])
+    const start = timing().startedAt.get("parent")
+
+    applyGlobalSessionStatusEvents("/repo", [hostBusy("parent", Date.now())])
+    expect(timing().startedAt.get("parent")).toBe(start)
   })
 
   test("a caller can resolve nested lineage without changing the display resolver", () => {
@@ -284,7 +319,11 @@ describe("background subagent keeps its parent's turn open", () => {
 })
 
 describe("a background command keeps its session's turn open", () => {
-  const busy = (sessionID: string): SyncEvent => ({ type: "session.status", properties: { sessionID, status: { type: "busy" } } } as SyncEvent)
+  // Turns this client saw begin: the start rides on the event.
+  const busy = (sessionID: string): SyncEvent => ({
+    type: "session.status",
+    properties: { sessionID, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
+  })
   const idle = (sessionID: string): SyncEvent => ({ type: "session.idle", properties: { sessionID } } as SyncEvent)
   const started: SyncEvent = {
     type: "shell.started",

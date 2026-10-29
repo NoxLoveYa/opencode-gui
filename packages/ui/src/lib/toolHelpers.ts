@@ -205,6 +205,13 @@ const TOOL_METADATA: Record<string, ToolMetadata> = {
       inputFields: []
     },
 
+    openchamber_schedule: {
+      displayName: 'OpenChamber Schedule',
+      category: 'system',
+      outputLanguage: 'json',
+      inputFields: []
+    },
+
     openchamber_web: {
       displayName: 'OpenChamber Web',
       category: 'system',
@@ -228,6 +235,20 @@ const TOOL_METADATA: Record<string, ToolMetadata> = {
 
     openchamber_notify: {
       displayName: 'OpenChamber Notify',
+      category: 'system',
+      outputLanguage: 'json',
+      inputFields: []
+    },
+
+    openchamber_render: {
+      displayName: 'OpenChamber Render',
+      category: 'system',
+      outputLanguage: 'json',
+      inputFields: []
+    },
+
+    openchamber_image: {
+      displayName: 'OpenChamber Image',
       category: 'system',
       outputLanguage: 'json',
       inputFields: []

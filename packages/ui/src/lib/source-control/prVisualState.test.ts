@@ -9,11 +9,17 @@ test('orange means something to fix: failed checks or a conflict', () => {
   expect(prVisualStateOf({ ...open, checksState: 'failure' })).toBe('blocked');
   expect(prVisualStateOf({ ...open, mergeable: false })).toBe('blocked');
   expect(prVisualStateOf({ ...open, mergeableState: 'dirty' })).toBe('blocked');
+  expect(prVisualStateOf({ ...open, checksState: 'pending', mergeable: false })).toBe('blocked');
+});
+
+test('checks still running keep the open colour', () => {
+  expect(prVisualStateOf({ ...open, checksState: 'pending' })).toBe('open');
+  expect(prVisualStateOf({ ...open, checksState: 'pending', mergeable: null, mergeableState: null })).toBe('open');
 });
 
 test('a merge blocked only by a missing review keeps the open colour', () => {
   expect(prVisualStateOf({ ...open, mergeableState: 'blocked' })).toBe('open');
-  expect(prVisualStateOf({ ...open, checksState: 'pending', mergeable: null, mergeableState: null })).toBe('open');
+  expect(prVisualStateOf({ ...open, checksState: null, mergeable: null, mergeableState: null })).toBe('open');
 });
 
 test('closed, merged and draft win over checks', () => {

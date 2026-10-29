@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { Icon } from "@/components/icon/Icon";
 import { shortcutRegistry } from "@/lib/shortcuts";
 import { handleDropdownNavigationKey } from "./dropdown-navigation";
+import { useMenuWindowDismiss } from "./menu-window-dismiss";
 import { dropdownMenuItemClass, dropdownMenuPopupClass, dropdownMenuSeparatorClass, dropdownMenuSubTriggerClass } from "./dropdown-menu.styles";
 import { GlassRedrawGuard } from "./glass-redraw-guard"
 
@@ -37,7 +38,8 @@ function renderFromAsChild(asChild: boolean | undefined, children: React.ReactNo
   return { children };
 }
 
-type DropdownMenuProps = React.ComponentProps<typeof BaseMenu.Root> & {
+// The wrapper owns `actionsRef` to close the menu on window blur.
+type DropdownMenuProps = Omit<React.ComponentProps<typeof BaseMenu.Root>, "actionsRef"> & {
   disableGlobalShortcuts?: boolean;
 };
 
@@ -52,6 +54,8 @@ function DropdownMenu({
   const [collisionBoundary, setCollisionBoundary] = React.useState<Element | null>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen ?? false);
   const isOpen = open ?? uncontrolledOpen;
+  const openedOnHoverRef = React.useRef(false);
+  const actionsRef = useMenuWindowDismiss(isOpen);
   const portalContextValue = React.useMemo<DropdownPortalContextValue>(() => ({
     portalContainer,
     collisionBoundary,
@@ -64,15 +68,28 @@ function DropdownMenu({
     return shortcutRegistry.suspend();
   }, [disableGlobalShortcuts, isOpen]);
 
+  React.useLayoutEffect(() => {
+    if (!isOpen) openedOnHoverRef.current = false;
+  }, [isOpen]);
+
   const handleOpenChange: NonNullable<React.ComponentProps<typeof BaseMenu.Root>['onOpenChange']> = (nextOpen, eventDetails) => {
-    if (open === undefined) setUncontrolledOpen(nextOpen);
+    // Base UI treats a state-driven opening as hover-dismissible because it has
+    // no opening DOM event. Filtering can move the popup off a stationary mouse.
+    if (!nextOpen && eventDetails.reason === 'trigger-hover' && !openedOnHoverRef.current) {
+      eventDetails.cancel();
+      return;
+    }
     onOpenChange?.(nextOpen, eventDetails);
+    if (eventDetails.isCanceled) return;
+    if (nextOpen) openedOnHoverRef.current = eventDetails.reason === 'trigger-hover';
+    if (open === undefined) setUncontrolledOpen(nextOpen);
   };
 
   return (
     <DropdownPortalContext.Provider value={portalContextValue}>
       <BaseMenu.Root
         {...props}
+        actionsRef={actionsRef}
         defaultOpen={defaultOpen}
         open={open}
         onOpenChange={handleOpenChange}
@@ -162,7 +179,7 @@ function DropdownMenuContent({
   };
 
   return (
-    <BaseMenu.Portal container={portalToBody ? undefined : portalContext?.portalContainer || undefined}>
+    <BaseMenu.Portal className="contents" container={portalToBody ? undefined : portalContext?.portalContainer || undefined}>
       <BaseMenu.Positioner
         sideOffset={sideOffset}
         align={align}
@@ -340,7 +357,7 @@ function DropdownMenuSubContent({
   };
 
   return (
-    <BaseMenu.Portal container={portalContext?.portalContainer || undefined}>
+    <BaseMenu.Portal className="contents" container={portalContext?.portalContainer || undefined}>
       <BaseMenu.Positioner className="z-50">
         <BaseMenu.Popup
           data-slot="dropdown-menu-sub-content"

@@ -1,6 +1,7 @@
 import React from 'react';
 
 import { InlineDictationButton } from '@/components/dictation/InlineDictationButton';
+import { useEmojiPicker } from '@/components/emoji/useEmojiPicker';
 import { Icon } from '@/components/icon/Icon';
 import { isIMECompositionEvent } from '@/lib/ime';
 import { cn } from '@/lib/utils';
@@ -33,6 +34,8 @@ export const KnowledgeComposer: React.FC<{
   extraActions?: React.ReactNode;
 }> = ({ placeholder, addLabel, maxLength, multiline = false, dictation = true, disabled = false, onSubmit, extraActions }) => {
   const [text, setText] = React.useState('');
+  const fieldRef = React.useRef<HTMLTextAreaElement>(null);
+  const emojiPicker = useEmojiPicker(fieldRef);
   const isMobile = useUIStore((state) => state.isMobile);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -65,11 +68,12 @@ export const KnowledgeComposer: React.FC<{
     <div
       className={cn(
         'oc-surface-elevated flex items-end gap-1 rounded-lg bg-[var(--surface-elevated)] py-1 pe-1 ps-3',
-        'ring-1 ring-inset ring-border/60 transition duration-200 ease-out focus-within:ring-2 focus-within:ring-[var(--interactive-focus-ring)]',
+        'oc-raised oc-field',
         disabled && 'opacity-50',
       )}
     >
       <textarea
+        ref={fieldRef}
         rows={1}
         value={text}
         onChange={(event) => setText(normalize(event.target.value))}
@@ -93,6 +97,7 @@ export const KnowledgeComposer: React.FC<{
           'focus-visible:outline-none disabled:cursor-not-allowed',
         )}
       />
+      {emojiPicker}
       {showCounter ? (
         <span className="flex h-6 flex-shrink-0 items-center typography-micro text-muted-foreground" dir="auto">
           {text.length}/{maxLength}

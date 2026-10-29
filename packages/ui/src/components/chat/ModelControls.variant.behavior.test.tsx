@@ -73,6 +73,7 @@ type ConfigState = {
   currentVariant: string | undefined;
   currentVariantSelection: { override: VariantChoice; inherited: string | undefined };
   currentAgentName: string | undefined;
+  settingsDefaultModel: string | undefined;
   settingsDefaultVariant: string | undefined;
   settingsDefaultAgent: string | undefined;
   selectionSource: 'auto' | 'manual';
@@ -86,6 +87,7 @@ type ConfigState = {
   getCurrentAgent: () => TestAgent;
   getVisibleAgents: () => TestAgent[];
   getCurrentModelVariants: () => string[];
+  getDefaultVariantForModel: (providerId: string, modelId: string) => string | undefined;
   getModelMetadata: () => undefined;
 };
 
@@ -101,12 +103,16 @@ const useConfigStore = create<ConfigState>((set, get) => ({
   currentVariant: undefined,
   currentVariantSelection: { override: undefined, inherited: undefined },
   currentAgentName: AGENT,
+  settingsDefaultModel: undefined,
   settingsDefaultVariant: undefined,
   settingsDefaultAgent: undefined,
   selectionSource: 'auto',
   setProvider: (providerId) => set({ currentProviderId: providerId }),
   setSelectedProvider: () => undefined,
-  setModel: (modelId) => set({ currentModelId: modelId }),
+  // Like the real store, a change of model drops the effort picked for the last one.
+  setModel: (modelId) => set((state) => (state.currentModelId === modelId
+    ? state
+    : { currentModelId: modelId, currentVariant: undefined, currentVariantSelection: { override: undefined, inherited: undefined } })),
   // Like the real store, picking an agent also records it for the open session.
   setAgent: (agentName) => {
     set({ currentAgentName: agentName });
@@ -137,6 +143,10 @@ const useConfigStore = create<ConfigState>((set, get) => ({
   getCurrentAgent: () => get().agents.find((entry) => entry.name === get().currentAgentName) ?? agent,
   getVisibleAgents: () => get().agents,
   getCurrentModelVariants: () => Object.keys(model.variants),
+  // The real store also reads the project default; these tests run without a project.
+  getDefaultVariantForModel: (providerId, modelId) => (
+    get().settingsDefaultModel === `${providerId}/${modelId}` ? get().settingsDefaultVariant : undefined
+  ),
   getModelMetadata: () => undefined,
 }));
 
@@ -443,6 +453,7 @@ describe('ModelControls effort restore', () => {
       currentAgentName: AGENT,
       currentVariant: undefined,
       currentVariantSelection: { override: undefined, inherited: undefined },
+      settingsDefaultModel: undefined,
       settingsDefaultVariant: undefined,
       selectionSource: 'auto',
     });
@@ -580,7 +591,7 @@ describe('ModelControls effort restore', () => {
     const { dom, cleanup } = await renderModelControls();
     try {
       expect(dom.container.querySelector('.model-controls__model-trigger')?.textContent).toContain('GPT Five');
-      expect(dom.container.querySelector('.model-controls__variant-label')?.textContent?.trim()).toBe('high');
+      expect(dom.container.querySelector('.model-controls__variant-label')?.textContent?.trim()).toBe('High');
       expect(dom.container.querySelector('.model-controls__agent-label')?.textContent).toBe('Build');
       expect(useConfigStore.getState().currentVariant).toBe('high');
       expect(overrideWrites).toEqual([]);
@@ -620,6 +631,57 @@ describe('ModelControls effort restore', () => {
     try {
       expect(useConfigStore.getState().currentVariant).toBe('high');
       expect(useConfigStore.getState().currentVariantSelection.override).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  const OTHER_MODEL_ID = 'gpt-other';
+  const twoModelProvider = { ...provider, models: [model, { ...model, id: OTHER_MODEL_ID, name: OTHER_MODEL_ID }] };
+
+  test('[issue-4601] the settings effort applies on the settings model only', async () => {
+    useSessionUIStore.setState({ currentSessionId: null });
+    useConfigStore.setState({
+      providers: [twoModelProvider],
+      settingsDefaultModel: `${PROVIDER_ID}/${MODEL_ID}`,
+      settingsDefaultVariant: 'high',
+    });
+    const { dom, cleanup } = await renderModelControls();
+    try {
+      const label = () => dom.container.querySelector('.model-controls__variant-label');
+      expect(useConfigStore.getState().currentVariant).toBe('high');
+      expect(label()?.textContent?.trim()).toBe('High');
+      // Only the "Default" option is muted; an inherited effort shows like a picked one.
+      expect(label()?.classList.contains('text-muted-foreground')).toBe(false);
+
+      await act(async () => { useConfigStore.getState().setModel(OTHER_MODEL_ID); });
+      expect(useConfigStore.getState().currentVariant).toBe(undefined);
+      expect(label()?.textContent?.trim()).toBe('Default');
+      expect(label()?.classList.contains('text-muted-foreground')).toBe(true);
+
+      await act(async () => { useConfigStore.getState().setModel(MODEL_ID); });
+      expect(useConfigStore.getState().currentVariant).toBe('high');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('[issue-4601] an effort picked in a draft stays with the model it was picked for', async () => {
+    useSessionUIStore.setState({ currentSessionId: null });
+    useConfigStore.setState({
+      providers: [twoModelProvider],
+      currentVariant: 'high',
+      currentVariantSelection: { override: 'high', inherited: undefined },
+    });
+    const { dom, cleanup } = await renderModelControls();
+    try {
+      const label = () => dom.container.querySelector('.model-controls__variant-label');
+      expect(label()?.classList.contains('text-muted-foreground')).toBe(false);
+
+      await act(async () => { useConfigStore.getState().setModel(OTHER_MODEL_ID); });
+      expect(useConfigStore.getState().currentVariant).toBe(undefined);
+      expect(useConfigStore.getState().currentVariantSelection.override).toBe(undefined);
+      expect(label()?.textContent?.trim()).toBe('Default');
     } finally {
       await cleanup();
     }
@@ -759,13 +821,15 @@ describe('ModelControls effort restore', () => {
     try {
       const callsAfterHydration = getSessionModel.mock.calls.length;
 
-      await act(async () => useConfigStore.setState({ currentAgentName: 'plan' }));
+      await act(async () => useConfigStore.getState().setAgent('plan'));
 
       expect(getSessionModel.mock.calls.length).toBe(callsAfterHydration);
       expect(useConfigStore.getState().currentAgentName).toBe('plan');
     } finally {
       getSessionModel.mockRestore();
       await cleanup();
+      // The pick wrote a new state object that still carries the spy.
+      useSelectionStore.setState(selections);
     }
   });
 
@@ -807,8 +871,8 @@ describe('ModelControls effort restore', () => {
     }
   });
 
-  for (const [isMobile, variant] of [
-    [false, 'low'], [true, null],
+  for (const [isMobile, variant, variantLabel] of [
+    [false, 'low', 'Low'], [true, null, 'Default'],
   ] as const) {
     test(`controlled BTW selection stays independent (mobile: ${isMobile}, effort: ${variant})`, async () => {
       const btwSessionId = 'btw-pending:ses_restore';
@@ -831,7 +895,7 @@ describe('ModelControls effort restore', () => {
         expect(variantWrites).toEqual([]);
         expect(saveModel.mock.calls).toEqual([]);
         expect(dom.container.querySelector('.model-controls__agent-label')).toBeNull();
-        expect(dom.container.querySelector('.model-controls__variant-label')?.textContent?.trim()).toBe(variant ?? 'Default');
+        expect(dom.container.querySelector('.model-controls__variant-label')?.textContent?.trim()).toBe(variantLabel);
         if (!isMobile) {
           expect(dom.container.querySelector('.model-controls__model-trigger')?.closest('[data-menu-open]')?.getAttribute('data-menu-open')).toBe('false');
         }
@@ -909,6 +973,21 @@ describe('ModelControls effort restore', () => {
 
         expect(agentLabel(dom.container)).toBe('Plan');
         expect(useConfigStore.getState().currentAgentName).toBe('plan');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    test('the agent sent comes back to the session agent shown when the app-wide one drifts', async () => {
+      setSessionRecord(recordOn(AGENT));
+      const { dom, cleanup } = await renderModelControls();
+      try {
+        // Another session or folder moved the app-wide agent; this session
+        // still holds Build, and the label shows Build.
+        await act(async () => useConfigStore.setState({ currentAgentName: 'plan' }));
+
+        expect(agentLabel(dom.container)).toBe('Build');
+        expect(useConfigStore.getState().currentAgentName).toBe(AGENT);
       } finally {
         await cleanup();
       }

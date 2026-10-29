@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { asNonEmptyString } from '../shared/guards.js';
 import { OpenChamberControlError, asControlError } from '../openchamber-control/error.js';
 
@@ -6,15 +7,18 @@ import { OpenChamberControlError, asControlError } from '../openchamber-control/
  * way of leaving a branch that already belongs to another piece of work.
  *
  * The worktree is made by the same pipeline as the New worktree dialog and
- * `session.create`, so it lands where the sidebar expects it. The checkout's
- * uncommitted changes travel with the session through one git stash that both
- * worktrees can see, and the session itself is moved last, so that until the
- * final step nothing the user sees has changed. A failure anywhere removes the
- * worktree again and puts the changes back where they were; when even that
- * fails the stash is left in place and the error names it, so nothing is lost.
+ * `session.create`, so it lands where the sidebar expects it. The session
+ * itself is moved last, so that until the final step nothing the user sees has
+ * changed.
  *
- * Every uncommitted change in the source checkout moves, because git cannot
- * tell the agent's edits from anyone else's in the same directory.
+ * Only the files the agent names in `carry` go along, through one git stash
+ * that both worktrees can see. Everything else uncommitted stays in the source
+ * checkout: git cannot tell the agent's edits from the user's or another
+ * session's in the same directory, and neither can OpenCode, whose session
+ * diff is a snapshot of the whole working tree. The agent knows which files it
+ * wrote. A failure anywhere removes the worktree again and puts the carried
+ * changes back where they were; when even that fails the stash is left in
+ * place and the error names it, so nothing is lost.
  */
 
 /**
@@ -22,9 +26,12 @@ import { OpenChamberControlError, asControlError } from '../openchamber-control/
  * @param {(directory: string, input: object, options: object) => Promise<{ name: string, branch: string, path: string }>} dependencies.createWorktree
  * @param {(directory: string, input: object, options: object) => Promise<unknown>} dependencies.removeWorktree
  * @param {(directory: string) => Promise<void>} dependencies.waitForWorktreeReady
+ * @param {(input: { sourceDirectory: string, worktreeRoot: string }) => Promise<{ directory: string, fallback: string | null }>} dependencies.resolveStartDirectory
+ *   Where the session starts inside the new worktree: the project's OpenCode folder, else the root.
  * @param {(input: { directory: string, parentDirectory: string, parentRemoteName: string }) => Promise<unknown>} dependencies.hydrateCheckout
  * @param {object} dependencies.bootstrapStore
- * @param {(directory: string, options: { message: string }) => Promise<unknown>} dependencies.stashPush
+ * @param {(directory: string, options: { message: string, paths: string[] }) => Promise<unknown>} dependencies.stashPush
+ * @param {(directory: string, paths: string[]) => Promise<string[]>} dependencies.getPathsWithoutChanges
  * @param {(directory: string, options: { ref: string }) => Promise<unknown>} dependencies.stashApply
  * @param {(directory: string, options: { ref: string }) => Promise<unknown>} dependencies.stashDrop
  * @param {(directory: string) => Promise<Array<{ ref: string, message: string, hash: string }>>} dependencies.listStashes
@@ -38,9 +45,11 @@ export const createSessionWorktreeMover = (dependencies) => {
     createWorktree,
     removeWorktree,
     waitForWorktreeReady,
+    resolveStartDirectory,
     hydrateCheckout,
     bootstrapStore,
     stashPush,
+    getPathsWithoutChanges,
     stashApply,
     stashDrop,
     listStashes,
@@ -72,17 +81,17 @@ export const createSessionWorktreeMover = (dependencies) => {
   const findStash = async (directory, predicate) => (await listStashes(directory)).find(predicate) ?? null;
 
   /**
-   * Stash the source checkout's changes and apply them in the worktree. The
+   * Stash the named files' changes and apply them in the worktree. The
    * stash is identified by its commit hash, never by `stash@{0}`: another
    * stash pushed meanwhile would otherwise be the one applied. Whether the
    * push stashed anything is read from the stash list, not from git's
    * message: a git that speaks another language reports a clean checkout in
    * words `stashPush` does not recognise.
    */
-  const carryChanges = async ({ source, destination, sessionId, name }) => {
+  const carryChanges = async ({ source, destination, sessionId, name, paths }) => {
     const message = `OpenChamber: session ${sessionId} moved to worktree ${name}`;
     const before = new Set((await listStashes(source)).map((entry) => entry.hash));
-    await stashPush(source, { message });
+    await stashPush(source, { message, paths: paths.map((filePath) => path.resolve(source, filePath)) });
     let stash;
     try {
       stash = await findStash(source, (entry) => !before.has(entry.hash) && entry.message.includes(message));
@@ -117,15 +126,21 @@ export const createSessionWorktreeMover = (dependencies) => {
     await dropStash(source, stash);
   };
 
-  const removeCreatedWorktree = (root, worktree) => removeWorktree(root, {
+  // A branch that existed before the move stays; only one the move made goes with the worktree.
+  const removeCreatedWorktree = (root, worktree, deleteLocalBranch) => removeWorktree(root, {
     directory: worktree.path,
-    deleteLocalBranch: true,
+    deleteLocalBranch,
   }, { bootstrapStore }).catch((error) => {
     warn(`Failed to remove worktree ${worktree.path} after a failed session move:`, error);
   });
 
   /**
-   * @param {{ sessionId: string, directory: string, name: string, branchName?: string, startRef?: string }} input
+   * `existingBranch` checks out a branch that already exists, local or remote
+   * (`origin/feature`), instead of making a new one from `startRef`. `carry`
+   * names the files whose uncommitted changes go along; without it nothing
+   * does.
+   *
+   * @param {{ sessionId: string, directory: string, name: string, branchName?: string, startRef?: string, existingBranch?: string, carry?: string[] }} input
    */
   const move = async (input) => {
     const sessionId = asNonEmptyString(input?.sessionId);
@@ -134,13 +149,36 @@ export const createSessionWorktreeMover = (dependencies) => {
     if (!source) throw new OpenChamberControlError('The session has no directory to move from', 400);
     const name = asNonEmptyString(input?.name);
     if (!name) throw new OpenChamberControlError('worktree is required: a short folder name for the task', 400);
+    const existingBranch = asNonEmptyString(input?.existingBranch);
+    const branchName = asNonEmptyString(input?.branchName);
+    if (existingBranch && (branchName || asNonEmptyString(input?.startRef))) {
+      throw new OpenChamberControlError('existingBranch checks out that branch as it is; do not combine it with branch or startRef', 400);
+    }
+    const carry = input?.carry ?? [];
+    if (!Array.isArray(carry) || carry.some((path) => !asNonEmptyString(path))) {
+      throw new OpenChamberControlError('carry is a list of file paths', 400);
+    }
+    const paths = [...new Set(carry.map((path) => path.trim()))];
+    if (paths.length > 0) {
+      const unchanged = await getPathsWithoutChanges(source, paths);
+      if (unchanged.length > 0) {
+        throw new OpenChamberControlError(`carry paths have no uncommitted changes or cannot be resolved by git: ${unchanged.join(', ')}`, 400);
+      }
+    }
 
     const { root } = await resolvePrimaryWorktreeRoot(source);
-    const startRef = asNonEmptyString(input?.startRef) || await resolveDefaultStartRef(root);
-    const branchName = asNonEmptyString(input?.branchName);
-
-    const worktreeInput = { mode: 'new', name, startRef };
-    if (branchName) worktreeInput.branchName = branchName;
+    let startRef = null;
+    let worktreeInput;
+    let ownsBranch = true;
+    if (existingBranch) {
+      ownsBranch = !(await getBranches(root, { remote: 'local' })).all.includes(existingBranch);
+      // A remote branch gets a local branch that tracks it; a local one keeps its own tracking.
+      worktreeInput = { mode: 'existing', name, existingBranch, setUpstream: true };
+    } else {
+      startRef = asNonEmptyString(input?.startRef) || await resolveDefaultStartRef(root);
+      worktreeInput = { mode: 'new', name, startRef };
+      if (branchName) worktreeInput.branchName = branchName;
+    }
 
     let worktree;
     try {
@@ -153,12 +191,14 @@ export const createSessionWorktreeMover = (dependencies) => {
     }
 
     let stash = null;
+    let start = { directory: worktree.path, fallback: null };
     try {
       await waitForWorktreeReady(worktree.path);
-      stash = await carryChanges({ source, destination: worktree.path, sessionId, name });
-      await moveSession(sessionId, worktree.path);
+      start = await resolveStartDirectory({ sourceDirectory: source, worktreeRoot: worktree.path });
+      if (paths.length > 0) stash = await carryChanges({ source, destination: worktree.path, sessionId, name, paths });
+      await moveSession(sessionId, start.directory);
     } catch (error) {
-      await removeCreatedWorktree(root, worktree);
+      await removeCreatedWorktree(root, worktree, ownsBranch);
       const failure = asControlError(error, 'Failed to move the session into the worktree');
       const pending = stash ?? failure.stash ?? null;
       if (pending) {
@@ -180,13 +220,17 @@ export const createSessionWorktreeMover = (dependencies) => {
       });
     }
 
-    return {
+    const result = {
       sessionId,
-      directory: worktree.path,
+      directory: start.directory,
       previousDirectory: source,
-      worktree: { name: worktree.name, branch: worktree.branch, path: worktree.path, startRef },
+      worktree: { name: worktree.name, branch: worktree.branch, path: worktree.path, ...(existingBranch ? { existingBranch } : { startRef }) },
       changesMoved: stash !== null,
+      // What the agent named; anything else uncommitted stayed where it was.
+      carried: paths,
     };
+    if (start.fallback) result.startDirectoryFallback = start.fallback;
+    return result;
   };
 
   return { move, resolveDefaultStartRef };

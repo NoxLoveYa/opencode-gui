@@ -128,7 +128,7 @@ group and folders: In work is an extra view of it, not a move.
   sessions and owns Jev.
 - VS Code: no OpenChamber server, so sessions do not open on their own and
   there is no done hint and no review offer. The block and Track / Done work
-  through the extension's metadata bridge.
+  through the extension's metadata bridge, the deleted-folder answer included.
 
 ## Tests
 

@@ -66,10 +66,22 @@ itself; it can only ask and wait.
   never navigates an existing tab: the registered opener (`ContextPanel`,
   `useUIStore.openAgentBrowserTab`) makes a new background tab in the calling
   session's project, owned by that session, and the answer carries its `tabId`.
+  `browser.close` removes a tab the calling session opened. Closing is panel
+  state rather than a page action, so the panel registers a closer the way it
+  registers the opener; without `tabId` the session closes its own most recent
+  tab, and a tab the user or another session opened is refused, never closed,
+  even when an action without `tabId` would otherwise have used it. A close
+  with no calling session, which the `POST /api/openchamber/control` route can
+  produce, owns no tab and is refused outright: a null session must not match
+  an unowned (the user's) tab. When the named tab is gone, a client with the
+  panel mounted answers "no such tab" after the claim delay rather than leaving
+  the agent to time out.
   `ContextPanel` keeps agent tabs of every project mounted (or registered as
   sleeping), so a session keeps working its page while the user looks at
-  another project; the user's own tabs in other projects unload with their
-  project. `browser.snapshot` answers carry `tabs` (`id`, `title`, `url`,
+  another project. The user's own tabs, across every project together, keep
+  their page while among the `liveBrowserTabLimit` most recently used (a
+  General setting, 5 by default, `lib/browser/liveTabs.ts`); the rest sleep, and
+  those of other projects are not offered to agents. `browser.snapshot` answers carry `tabs` (`id`, `title`, `url`,
   `owner`: `you`, `user`, or `another session`, `active`: the tab an action
   without `tabId` would use); a session sees its own tabs and the other tabs of
   its project, never another project's. `ContextPanel` renders loaded tabs
@@ -86,6 +98,26 @@ itself; it can only ask and wait.
   Chromium composites a transparent webview but not a hidden or clipped one.
   A hidden page also gets no animation frames, so `browser.scroll` waits for
   two frames at most 100 ms (`pageActions.ts`) and then answers anyway.
+  `browser.open` reports `settled` only once the page has loaded and then gone
+  quiet: no new resource and no DOM tree or text change for 500 ms
+  (`buildQuietScript`), waited at most 5 s. The load event alone came while an
+  app was still fetching its lazy chunks behind its splash screen, so a capture
+  right after it showed the splash. An open without `tabId` on a driving host
+  waits for the new tab's view and asks it the same through the pane-only
+  `browser.settle`; the tab is open either way, so a failed wait answers
+  `settled: false`, never an error. `browser.capture` waits the same way for at
+  most 3 s, then shoots what is there. Attribute changes do not count, because
+  a finished page changes classes and styles on hover all the time; a running
+  animation that will end does count, and one that loops forever or follows
+  scrolling does not. A
+  background tab gets no animation frames while `visibilityState` still says
+  `visible`, so an app's splash that fades out by style starts fading only
+  when a capture shows the page: without the animation check the capture shot
+  the first frame of that fade (seen on `/mobile.html`). A page can
+  report a resource only once it has arrived, so a single chunk slower than
+  500 ms behind an unchanging splash still ends the wait early; the next
+  snapshot shows the splash, and nothing in the page can see a request in
+  flight.
   Agent work never takes keyboard focus from the user
   (`useWebviewFocusGuard` beside `BrowserPane`): a page may take focus only
   while the user can see it and no agent action is driving it, otherwise focus
@@ -100,9 +132,38 @@ itself; it can only ask and wait.
   started. `browser.click` replays a mouse click at the element's center
   (pointer and mouse down, focus, up, click), since many widgets open on
   mousedown or focus and ignore the click event alone.
+  `browser.select` changes a native single-value HTML select by exact label or
+  value, dispatches `input` and `change`, and verifies the selected option
+  before returning.
+  `browser.snapshot` exposes native select metadata on the corresponding
+  element: `multiple`, plus an `options` list in DOM order containing each
+  option's `label`, `value`, `selected`, and `disabled` state. Text-content
+  labels collapse whitespace and trim like `browser.select`; an explicit
+  `label` attribute is used verbatim. The list is capped at 32 entries and
+  each label/value at 80 characters; `optionsTruncated: true` reports either
+  cap. A selected option outside the cap is not promoted into the result.
   `tabId` is validated and passed through by
   `../openchamber-control/service.js` for every action, so an extension
   provider receives it untouched (`BrowserTabTarget` in `@openchamber/sdk`).
+
+## Running the panel's code
+
+The agent tool reaches the panel of the app the agent works from, so a change
+to `BrowserPane`, `controlClient` or `pageActions` shows there only after that
+app is rebuilt. Run it in `electron:dev` instead and send the actions to that
+instance's API port, the one its log prints after `OpenChamber server
+listening on`; the route has no session, so name the tab after the open:
+
+```sh
+curl -s -X POST http://127.0.0.1:<api-port>/api/openchamber/control \
+  -H 'content-type: application/json' \
+  -d '{"action":"browser.open","input":{"url":"http://localhost:<ui-port>/mobile.html","viewport":"mobile"},"contextDirectory":"<repo>"}'
+```
+
+`browser.capture`, `browser.snapshot` and the rest take `{"tabId": "<tabId from the open>"}`
+in `input`. The tab stays in the background, as an agent's does, and the page
+inside it is a `webview` target on the instance's debugging port for reading
+what the actions alone do not show (frame rate, animations).
 
 ## Invariants
 

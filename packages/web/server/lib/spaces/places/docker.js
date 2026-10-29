@@ -29,6 +29,7 @@ import {
 } from '../labels.js';
 import { SPACE_CONNECT_COMMAND, SPACE_IDLE_EXIT_CODE, SPACE_USER, TOOLS_MOUNT_PATH } from '../layout.js';
 import { openCommandStream as openCommandStreamProcess } from '../run-command.js';
+import { START_CONFIG_VARIABLE } from '../space-opencode.js';
 import { createSpaceServerChannel, createSpaceToken } from '../space-server.js';
 import { CHANGE_TIMEOUT_MS, ROLLBACK_SETTLE_MS, createDockerEngine, entryLabels, entryName, isInterrupted, pause } from './docker-engine.js';
 import { createDockerDisk } from './docker-disk.js';
@@ -52,6 +53,8 @@ const HOST_ISOLATION_MIN_ENGINE = 28;
 // What the CLI prints when SSH reached the machine but found no running daemon there, or no docker.
 const REMOTE_DAEMON_DOWN = /Cannot connect to the Docker daemon|Is the docker daemon running/i;
 const REMOTE_DOCKER_MISSING = /docker: (?:command )?not found|No such file or directory/i;
+// What the CLI prints when the daemon's socket refuses this user.
+const LOCAL_SOCKET_DENIED = /permission denied while trying to connect to the docker daemon/i;
 /** The machine a `docker --host` value names, for a message: `ssh://me@box:22` is `me@box:22`. */
 const machineOf = (dockerHost) => String(dockerHost).replace(/^[a-z]+:\/\//i, '');
 // While a space moves to a new tools volume, its old container waits under this suffix.
@@ -59,6 +62,13 @@ const ASIDE_SUFFIX = 'old';
 
 // Removal order. A network cannot go while a container is attached, and a volume cannot go while mounted.
 const KINDS = ['container', 'volume', 'network'];
+
+/** OpenCode's start configuration an inspected space container carries, or null. */
+function startConfigOf(container) {
+  const prefix = `${START_CONFIG_VARIABLE}=`;
+  const entry = (container?.Config?.Env ?? []).find((candidate) => String(candidate).startsWith(prefix));
+  return entry === undefined ? null : String(entry).slice(prefix.length);
+}
 
 /** Which container an `exec` runs in. The place contract knows two targets and no more. */
 function execRole(target) {
@@ -166,6 +176,11 @@ export function createDockerPlace({ runCommand, openCommandStream = openCommandS
       server = null;
     }
     if (version.code !== 0 || info.code !== 0 || !server) {
+      // On Linux a daemon that runs but whose socket this user may not open reads the same as one
+      // that is down, and the fix is another: the user joins the docker group.
+      if (machine === null && LOCAL_SOCKET_DENIED.test(`${version.stderr}\n${info.stderr}`)) {
+        return unavailable('docker_permission_denied', 'Docker is running, but this user may not use it. Add the user to the docker group, sign in again, then try again.');
+      }
       if (machine === null) {
         return unavailable('docker_daemon_unreachable', 'Docker is installed but not running. Start Docker Desktop or Colima, then try again.');
       }
@@ -212,11 +227,13 @@ export function createDockerPlace({ runCommand, openCommandStream = openCommandS
     return imagePull;
   };
 
-  const ensureImage = async () => {
+  /** Pulls the image when it is absent; `onPull` hears that a pull begins. */
+  const ensureImage = async (onPull = () => {}) => {
     const present = await inspect('image', SPACE_BASE_IMAGE);
     if (present) {
       return;
     }
+    onPull();
     await pullImage();
   };
 
@@ -302,7 +319,11 @@ export function createDockerPlace({ runCommand, openCommandStream = openCommandS
   const server = createSpaceServerChannel({ exec: execInContainer, wait, now: () => now().getTime() });
   const gatekeeper = createGatekeeperChannel({ exec: execInContainer, wait, now: () => now().getTime() });
 
-  const create = async ({ id, name, project, created, memoryBytes }) => {
+  // `onStep(step)` hears the slow parts as they begin, so the screen says what the wait is for:
+  // `downloading_image` only when the image is absent, `preparing_tools` only when the tools
+  // volume is filled, and `creating` again once those are done. `startConfig` is OpenCode's start
+  // configuration for the space container, or null.
+  const create = async ({ id, name, project, created, memoryBytes }, { onStep = () => {}, startConfig = null } = {}) => {
     requireMemoryBytes(memoryBytes);
     // Built first, so a bad spec is rejected before Docker is asked anything.
     const labelArguments = new Map([ROLE_NETWORK, ROLE_OUTER_NETWORK, ROLE_VOLUME, ROLE_SETUP, ROLE_GATEKEEPER, ROLE_SPACE].map((role) => (
@@ -339,10 +360,12 @@ export function createDockerPlace({ runCommand, openCommandStream = openCommandS
 
     let toolsVolume = null;
     try {
-      await ensureImage();
+      let slowStep = false;
+      await ensureImage(() => { slowStep = true; onStep('downloading_image'); });
       // The tools volume is shared by every space of this owner. It has a rollback of its own,
       // and the rollback below never touches a labelled one: it removes by space id and by the seven names only.
-      toolsVolume = await tools.ensure();
+      toolsVolume = await tools.ensure({ onFill: () => { slowStep = true; onStep('preparing_tools'); } });
+      if (slowStep) onStep('creating');
       await docker(buildSpaceNetworkArgs({ network: resources.network, labelArguments: labelsFor(ROLE_NETWORK) }), CHANGE_TIMEOUT_MS);
       await docker(buildGatekeeperNetworkArgs({ network: outerNetwork, labelArguments: labelsFor(ROLE_OUTER_NETWORK) }), CHANGE_TIMEOUT_MS);
       await docker(['volume', 'create', ...labelsFor(ROLE_VOLUME), resources.workVolume], CHANGE_TIMEOUT_MS);
@@ -375,6 +398,7 @@ export function createDockerPlace({ runCommand, openCommandStream = openCommandS
         labelArguments: labelsFor(ROLE_SPACE),
         toolsVolume,
         memoryBytes,
+        startConfig,
       }), CHANGE_TIMEOUT_MS);
       await requireVerified(id, await inspectOwnContainer(id, containerName) ?? {});
       await docker(['start', containerName], CHANGE_TIMEOUT_MS);
@@ -574,6 +598,8 @@ export function createDockerPlace({ runCommand, openCommandStream = openCommandS
         toolsVolume,
         memoryBytes: old.HostConfig?.Memory,
         image: SPACE_BASE_IMAGE,
+        // The old container's, which was verified when it was made, so the move keeps it.
+        startConfig: startConfigOf(old),
       }), CHANGE_TIMEOUT_MS)).trim().split('\n').pop();
       await requireVerified(spaceId, await inspectOwnContainer(spaceId, createdId) ?? {});
       await docker(['start', createdId], CHANGE_TIMEOUT_MS);

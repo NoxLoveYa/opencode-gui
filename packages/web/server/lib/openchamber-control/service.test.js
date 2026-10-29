@@ -12,6 +12,7 @@ const createService = (overrides = {}) => {
     session: {
       list: vi.fn(async () => ({ data: [] })),
       active: vi.fn(async () => ({})),
+      inbox: { list: vi.fn(async () => []) },
     },
     message: {
       list: vi.fn(async () => ({ data: [] })),
@@ -74,6 +75,37 @@ describe('OpenChamber control service', () => {
       defaultModel: 'provider/model',
       favoriteModels: [],
     }));
+  });
+
+  it('searches the model catalog the way the picker shows it', async () => {
+    const model = (providerID, id, released, family) => ({
+      providerID, id, name: id, family, time: { released }, variants: [{ id: 'high' }], cost: [], status: 'active',
+    });
+    const { service, client } = createService({
+      readSettingsFromDiskMigrated: vi.fn(async () => ({
+        favoriteModels: [{ providerID: 'b', modelID: 'old' }],
+        recentModels: [],
+        hiddenModels: [{ providerID: 'a', modelID: 'secret' }],
+      })),
+    });
+    client.model = { list: vi.fn(async () => ({ data: [
+      model('a', 'new', 3, 'fam'), model('a', 'older', 2, 'fam'), model('a', 'secret', 4),
+      model('b', 'old', 1, 'bfam'), model('b', 'newer', 5, 'bfam'),
+    ] })) };
+    client.provider = { list: vi.fn(async () => ({ data: [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }] })) };
+
+    const first = await service.execute('models.search', {}, '/repo');
+    // The favorite leads, a hidden model never shows, older versions fold into their family.
+    expect(first.models.map(({ id }) => id)).toEqual(['b/old', 'a/new', 'b/newer']);
+    expect(first.models[0]).toMatchObject({ preference: 'favorite', provider: 'Beta', variants: ['high'] });
+    expect(first.models[1].preference).toBeUndefined();
+    expect(first.total).toBe(3);
+
+    const all = await service.execute('models.search', { all: true, provider: 'alpha' }, '/repo');
+    expect(all.models.map(({ id }) => id)).toEqual(['a/new', 'a/older']);
+
+    const paged = await service.execute('models.search', { query: 'NEW', limit: 1 }, '/repo');
+    expect(paged).toMatchObject({ models: [{ id: 'a/new' }], total: 2, next: 1 });
   });
 
   it('maps schedule creation into the shared scheduled-task service', async () => {
@@ -190,6 +222,38 @@ describe('OpenChamber control service', () => {
     expect(sessionService.create).toHaveBeenCalledWith({ directory: '/repo', title: 'From tool' });
   });
 
+  it('names the calling session as the sender of the prompt it dispatches', async () => {
+    const { service, sessionService } = createService();
+    await service.execute('session.create', { title: 'Side task', prompt: 'Go' }, '/repo', { contextSessionId: 'ses_caller' });
+    expect(sessionService.create).toHaveBeenCalledWith({ directory: '/repo', title: 'Side task', prompt: 'Go', promptedBySessionId: 'ses_caller' });
+
+    await service.execute('session.send', { sessionId: 'ses_other', directory: '/repo', prompt: 'Go' }, '/repo', { contextSessionId: 'ses_caller' });
+    expect(sessionService.send).toHaveBeenLastCalledWith('ses_other', { directory: '/repo', prompt: 'Go', promptedBySessionId: 'ses_caller' });
+
+    // A session prompting itself has nothing to link back to.
+    await service.execute('session.send', { sessionId: 'ses_caller', directory: '/repo', prompt: 'Go' }, '/repo', { contextSessionId: 'ses_caller' });
+    expect(sessionService.send).toHaveBeenLastCalledWith('ses_caller', { directory: '/repo', prompt: 'Go' });
+  });
+
+  it('names the calling session\'s task, and says so when the server cannot', async () => {
+    const setWorktreeTaskTitle = vi.fn(async (_directory, { title }) => ({ applied: true, title }));
+    const { service, client } = createService({
+      workNaming: {
+        listWorktrees: async () => [{ path: '/repo' }, { path: '/wt/a' }],
+        setWorktreeTaskTitle,
+        updateMetadata: vi.fn(),
+      },
+    });
+    client.session.get = vi.fn(async () => ({ id: 'ses_caller', title: 'x', location: { directory: '/wt/a' } }));
+    await expect(service.execute('work.name', { title: 'Login fix' }, '/wt/a', { contextSessionId: 'ses_caller' }))
+      .resolves.toEqual({ task: 'worktree', title: 'Login fix', named: true });
+    expect(setWorktreeTaskTitle).toHaveBeenCalledWith('/wt/a', { title: 'Login fix', by: 'agent' });
+
+    const { service: without } = createService();
+    await expect(without.execute('work.name', { title: 'Login fix' }, '/repo', { contextSessionId: 'ses_caller' }))
+      .rejects.toMatchObject({ statusCode: 503 });
+  });
+
   it('hands a pull request number to session creation with the folder and branch names it may carry', async () => {
     const { service, sessionService } = createService();
     await service.execute('session.create', { pullRequest: 42 }, '/repo');
@@ -244,6 +308,31 @@ describe('OpenChamber control service', () => {
     expect(moveToWorktree).toHaveBeenCalledWith('ses_me', {
       directory: '/repo',
       worktree: { name: 'fix', branchName: 'iuliia/fix' },
+    });
+  });
+
+  it('passes a branch that already exists through to the move', async () => {
+    const moveToWorktree = vi.fn(async () => ({}));
+    const { service } = createService({ sessionService: { moveToWorktree } });
+
+    await service.execute('session.moveToWorktree', { worktree: 'review', existingBranch: ' origin/review ' }, '/repo', { contextSessionId: 'ses_me' });
+
+    expect(moveToWorktree).toHaveBeenCalledWith('ses_me', {
+      directory: '/repo',
+      worktree: { name: 'review', existingBranch: 'origin/review' },
+    });
+  });
+
+  it('passes the files to carry through to the move', async () => {
+    const moveToWorktree = vi.fn(async () => ({}));
+    const { service } = createService({ sessionService: { moveToWorktree } });
+
+    await service.execute('session.moveToWorktree', { worktree: 'fix', carry: ['src/a.ts'] }, '/repo', { contextSessionId: 'ses_me' });
+
+    expect(moveToWorktree).toHaveBeenCalledWith('ses_me', {
+      directory: '/repo',
+      worktree: { name: 'fix' },
+      carry: ['src/a.ts'],
     });
   });
 
@@ -345,14 +434,17 @@ describe('OpenChamber control service', () => {
     expect(client.session.active).toHaveBeenCalledTimes(2);
   });
 
-  it('filters sessions archived in OpenChamber state and adds global statuses', async () => {
+  it('filters archived sessions, with the archive file over OpenCode, and adds global statuses', async () => {
+    const entries = { ses_archived: 100, ses_restored: null };
     const { service, client } = createService({
       // Async like the real store (`openchamber-sessions/archive-store.js`).
-      archiveStore: { archivedAt: async (id) => (id === 'ses_archived' ? 100 : null) },
+      archiveStore: { entry: async (id) => entries[id] },
     });
     client.session.list.mockResolvedValue({ data: [
       { id: 'ses_active', location: { directory: '/repo' }, time: {} },
       { id: 'ses_archived', location: { directory: '/repo' }, time: {} },
+      { id: 'ses_upstream', location: { directory: '/repo' }, time: { archived: 50 } },
+      { id: 'ses_restored', location: { directory: '/repo' }, time: { archived: 70 } },
       { id: 'ses_other', location: { directory: '/other' }, time: {} },
     ] });
     client.session.active.mockResolvedValue({ ses_active: { type: 'running' } });
@@ -360,6 +452,7 @@ describe('OpenChamber control service', () => {
     await expect(service.execute('session.list', { limit: 10, withStatus: true })).resolves.toEqual({
       sessions: [
         { id: 'ses_active', location: { directory: '/repo' }, time: {}, status: { type: 'busy' } },
+        { id: 'ses_restored', location: { directory: '/repo' }, time: {}, status: { type: 'idle' } },
         { id: 'ses_other', location: { directory: '/other' }, time: {}, status: { type: 'idle' } },
       ],
       limit: 10,
@@ -607,6 +700,208 @@ describe('notify.send', () => {
   });
 });
 
+describe('render.page', () => {
+  const page = '<!doctype html><p>Hi</p>';
+
+  it('accepts a page with a title and tells the agent not to restate it', async () => {
+    const { service } = createService();
+
+    const result = await service.execute('render.page', { html: page, title: '  Coverage  ' }, '/repo');
+
+    expect(result).toMatchObject({ shown: true, title: 'Coverage' });
+    expect(result.note).toContain("Don't announce");
+  });
+
+  it('tells the agent which local images will not show and why', async () => {
+    const { service } = createService();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-render-images-'));
+    try {
+      const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+      const file = (name) => path.join(root, name);
+      // 9 MiB each: two fit the 25 MiB page budget, the third and everything after it do not.
+      for (const name of ['a.png', 'b.png', 'c.png']) {
+        await fs.writeFile(file(name), png);
+        await fs.truncate(file(name), 9 * 1024 * 1024);
+      }
+      await fs.writeFile(file('d.png'), png);
+      await fs.writeFile(file('notes.png'), 'not an image');
+      const html = ['a.png', 'gone.png', 'notes.png', 'b.png', 'c.png', 'd.png'].map((name) => `<img src="${file(name)}">`).join('');
+
+      const result = await service.execute('render.page', { html, title: 'Photos' }, root);
+
+      expect(result).toMatchObject({ shown: true, title: 'Photos' });
+      expect(result.images).toEqual({
+        shown: 2,
+        notShown: [
+          { src: file('gone.png'), reason: 'file not found' },
+          { src: file('notes.png'), reason: 'not a readable PNG, JPEG, GIF or WebP of at most 10 MB' },
+          { src: file('c.png'), reason: 'past the page budget' },
+          { src: file('d.png'), reason: 'past the page budget' },
+        ],
+        weightMB: 27,
+        budgetMB: 25,
+      });
+      expect(result.note).toContain('split the page or use smaller images');
+
+      const fits = await service.execute('render.page', { html: `<img src="${file('a.png')}"><img src="${file('d.png')}">`, title: 'Two' }, root);
+      expect(fits).toEqual({ shown: true, title: 'Two', note: expect.not.stringContaining('do not show') });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('names a page sent without a title after its own title or first heading', async () => {
+    const { service } = createService();
+    const named = (html) => service.execute('render.page', { html }, '/repo').then((result) => result.title);
+
+    expect(await named('<html><head><title> Q3 &amp; Q4 </title></head><h1>Other</h1></html>')).toBe('Q3 & Q4');
+    expect(await named('<title></title><div><h2>Release <b>2.4</b></h2></div>')).toBe('Release 2.4');
+    expect(await named(`<h1>${'x'.repeat(200)}</h1>`)).toBe('x'.repeat(120));
+    expect(await named(page)).toBe('Page');
+  });
+
+  it('asks for html and title in one call when html is missing', async () => {
+    const { service } = createService();
+    await expect(service.execute('render.page', { title: 'Coverage' }, '/repo'))
+      .rejects.toMatchObject({ message: expect.stringContaining('Send html and title together in one call') });
+  });
+
+  it.each([
+    [{ title: 'Coverage' }, 'html is required'],
+    [{ html: '   ', title: 'Coverage' }, 'html is required'],
+    [{ html: 'x'.repeat(200_001), title: 'Coverage' }, 'the limit is 200000'],
+    [{ html: page, title: 't'.repeat(121) }, 'the limit is 120'],
+  ])('refuses %o with a reason the agent can act on', async (input, reason) => {
+    const { service } = createService();
+    await expect(service.execute('render.page', input, '/repo'))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining(reason) });
+  });
+
+  it('refuses while the tool is switched off, so a stale plugin cannot keep drawing', async () => {
+    const { service } = createService({ isRenderToolEnabled: async () => false });
+    await expect(service.execute('render.page', { html: page, title: 'Coverage' }, '/repo'))
+      .rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  describe('with awaitAnswer', () => {
+    const ask = { html: page, title: 'Pick a layout', awaitAnswer: true };
+    const call = { contextSessionId: 'ses_1', contextCallId: 'call_1' };
+    // The call starts waiting once its checks have run.
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it('waits until the user answers and returns the answer', async () => {
+      const { service } = createService();
+      const pending = service.execute('render.page', ask, '/repo', call);
+      await settle();
+
+      expect(service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: ' Layout B ', data: { layout: 'b' } })).toEqual({ answered: true });
+      const result = await pending;
+
+      expect(result).toMatchObject({ title: 'Pick a layout', answer: { answered: true, summary: 'Layout B', data: { layout: 'b' } } });
+      expect(result.note).toContain('answered on the page');
+    });
+
+    it('announces when the page starts and stops waiting', async () => {
+      const onPageWaitChange = vi.fn();
+      const { service } = createService({ onPageWaitChange });
+      const pending = service.execute('render.page', ask, '/repo', call);
+      await settle();
+
+      expect(onPageWaitChange).toHaveBeenCalledWith({ type: 'waiting', sessionId: 'ses_1', callId: 'call_1', title: 'Pick a layout', directory: '/repo' });
+      service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' });
+      await pending;
+      expect(onPageWaitChange).toHaveBeenLastCalledWith({ type: 'settled', sessionId: 'ses_1', callId: 'call_1' });
+
+      const controller = new AbortController();
+      const aborted = service.execute('render.page', ask, '/repo', { ...call, signal: controller.signal });
+      await settle();
+      controller.abort();
+      await expect(aborted).rejects.toBeTruthy();
+      expect(onPageWaitChange).toHaveBeenLastCalledWith({ type: 'settled', sessionId: 'ses_1', callId: 'call_1' });
+    });
+
+    it('answers once: a second answer, or one for another call, finds nothing waiting', async () => {
+      const { service } = createService();
+      const pending = service.execute('render.page', ask, '/repo', call);
+      await settle();
+
+      expect(() => service.answerPage({ sessionId: 'ses_1', callId: 'call_2', summary: 'B' })).toThrow(expect.objectContaining({ statusCode: 404 }));
+      service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' });
+      await expect(pending).resolves.toMatchObject({ answer: { data: null } });
+      expect(() => service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' })).toThrow(expect.objectContaining({ statusCode: 404 }));
+    });
+
+    it('stops waiting when the call is aborted, and the page no longer takes an answer', async () => {
+      const { service } = createService();
+      const controller = new AbortController();
+      const pending = service.execute('render.page', ask, '/repo', { ...call, signal: controller.signal });
+      await settle();
+
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ message: expect.stringContaining('stopped waiting') });
+      expect(() => service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' })).toThrow(expect.objectContaining({ statusCode: 404 }));
+    });
+
+    it.each([
+      [{ summary: '' }, 400],
+      [{ summary: 's'.repeat(501) }, 400],
+      [{ summary: 'B', data: 'x'.repeat(16_001) }, 413],
+      [{ sessionId: '', summary: 'B' }, 400],
+    ])('refuses the answer %o and keeps waiting', async (answer, statusCode) => {
+      const { service } = createService();
+      const pending = service.execute('render.page', ask, '/repo', call);
+      await settle();
+
+      expect(() => service.answerPage({ sessionId: 'ses_1', callId: 'call_1', ...answer })).toThrow(expect.objectContaining({ statusCode }));
+      service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' });
+      await expect(pending).resolves.toMatchObject({ answer: { summary: 'B' } });
+    });
+
+    it('does not wait when the user wrote in the chat before the page appeared', async () => {
+      const onPageWaitChange = vi.fn();
+      const { service, client } = createService({ onPageWaitChange });
+      client.session.inbox.list.mockResolvedValue([
+        { id: 'msg_2', sessionID: 'ses_1', type: 'user', delivery: 'steer', payload: { text: 'draw it' }, time: { created: 1 } },
+      ]);
+
+      const result = await service.execute('render.page', ask, '/repo', call);
+
+      expect(client.session.inbox.list).toHaveBeenCalledWith({ sessionID: 'ses_1' });
+      expect(result).toMatchObject({ title: 'Pick a layout', answer: { answered: false, reason: 'chat-sent-earlier' } });
+      expect(result.note).toContain('not an answer to it');
+      expect(onPageWaitChange).not.toHaveBeenCalled();
+      expect(() => service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' })).toThrow(expect.objectContaining({ statusCode: 404 }));
+    });
+
+    it('waits when only a synthetic or queued message is pending, or the inbox cannot be read', async () => {
+      const { service, client } = createService();
+      client.session.inbox.list.mockResolvedValueOnce([
+        { id: 'msg_2', sessionID: 'ses_1', type: 'synthetic', delivery: 'steer', payload: { text: 'subagent finished' }, time: { created: 1 } },
+        { id: 'msg_3', sessionID: 'ses_1', type: 'user', delivery: 'queue', payload: { text: 'after this turn' }, time: { created: 2 } },
+      ]);
+      const pending = service.execute('render.page', ask, '/repo', call);
+      await settle();
+      service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'B' });
+      await expect(pending).resolves.toMatchObject({ answer: { answered: true, summary: 'B' } });
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      client.session.inbox.list.mockRejectedValueOnce(new Error('OpenCode is down'));
+      const failedRead = service.execute('render.page', ask, '/repo', call);
+      await settle();
+      service.answerPage({ sessionId: 'ses_1', callId: 'call_1', summary: 'A' });
+      await expect(failedRead).resolves.toMatchObject({ answer: { answered: true, summary: 'A' } });
+      warn.mockRestore();
+    });
+
+    it('refuses to wait without a call id, so an older plugin falls back to asking in text', async () => {
+      const { service } = createService();
+      await expect(service.execute('render.page', ask, '/repo', { contextSessionId: 'ses_1' }))
+        .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('without awaitAnswer') });
+    });
+  });
+});
+
 describe('browser capture', () => {
   const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
@@ -673,6 +968,75 @@ describe('browser capture', () => {
     expect(request).toHaveBeenLastCalledWith('browser.capture', {}, expect.objectContaining({
       context: { directory, sessionId: null },
     }));
+  });
+});
+
+describe('browser close', () => {
+  const createCloseService = () => {
+    const request = vi.fn(async () => ({ closed: true, tabId: 'tab-1' }));
+    const { service } = createService({ browserControl: { request } });
+    return { service, request };
+  };
+
+  it('forwards the tab the agent named, trimmed', async () => {
+    const { service, request } = createCloseService();
+    const result = await service.execute('browser.close', { tabId: ' tab-1 ' }, '/repo');
+    expect(request).toHaveBeenCalledWith('browser.close', { tabId: 'tab-1' }, expect.anything());
+    expect(result).toEqual({ closed: true, tabId: 'tab-1' });
+  });
+
+  it('forwards a close with no tab, so the browser closes the session\'s own', async () => {
+    const { service, request } = createCloseService();
+    await service.execute('browser.close', {}, '/repo');
+    expect(request).toHaveBeenCalledWith('browser.close', {}, expect.anything());
+  });
+});
+
+describe('browser select', () => {
+  it('passes exactly one selection criterion to the browser', async () => {
+    const request = vi.fn(async (_action, parameters) => ({
+      selector: parameters.selector,
+      label: parameters.label ?? 'Canada',
+      value: parameters.value ?? 'ca',
+      url: 'https://example.test/',
+    }));
+    const { service } = createService({ browserControl: { request } });
+
+    await expect(service.execute('browser.select', {
+      selector: ' #country ',
+      label: 'Canada',
+      tabId: ' tab-1 ',
+    }, '/repo')).resolves.toEqual({
+      selector: '#country',
+      label: 'Canada',
+      value: 'ca',
+      url: 'https://example.test/',
+    });
+    expect(request).toHaveBeenCalledWith('browser.select', {
+      selector: '#country',
+      label: 'Canada',
+      tabId: 'tab-1',
+    }, expect.anything());
+
+    await service.execute('browser.select', { selector: '#country', value: '' }, '/repo');
+    expect(request).toHaveBeenLastCalledWith('browser.select', {
+      selector: '#country',
+      value: '',
+    }, expect.anything());
+  });
+
+  it.each([
+    [{ label: 'Canada' }, 'selector is required for browser.select'],
+    [{ selector: '  ', label: 'Canada' }, 'selector is required for browser.select'],
+    [{ selector: '#country' }, 'browser.select requires exactly one of label or value'],
+    [{ selector: '#country', label: 'Canada', value: 'ca' }, 'browser.select requires exactly one of label or value'],
+    [{ selector: '#country', label: 42 }, 'browser.select requires exactly one of label or value'],
+  ])('rejects invalid selection input before contacting the browser', async (input, message) => {
+    const request = vi.fn(async () => ({ ok: true }));
+    const { service } = createService({ browserControl: { request } });
+
+    await expect(service.execute('browser.select', input, '/repo')).rejects.toThrow(message);
+    expect(request).not.toHaveBeenCalled();
   });
 });
 

@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 import { ContextPanelHeaderToolbar } from './contextPanelHeaderSlot';
 import { useInContextPanelHeader } from './contextPanelHeaderSlotContext';
 import { toolContentShellChars } from '@/lib/opencode/toolContentShells';
+import { composeContextBreakdown, type ContextBuckets } from './contextBreakdown';
 
 type SessionMessage = { info: Message; parts: Part[] };
 
@@ -46,13 +47,6 @@ type TokenBreakdown = {
   cacheRead: number;
   cacheWrite: number;
   total: number;
-};
-
-type ContextBuckets = {
-  user: number;
-  assistant: number;
-  tool: number;
-  other: number;
 };
 
 const EMPTY_BREAKDOWN: TokenBreakdown = {
@@ -339,10 +333,16 @@ export const ContextPanelContent: React.FC = () => {
       cache: { read: tokenBreakdown.cacheRead, write: tokenBreakdown.cacheWrite },
     });
 
-    const totalAssistantCost = assistantMessages.reduce((sum, message) => {
-      const cost = toNonNegativeNumber((message.info as { cost?: unknown }).cost);
-      return sum + cost;
-    }, 0);
+    // The session record carries the whole session's cost; the loaded
+    // messages are only its tail once a long chat was opened cold or cut back
+    // (`SessionMessageLoader.trimHistory`). A persisted snapshot strips the
+    // field, so the sum stands in until the live record arrives.
+    const totalAssistantCost = Number.isFinite(currentSession?.cost)
+      ? toNonNegativeNumber(currentSession?.cost)
+      : assistantMessages.reduce((sum, message) => {
+        const cost = toNonNegativeNumber((message.info as { cost?: unknown }).cost);
+        return sum + cost;
+      }, 0);
 
     const latestAssistantInfo = (contextMessage?.info ?? null) as (Message & { providerID?: string; modelID?: string }) | null;
     const providerModel = resolveProviderAndModel(
@@ -365,11 +365,17 @@ export const ContextPanelContent: React.FC = () => {
 
     const computedBreakdown = computeContextBreakdown(sessionMessages, systemPrompt);
 
-    const userTokens = computedBreakdown.user;
-    const assistantTokens = computedBreakdown.assistant;
-    const toolTokens = computedBreakdown.tool;
-    const otherTokens = Math.max(0, tokenBreakdown.input - userTokens - assistantTokens - toolTokens);
-    const breakdownTotal = userTokens + assistantTokens + toolTokens + otherTokens;
+    // The bar sits under the readout, so it is measured against the same window
+    // the readout reports, not against its own estimate. `other` is then the
+    // real unattributed remainder — prompt, schemas, skills, estimation error —
+    // rather than a leftover clamped to zero.
+    //
+    // A completed compaction record can still carry the summarizing turn's
+    // tokens. The readout shows `—` for that state because the fill is unknown,
+    // so the bar must not denominate against the pre-compaction window either;
+    // zero sends it to the estimate, which is the same fallback the panel
+    // documents for an unknown window.
+    const breakdown = composeContextBreakdown(computedBreakdown, { windowTokens: tokenBreakdown.total, compacted: isCompacted });
 
     const firstMessageTs = sessionMessages[0]?.info?.time?.created;
     const lastMessageTs = sessionMessages.length > 0
@@ -389,13 +395,8 @@ export const ContextPanelContent: React.FC = () => {
       cacheHitRate,
       totalAssistantCost,
       contextLimit,
-      breakdown: {
-        user: userTokens,
-        assistant: assistantTokens,
-        tool: toolTokens,
-        other: otherTokens,
-      },
-      breakdownTotal,
+      breakdown,
+      breakdownTotal: breakdown.total,
     };
   }, [currentSessionId, providers, sessionMessages, sessions, t]);
 
@@ -432,7 +433,7 @@ export const ContextPanelContent: React.FC = () => {
           {inPanelHeader ? null : (
             <h2 dir="auto" className="typography-ui-header font-semibold text-foreground truncate oc-ui-start-align">{viewModel.sessionTitle}</h2>
           )}
-          <div className={cn(!inPanelHeader && 'mt-1', 'flex flex-wrap items-center gap-x-2 gap-y-0.5 typography-micro text-muted-foreground/70')}>
+          <div className={cn(!inPanelHeader && 'mt-1', 'flex flex-wrap items-center gap-x-2 gap-y-0.5 typography-micro text-muted-foreground')}>
             <span>{viewModel.providerModel.providerName} / {viewModel.providerModel.modelName}</span>
             {viewModel.createdAt && (
               <>
@@ -447,7 +448,7 @@ export const ContextPanelContent: React.FC = () => {
         <div className="mb-5 rounded-lg bg-[var(--surface-elevated)]/70 px-4 py-3.5">
           <div className="flex items-baseline justify-between">
             <span className="typography-micro text-muted-foreground">{t('contextSidebar.section.context')}</span>
-            <span className="typography-micro tabular-nums text-muted-foreground/70">
+            <span className="typography-micro tabular-nums text-muted-foreground">
               {viewModel.usagePercent === null ? '—' : formatNumber(viewModel.tokenBreakdown.total)}
               {viewModel.contextLimit ? ` / ${formatNumber(viewModel.contextLimit)}` : ''}
             </span>
@@ -479,7 +480,7 @@ export const ContextPanelContent: React.FC = () => {
             { label: t('contextSidebar.stats.cost'), value: formatMoney(viewModel.totalAssistantCost) },
           ] as const).map((item) => (
             <div key={item.label} className="rounded-lg bg-[var(--surface-elevated)]/70 px-3 py-2.5">
-              <div className="typography-micro text-muted-foreground/70">{item.label}</div>
+              <div className="typography-micro text-muted-foreground">{item.label}</div>
               <div className="mt-0.5 typography-ui-label tabular-nums text-foreground">{item.value}</div>
             </div>
           ))}
@@ -502,7 +503,7 @@ export const ContextPanelContent: React.FC = () => {
               },
             ] as const).map((item) => (
               <div key={item.label}>
-                <div className="typography-micro text-muted-foreground/70">{item.label}</div>
+                <div className="typography-micro text-muted-foreground">{item.label}</div>
                 <div className="mt-0.5 typography-ui-label tabular-nums text-foreground">
                   {item.value !== null && item.value !== undefined
                     ? item.format === 'percent'
@@ -537,7 +538,7 @@ export const ContextPanelContent: React.FC = () => {
               return (
                 <div key={segment.key} className="inline-flex items-center gap-1.5">
                   <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: segment.color }} />
-                  <span className="typography-micro text-muted-foreground/70">
+                  <span className="typography-micro text-muted-foreground">
                     {segment.label} <span className="tabular-nums">{pct.toFixed(0)}%</span>
                   </span>
                 </div>

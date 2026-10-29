@@ -51,6 +51,21 @@ afterEach(async () => {
 });
 
 describe('ElectronSshManager', () => {
+  test('bounds local diagnostic snapshots without reading any remote host', () => {
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '0.0.0-test', emit: () => undefined,
+    });
+    for (let index = 0; index < 22; index++) {
+      manager.appendLog(`connection-${index}`, 'Starting SSH connection');
+    }
+    manager.setStatus('connection-21', 'ready', 'private host name');
+    const snapshots = manager.diagnosticLogSnapshots();
+    expect(snapshots.omittedSources).toBe(2);
+    expect(snapshots.entries).toHaveLength(20);
+    expect(snapshots.entries.at(-1).phase).toBe('ready');
+    expect(snapshots.entries.at(-1)).not.toHaveProperty('detail');
+  });
   for (const scenario of ['explicit XDG with spaces', 'unset XDG', 'missing XDG with home fallback']) {
     test.skipIf(process.platform === 'win32')(`executes remote discovery, install and launch with ${scenario}`, async () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber ssh paths-'));
@@ -735,7 +750,8 @@ printf '4321\\n'`);
           const server = host.servers.find((entry) => entry.port === Number(probedPort[1]));
           if (!server) return 'INFO_STATUS=000\nAUTH_STATUS=0\nHEALTH_STATUS=000\n';
           // /api/system/info is public, so only the auth status tells a fitting password apart.
-          const offered = script.match(/"password":"([^"]*)"/);
+          const offered = script.match(/"password":"([^"]*)"/)
+            || (script.includes('--data-urlencode password@-') && host.environmentPassword && [null, host.environmentPassword]);
           let authStatus = 0;
           if (offered) authStatus = !server.password ? 400 : offered[1] === server.password ? 200 : 401;
           if (offered && server.rateLimited) authStatus = 429;
@@ -761,7 +777,7 @@ printf '4321\\n'`);
         if (servedPort) {
           host.started.push(Number(servedPort[2]));
           const servedPassword = script.match(/OPENCHAMBER_UI_PASSWORD='([^']*)'/);
-          host.servers.push({ port: Number(servedPort[2]), version: '1.2.3', bindHost: servedPort[1], password: servedPassword?.[1] });
+          host.servers.push({ port: Number(servedPort[2]), version: '1.2.3', bindHost: servedPort[1], password: servedPassword?.[1] ?? host.environmentPassword });
           return `${servedPort[2]}\n`;
         }
         throw new Error(`Unexpected remote command: ${script}`);
@@ -850,6 +866,27 @@ printf '4321\\n'`);
 
     test('an instance without a password leaves password-protected servers alone', async () => {
       const { host, manager } = createRemoteHost([{ port: 30001, version: '1.1.0', password: 'secret' }]);
+
+      const result = await manager.ensureRemoteServer(managed(), parsed, '/unused.sock');
+
+      expect(host.stopped).toEqual([]);
+      expect(result.remotePort).not.toBe(30001);
+    });
+
+    test('reconnecting reuses a server protected by the password the remote login shell sets', async () => {
+      const { host, manager } = createRemoteHost();
+      host.environmentPassword = 'profile-secret';
+
+      const first = await manager.ensureRemoteServer(managed(), parsed, '/unused.sock');
+      const second = await manager.ensureRemoteServer(managed(), parsed, '/unused.sock');
+
+      expect(second).toMatchObject({ remotePort: first.remotePort, startedByUs: false });
+      expect(host.started).toEqual([first.remotePort]);
+    });
+
+    test('a server protected by another password than the remote login shell sets stays someone else\'s', async () => {
+      const { host, manager } = createRemoteHost([{ port: 30001, version: '1.1.0', password: 'someone-else' }]);
+      host.environmentPassword = 'profile-secret';
 
       const result = await manager.ensureRemoteServer(managed(), parsed, '/unused.sock');
 

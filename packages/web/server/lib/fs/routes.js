@@ -1,7 +1,16 @@
 import { createRealpathCache } from '../path-realpath-cache.js';
 import { redactGitText } from '../git/redaction.js';
 import { resolveByteRange } from './byte-range.js';
+import { injectPreviewBridge } from './preview-bridge.js';
 import { createWorkspaceFileNameIndex } from './workspace-file-names.js';
+import { createGitCheckIgnoreTimeoutMs } from './search.js';
+import {
+  CONTENT_SEARCH_DEFAULT_LIMIT,
+  CONTENT_SEARCH_MAX_LIMIT,
+  CONTENT_SEARCH_MAX_QUERY_LENGTH,
+  createContentSearchRuntime,
+} from './content-search.js';
+import { isString } from '../shared/guards.js';
 import nodeFsPromises from 'node:fs/promises';
 import nodePath from 'node:path';
 
@@ -127,12 +136,6 @@ const createGitReadCacheTtlMs = () => {
   const raw = Number(process.env.OPENCHAMBER_GIT_READ_CACHE_TTL_MS);
   if (Number.isFinite(raw) && raw >= 0) return raw;
   return 30 * 1000;
-};
-
-const createGitCheckIgnoreTimeoutMs = () => {
-  const raw = Number(process.env.OPENCHAMBER_GIT_CHECK_IGNORE_TIMEOUT_MS);
-  if (Number.isFinite(raw) && raw >= 0) return raw;
-  return 2500;
 };
 
 const createUploadMaxBytes = () => {
@@ -410,7 +413,11 @@ const GIT_DIRS_SKIP_LIST = new Set(['node_modules', 'dist', 'build', '.venv', 't
 // Walks rootPath and returns every nested git repository path (a directory
 // containing a `.git` entry — a directory, a worktree pointer file, or a
 // symlink). A repository boundary stops descent: nested repos inside repos
-// are not reported. The root itself, when it is a repo, yields no results.
+// are not reported. The root's own `.git` is the exception and the walk goes
+// on below it: whether a root repository hides the ones inside it is the
+// client's call, made from the root's status (a root with no commits yet
+// hides nothing). Clients ask only for roots that are not repositories or
+// have no commits, so an established root is never walked.
 // Symlinked directories are followed, the way the file tree follows them: a
 // parent folder of links to repositories kept elsewhere is a common way to
 // group them into one project. Each real directory is walked once, so a link
@@ -478,10 +485,8 @@ const findGitDirectories = async ({ rootPath, fsPromises, path: pathModule, maxD
       subdirectories.push(dirent.name);
     }
 
-    if (isRepoBoundary) {
-      if (dir !== rootPath) {
-        results.push(dir);
-      }
+    if (isRepoBoundary && dir !== rootPath) {
+      results.push(dir);
       return;
     }
 
@@ -607,6 +612,8 @@ export const registerFsRoutes = (app, dependencies) => {
     resolveProjectDirectory,
     buildAugmentedPath,
     resolveGitBinaryForSpawn,
+    // Content search needs ripgrep; without a resolver the route answers 501.
+    resolveRipgrepBinary = async () => null,
     openchamberUserConfigRoot,
     managedChatsRoot,
     cloneRepository,
@@ -1013,6 +1020,54 @@ export const registerFsRoutes = (app, dependencies) => {
     return res.json({ paths: await workspaceFileNames.find(project.directory, name) });
   });
 
+  // Find in files: lines of workspace files containing a text or a regex,
+  // searched by ripgrep (content-search.js). Hitting the limit is a normal
+  // answer with `stopped: 'limit'`; a failed search is never an empty one.
+  // This module loads with Node built-ins only (see the packaged-desktop
+  // module-load test), so the query is read with the shared guards.
+  const contentSearch = createContentSearchRuntime({ spawn, path, resolveRipgrepBinary });
+  app.get('/api/fs/find-in-files', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const query = isString(req.query.query) ? String(req.query.query) : '';
+    if (!query.trim() || query.length > CONTENT_SEARCH_MAX_QUERY_LENGTH) {
+      return res.status(400).json({ error: 'A search query is required' });
+    }
+    const requestedLimit = isString(req.query.limit) ? Number.parseInt(String(req.query.limit), 10) : Number.NaN;
+    const limit = Number.isInteger(requestedLimit)
+      ? Math.min(Math.max(1, requestedLimit), CONTENT_SEARCH_MAX_LIMIT)
+      : CONTENT_SEARCH_DEFAULT_LIMIT;
+    const project = await resolveProjectDirectory(req);
+    if (!project.directory) {
+      return res.status(400).json({ error: project.error || 'Active workspace is required' });
+    }
+
+    // A client that moved on (a new keystroke, a closed panel) ends the
+    // ripgrep process instead of letting it finish for nobody.
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    const result = await contentSearch.searchFileContents(project.directory, {
+      resultRoot: project.requestedDirectory,
+      query,
+      regex: req.query.regex === 'true',
+      limit,
+      includeHidden: req.query.includeHidden === 'true',
+      respectGitignore: req.query.respectGitignore !== 'false',
+      signal: abort.signal,
+    });
+    switch (result.status) {
+      case 'ok':
+        return res.json({ matches: result.matches, stopped: result.stopped });
+      case 'unavailable':
+        return res.status(501).json({ error: 'ripgrep is not available on this server', reason: 'search-unavailable' });
+      case 'invalid-pattern':
+        return res.status(400).json({ error: result.message, reason: 'invalid-pattern' });
+      case 'aborted':
+        return undefined;
+      default:
+        return res.status(500).json({ error: result.message, reason: 'search-failed' });
+    }
+  });
+
   app.post('/api/fs/directory-stats', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const requested = Array.isArray(req.body?.paths) ? req.body.paths : null;
@@ -1354,7 +1409,9 @@ export const registerFsRoutes = (app, dependencies) => {
 
       const ext = path.extname(canonicalPath).toLowerCase();
       const mimeType = FILE_MIME_MAP[ext] || 'application/octet-stream';
-      const content = await fsPromises.readFile(canonicalPath);
+      const bytes = await fsPromises.readFile(canonicalPath);
+      // Lets the Files view annotate the page; see preview-bridge.js.
+      const content = mimeType === 'text/html' ? injectPreviewBridge(bytes) : bytes;
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       // Opened directly in a tab, the page is still an opaque-origin sandbox.

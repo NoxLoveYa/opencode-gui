@@ -11,9 +11,33 @@ import { createOutboundFrameBatcher, decodeFrameBatch, decodeTunnelFrame, decode
 import { createTunnelHost } from './tunnel-host.js';
 import { createDownstreamScheduler, DOWNSTREAM_CHUNK_BYTES } from './downstream-scheduler.js';
 import { redactSensitiveText } from '../source-control/url-redaction.js';
+import { z } from 'zod';
+
+// The relay asks a peer to close its own socket with this plaintext frame
+// rather than closing it from the relay side, where a close to a peer that is
+// gone holds the relay's handler, billed, until it times out. Mirrors
+// parseRelayRetire in packages/ui/src/lib/relay/protocol.ts.
+const relayRetireSchema = z.object({ type: z.literal('relay-retire'), code: z.number().int(), reason: z.string().catch('') });
+const parseRelayRetire = (raw) => {
+  try {
+    const parsed = relayRetireSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+};
 
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30000;
+// The relay closes a control socket with 4001 when another host holding the
+// same identity connects: a copied data dir, a second machine, a container
+// replica. Reconnecting after the usual 1 s evicts that host in turn, and the
+// pair trade the slot every second for as long as both run.
+const CONTROL_REPLACED_RECONNECT_MS = 60_000;
+// One 4001 is an ordinary takeover, such as a local instance claiming the host
+// for a pairing link. Two within this window mean another host keeps taking the
+// slot back, and the user has to decide which copy keeps the identity.
+const IDENTITY_CONFLICT_WINDOW_MS = 10 * 60_000;
 // A data socket dial that never opens is retried while the relay still reports
 // its client: the relay holds the client and buffers its frames, and sends no
 // new `connected` for it. Without a retry the client waits for the relay's 15 s
@@ -61,7 +85,7 @@ export const describeRelayError = (error) => redactSensitiveText(error?.message 
  *   identity: { serverId: string, hostEncPrivateKey: CryptoKey, signRelayAuth: (role: string, connectionId?: string | null) => { ts: number, sig: string, pk: string } },
  *   localPort?: number,
  *   getLocalPort?: () => number,
- *   onStatus?: (status: { state: string, lastError: string | null, connectedClients: number }) => void,
+ *   onStatus?: (status: { state: string, lastError: string | null, connectedClients: number, identityConflict: boolean }) => void,
  *   logger?: Pick<Console, 'warn'>,
  *   createSocket?: (url: string) => WebSocket,
  * }} options
@@ -76,6 +100,8 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
   let stopped = false;
   let state = 'connecting';
   let lastError = null;
+  /** @type {number[]} */
+  let controlReplacedAt = [];
   let controlSocket = null;
   let reconnectTimer = null;
   let consecutiveFailures = 0;
@@ -85,9 +111,17 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
   /** @type {Map<string, { failedDials: number, redialTimer: NodeJS.Timeout | null }>} */
   const announcedClients = new Map();
 
+  const hasIdentityConflict = () => {
+    const now = Date.now();
+    controlReplacedAt = controlReplacedAt.filter((at) => now - at < IDENTITY_CONFLICT_WINDOW_MS);
+    return controlReplacedAt.length >= 2;
+  };
+
+  const currentStatus = () => ({ state, lastError, connectedClients: dataSockets.size, identityConflict: hasIdentityConflict() });
+
   const emitStatus = () => {
     try {
-      onStatus?.({ state, lastError, connectedClients: dataSockets.size });
+      onStatus?.(currentStatus());
     } catch {
       // status consumers must not break the transport
     }
@@ -225,6 +259,12 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
     };
 
     const handleMessage = async (data, isBinary) => {
+      const retire = isBinary ? null : parseRelayRetire(data.toString('utf8'));
+      if (retire) {
+        if (dataSockets.get(connectionId) === entry) teardownDataSocket(connectionId, 1000, retire.reason);
+        else socket.close(1000);
+        return;
+      }
       const current = dataSockets.get(connectionId);
       if (current !== entry) return;
       // Any inbound message (including the client's keepalive Ping) proves the
@@ -310,6 +350,7 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
       });
     };
 
+    const dialedAt = Date.now();
     socket.on('open', () => {
       if (entry.openTimer) {
         clearTimeout(entry.openTimer);
@@ -328,7 +369,10 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
           failChannel(RelayCloseCode.ChannelFailure, 'internal error');
         });
     });
-    socket.on('close', () => {
+    socket.on('close', (code, reason) => {
+      // One line per device drop, so a host that keeps losing devices shows why
+      // in its log: the code says which side closed and the lifetime how often.
+      logger.info?.(`[Relay] data socket closed connectionId=${connectionId} code=${code}${reason?.length ? ` reason=${reason.toString('utf8')}` : ''} after=${Math.round((Date.now() - dialedAt) / 1000)}s`);
       // A retry may already own this connectionId.
       if (dataSockets.get(connectionId) === entry) teardownDataSocket(connectionId);
     });
@@ -370,9 +414,9 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
     }
   };
 
-  const scheduleReconnect = () => {
+  const scheduleReconnect = (minDelayMs = 0) => {
     if (stopped || reconnectTimer) return;
-    const delay = Math.min(BACKOFF_BASE_MS * 2 ** consecutiveFailures, BACKOFF_CAP_MS);
+    const delay = Math.max(minDelayMs, Math.min(BACKOFF_BASE_MS * 2 ** consecutiveFailures, BACKOFF_CAP_MS));
     consecutiveFailures += 1;
     setState('reconnecting');
     reconnectTimer = setTimeout(() => {
@@ -394,6 +438,10 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
       return;
     }
     controlSocket = socket;
+    const dialedAt = Date.now();
+    // The relay retires a control socket with a frame instead of closing it,
+    // and the frame's code stands in for the close code: 4001 still holds off.
+    let retiredWith = null;
 
     // Liveness: ping on an interval; any pong (or message) proves the path.
     // A quiet window beyond interval+grace means the connection silently died —
@@ -430,24 +478,35 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
     socket.on('message', (data, isBinary) => {
       if (controlSocket !== socket || isBinary) return;
       lastAliveAt = Date.now();
-      handleControlMessage(data.toString('utf8'));
+      const raw = data.toString('utf8');
+      const retire = parseRelayRetire(raw);
+      if (retire) {
+        retiredWith = retire;
+        socket.close(1000);
+        return;
+      }
+      handleControlMessage(raw);
     });
     socket.on('error', (error) => {
       if (controlSocket !== socket) return;
       lastError = describeRelayError(error);
     });
-    socket.on('close', (code, reasonBuffer) => {
+    socket.on('close', (closeCode, reasonBuffer) => {
       clearInterval(pingTimer);
       if (controlSocket !== socket) return;
       controlSocket = null;
-      const reason = reasonBuffer ? reasonBuffer.toString('utf8') : '';
+      const code = retiredWith ? retiredWith.code : closeCode;
+      const reason = retiredWith ? retiredWith.reason : reasonBuffer ? reasonBuffer.toString('utf8') : '';
+      logger.info?.(`[Relay] control socket closed code=${code}${reason ? ` reason=${reason}` : ''} after=${Math.round((Date.now() - dialedAt) / 1000)}s`);
       if (!lastError && code && code !== 1000) {
         lastError = `control socket closed (${code}${reason ? `: ${reason}` : ''})`;
       }
       // Data sockets ride their own relay connections; the relay keeps clients
       // alive through a 30 s control-reconnect grace window, so leave them up.
       cancelRedials();
-      scheduleReconnect();
+      const replaced = code === RelayCloseCode.ControlReplaced;
+      if (replaced) controlReplacedAt.push(Date.now());
+      scheduleReconnect(replaced ? CONTROL_REPLACED_RECONNECT_MS : 0);
     });
   };
 
@@ -491,6 +550,6 @@ export const startRelayHost = ({ relayUrl, identity, localPort, getLocalPort, on
 
   return {
     stop,
-    getStatus: () => ({ state, lastError, connectedClients: dataSockets.size }),
+    getStatus: currentStatus,
   };
 };

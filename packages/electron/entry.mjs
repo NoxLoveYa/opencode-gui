@@ -28,7 +28,16 @@ recordEarlyStartupMark('electron.entry');
 
 // Set the product name early so electron-log derives its log directory as
 // ~/Library/Logs/OpenChamber/ (not ~/Library/Logs/@openchamber/electron/).
+const versionBeforeRename = app.getVersion();
 app.setName('OpenChamber');
+// An unpackaged run on Linux reports version "0.0" after the rename, and
+// electron-updater refuses a version that is not semver, so the dev app quit
+// before its first window. Restoring the version from before the rename gives
+// it Electron's own version, as on macOS. `setVersion` is undocumented;
+// Electron's default app uses it to apply a package.json version.
+if (app.getVersion() !== versionBeforeRename) {
+  app.setVersion(versionBeforeRename);
+}
 if (process.platform === 'linux') {
   app.setDesktopName('openchamber.desktop');
 }
@@ -60,6 +69,11 @@ if (shouldIgnoreLoopbackConnectionLimit({
 })) {
   app.commandLine.appendSwitch('ignore-connections-limit', '127.0.0.1');
 }
+// A browser panel tab the agent works runs unthrottled (BrowserPane), but a
+// hidden page's renderer is still lowered in priority on its own; without this
+// that tab ran its timers at an eighth of the speed while out of sight. The
+// user's hidden tabs keep their timer throttling, so they stay cheap.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
 // Development only: lets a debugger or an agent attach to the dev window over
 // CDP. Chromium binds the port to loopback.
 const devRemoteDebuggingPort = String(process.env.OPENCHAMBER_ELECTRON_REMOTE_DEBUGGING_PORT || '').trim();

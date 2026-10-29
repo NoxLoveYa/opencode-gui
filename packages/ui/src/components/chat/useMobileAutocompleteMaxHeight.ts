@@ -11,6 +11,13 @@ import React from 'react';
  * Returns an inline max-height only when the available space is smaller than
  * the popup's normal CSS height cap. This keeps the desktop cap intact while
  * still protecting the header on tall draft composers.
+ *
+ * Only for a popup whose bottom edge stays put. A list placed at the caret
+ * already carries the max-height its placement computed against the same
+ * boundaries, and one placed below the line grows downward, so its bottom
+ * edge moves with the height this sets: each measure re-sized it, the next
+ * measure saw a new bottom, and React stopped the loop by crashing the chat
+ * (#5687). Such callers pass `enabled: false`.
  */
 export const useMobileAutocompleteMaxHeight = (
     containerRef: React.RefObject<HTMLElement | null>,
