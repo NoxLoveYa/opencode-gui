@@ -13,6 +13,7 @@ import { SettingsCheckboxRow } from '../shared/SettingsSection';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useDeviceInfo } from '@/lib/device';
 import { useUIStore } from '@/stores/useUIStore';
+import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 
 type PackageLoader = ReturnType<typeof createThemePackageLoader>;
 type CatalogState =
@@ -155,7 +156,7 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
   const content = <>
       {state.step === 'search' ? <>
         <Input autoFocus aria-label={t('settings.themeImport.search')} placeholder={t('settings.themeImport.search')} value={query} maxLength={160} onChange={(event) => setQuery(event.target.value)} />
-        <div className={isMobile ? 'space-y-1' : 'max-h-[45dvh] overflow-y-auto space-y-1'} aria-live="polite">
+        <ScrollableOverlay outerClassName={isMobile ? undefined : 'max-h-[45dvh]'} className="space-y-1" aria-live="polite" disableHorizontal>
           {state.status === 'loading' && <p className="text-muted-foreground">{t('common.loading')}</p>}
           {state.status === 'error' && <p role="alert" className="text-[var(--status-error-text)]">{t('settings.themeImport.catalogError')}</p>}
           {state.status === 'ready' && !state.results.length && <p className="text-muted-foreground">{t('settings.themeImport.empty')}</p>}
@@ -163,7 +164,7 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
             <ExtensionIcon extension={extension} />
             <span className="min-w-0"><span className="block truncate">{extension.label}</span><span className="block truncate typography-meta text-muted-foreground">{extension.namespace}</span><ExtensionPalettes extension={extension} load={loadPackage} /></span>
           </Button>)}
-        </div>
+        </ScrollableOverlay>
       </> : <>
         <Button variant="ghost" size="sm" className="justify-start" disabled={saving || state.step === 'package' && state.status === 'loading'} onClick={() => setState({ step: 'search', status: 'idle', results: [] })}>
           <Icon name="arrow-left" className="size-4" />{t('settings.themeImport.back')}
@@ -178,7 +179,7 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
               onClick={() => setSelected(allSelected ? new Set() : new Set(selectable.map((variant) => variant.key)))}>
               {t(allSelected ? 'settings.themeImport.deselectAll' : 'settings.themeImport.selectAll')}
             </Button>}
-            <div className={isMobile ? 'space-y-2' : 'max-h-[45dvh] overflow-y-auto space-y-2'}>
+            <ScrollableOverlay outerClassName={isMobile ? undefined : 'max-h-[45dvh]'} className="space-y-2" disableHorizontal>
               {state.variants.map((variant) => <div key={variant.key}>
                 <div className="min-w-0">
                   {saved.has(variant.key)
@@ -189,7 +190,7 @@ export function ThemeCatalogDialog({ pickFile, fileBusy, onClose }: { pickFile: 
                   {variant.status === 'ready' && <div className="mt-1.5"><ThemePalette theme={variant.theme} name={variant.name} /></div>}
                 </div>
               </div>)}
-            </div>
+            </ScrollableOverlay>
           </>}
       </>}
   </>;

@@ -161,3 +161,21 @@ for (const kind of ['command', 'skill'] as const) {
     expect(host.querySelector<HTMLElement>('.oc-glass-popover')?.style.maxHeight).toBe('120px');
   });
 }
+
+test('skill: loads in one row until the project\'s skills are read, then says there are none at the same height', async () => {
+  const { useSkillsStore } = await import('@/stores/useSkillsStore');
+  useSkillsStore.setState({ skillsByDirectory: {} });
+  const picker = <SyncProvider sdk={sdk} directory=""><I18nProvider><SkillAutocomplete searchQuery="" onClose={() => undefined} onSkillSelect={() => undefined} /></I18nProvider></SyncProvider>;
+  await act(async () => root.render(picker));
+  const loadingRow = host.querySelector('[data-spinner]')?.closest('div');
+  expect(loadingRow).not.toBeNull();
+  expect(host.textContent).not.toContain('No skills found');
+
+  await act(async () => useSkillsStore.setState({ skillsByDirectory: { [directory]: [] } }));
+  expect(host.querySelector('[data-spinner]')).toBeNull();
+  const emptyRow = Array.from(host.querySelectorAll('div')).filter((node) => node.textContent === 'No skills found').pop();
+  // The same box, so the popup keeps its height between the two.
+  expect(emptyRow?.className.split(' ').filter((name) => name.startsWith('p'))).toEqual(
+    loadingRow?.className.split(' ').filter((name) => name.startsWith('p')),
+  );
+});
