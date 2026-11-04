@@ -609,7 +609,7 @@ export const ContextSurfacePanes: React.FC = () => {
               {hasOpenEditorFile ? (
                 <React.Suspense fallback={null}><FilesView mode="editor-only" visible={!contentHidden(fileZone.zone) && isFileTabActive && showsEditor} onCloseFile={handleCloseEditorFile} /></React.Suspense>
               ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                <div className="flex h-full flex-col items-center justify-center gap-3 bg-background p-6 text-center">
                   <Icon name="file-code" className="h-12 w-12 text-muted-foreground/50" />
                   <div className="typography-ui-header text-foreground">{t('contextPanel.editorEmpty.title')}</div>
                   <div className="max-w-sm typography-micro text-muted-foreground">{t('contextPanel.editorEmpty.description')}</div>
@@ -734,7 +734,8 @@ export const ContextSurfacePanes: React.FC = () => {
           isOpen={walkthroughZone.isOpen}
           hidden={contentHidden(walkthroughZone.zone)}
           directoryKey={directoryKey}
-          className={cn('absolute inset-0', walkthroughZone.activeTab?.mode === 'walkthrough' ? 'block' : 'hidden')}
+          // The walkthrough paints no fill of its own, so this pane is its one.
+          className={cn('absolute inset-0 bg-background', walkthroughZone.activeTab?.mode === 'walkthrough' ? 'block' : 'hidden')}
         >
           <React.Suspense fallback={null}>
             <ContextPanelHeaderSlotProvider value={headerSlotFor(walkthroughZone.zone, walkthroughZone.activeTab?.mode === 'walkthrough')}>

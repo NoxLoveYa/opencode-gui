@@ -1210,7 +1210,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
 
     if (!hasActiveContext) {
         return (
-            <div className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
+            <div className="flex h-full items-center justify-center bg-[var(--surface-background)] p-4 text-center text-sm text-muted-foreground">
                 {t('terminalView.empty.selectSession')}
             </div>
         );
@@ -1222,7 +1222,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
 
     if (!terminalDirectory) {
         return (
-            <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm text-muted-foreground">
+            <div className="flex h-full flex-col items-center justify-center gap-2 bg-[var(--surface-background)] p-4 text-center text-sm text-muted-foreground">
                 <p>{t('terminalView.empty.noWorkingDirectoryForSession')}</p>
                 <button
                     onClick={handleRestart}

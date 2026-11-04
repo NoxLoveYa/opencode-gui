@@ -802,6 +802,20 @@
   background-image: linear-gradient(var(--interactive-hover), var(--interactive-hover));
 }
 
+/* Under a window material the context zones' gutters (the margins around the
+   card) paint the panel's one fill. The zone itself stays clear, because the
+   views inside the card paint their own and a fill under them would stack to
+   a more solid panel than the chat beside it. A spread shadow is drawn only
+   outside the card's own box, follows its rounded corners, and the zone clips
+   it to its bounds, so the gutters get the fill and the card does not. Behind
+   the edge's own faint shadow, which stays on top. */
+:root[data-window-material='mica'] #root [data-zone-card],
+:root[data-window-material='acrylic'] #root [data-zone-card] {
+  box-shadow:
+    0 2px 8px -3px rgb(0 0 0 / 0.08),
+    0 0 0 100vmax var(--background);
+}
+
 /* A modal window (dialogs, the command palette, Settings) lifts off the
    dimmed page: a wide soft shadow plus a tighter one under the edge. */
 .oc-modal-shadow {

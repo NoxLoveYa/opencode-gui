@@ -817,13 +817,19 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
     });
   }, [activeModeTabs, effectiveDirectory, faviconByOrigin, sessionTitleById, t, tabT, trackerBranch]);
 
+  // Git and pull requests paint no fill of their own, and neither do their
+  // empty and loading states, so the panel gives them the one fill every
+  // region has. Surfaces that paint a root fill must not be wrapped: the two
+  // would stack under a window material.
+  const filledSurface = (content: React.ReactNode) => <div className="h-full bg-background">{content}</div>;
+
   const activeNonChatContent = activeTab?.mode === 'context'
         ? <ContextPanelHeaderSlotProvider value={headerSlotEl}><ContextPanelContent /></ContextPanelHeaderSlotProvider>
         : activeTab?.mode === 'git'
-            ? <React.Suspense fallback={null}><ContextPanelHeaderSlotProvider value={headerSlotEl}><GitView isActive={isOpen} /></ContextPanelHeaderSlotProvider></React.Suspense>
+            ? filledSurface(<React.Suspense fallback={null}><ContextPanelHeaderSlotProvider value={headerSlotEl}><GitView isActive={isOpen} /></ContextPanelHeaderSlotProvider></React.Suspense>)
             : activeTab?.mode === 'pr'
                 ? (activeTab.targetPath
-                    ? (
+                    ? filledSurface(
                       <TrackerItemView
                         key={activeTab.id}
                         url={activeTab.targetPath}
@@ -833,9 +839,9 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
                         tabId={activeTab.id}
                         foreign={Boolean(activeTab.targetDirectory)}
                         visible={isOpen}
-                      />
+                      />,
                     )
-                    : <PullRequestView />)
+                    : filledSurface(<PullRequestView />))
             : activeTab?.mode === 'notes'
                 ? <ContextPanelHeaderSlotProvider value={headerSlotEl}><ProjectContextPanel visible={isOpen} /></ContextPanelHeaderSlotProvider>
             : activeTab?.mode === 'workflows'
