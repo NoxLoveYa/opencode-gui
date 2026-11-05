@@ -8,6 +8,7 @@ import {
   type IntegrationCatalogStatusTone,
 } from '@/components/sections/integrations/IntegrationCatalogCard';
 import { useI18n } from '@/lib/i18n';
+import type { ClaudeRowsInfo } from './claudeAccounts';
 import { ProviderAccounts } from './ProviderAccounts';
 import { ProviderApiKeyForm, type IntegrationKeyRequest } from './ProviderApiKeyForm';
 import { ProviderOAuthMethods } from './ProviderOAuthMethods';
@@ -36,6 +37,13 @@ interface ProviderAuthAccounts {
   onRemove: (account: CredentialConnection) => void;
 }
 
+/** Claude Agent's accounts are saved logins: rows show them, and adding goes through the sign-in flow instead of OpenCode's external connect. */
+interface ProviderAuthClaude {
+  rows: ClaudeRowsInfo;
+  /** The Add account button, or the sign-in flow once it started. */
+  addControl: React.ReactNode;
+}
+
 interface ProviderAuthMethodCardsProps {
   /** The provider's own integration, which stores its API key. */
   integrationId: string;
@@ -48,6 +56,7 @@ interface ProviderAuthMethodCardsProps {
   credentials: readonly CredentialConnection[];
   /** Absent on the connect page, where nothing is stored yet. */
   accounts?: ProviderAuthAccounts;
+  claude?: ProviderAuthClaude;
   /**
    * A kind OpenCode uses without a stored credential of it: a key from an
    * environment variable or the config, or credentials on the server machine.
@@ -78,6 +87,7 @@ export const ProviderAuthMethodCards: React.FC<ProviderAuthMethodCardsProps> = (
   signInMethods,
   credentials,
   accounts,
+  claude,
   inUseWithoutCredential = null,
   canAdd,
   connectKey,
@@ -135,6 +145,7 @@ export const ProviderAuthMethodCards: React.FC<ProviderAuthMethodCardsProps> = (
   };
 
   const renderAddForm = (kind: CredentialMethod, hasAccounts: boolean) => {
+    if (kind === 'external' && claude) return claude.addControl;
     // Under a stored account an empty key field reads as "replace this key"
     // and a bare Connect as "reconnect", while both add another account that
     // becomes active; they wait behind Add account.
@@ -220,6 +231,7 @@ export const ProviderAuthMethodCards: React.FC<ProviderAuthMethodCardsProps> = (
                   onActivate={accounts.onActivate}
                   onRename={accounts.onRename}
                   onRemove={accounts.onRemove}
+                  claude={kind === 'external' ? claude?.rows : undefined}
                 />
               ) : null}
               {canAdd ? renderAddForm(kind, stored.length > 0) : null}

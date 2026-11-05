@@ -211,6 +211,8 @@ describe('space routes and directories', () => {
   it('sorts the paths inside by rule', () => {
     expect(classifySpacePath('/api/config/settings')).toBe('host_only');
     expect(classifySpacePath('/api/provider')).toBe('host_only');
+    expect(classifySpacePath('/api/openchamber/claude-accounts')).toBe('host_only');
+    expect(classifySpacePath('/api/openchamber/claude-accounts/logins/abc/code')).toBe('host_only');
     expect(classifySpacePath('/api/projects/abc/icon')).toBe('host_only');
     // Tracker routes read with the host's tracker tokens, under either name.
     expect(classifySpacePath('/api/tracker/linear/items/list')).toBe('host_only');

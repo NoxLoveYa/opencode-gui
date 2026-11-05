@@ -910,7 +910,7 @@ describe('settings registry gate', () => {
     fontSize: 100, terminalFontSize: 14, editorFontSize: 14, uiFont: 'inter', monoFont: 'jetbrains-mono', customUiFont: 'Maple Mono NF CN', customMonoFont: 'Maple Mono', uiFontWeight: 'balanced', padding: 100, cornerRadius: 8, widgetCorners: 'square',
     shortcutOverrides: { 'chat.send': 'mod+enter' },
     defaultModel: 'anthropic/claude', defaultVariant: 'high', defaultAgent: 'build', smallModelUseDefault: false, smallModelOverride: 'anthropic/haiku', smallModelVariant: 'high',
-    walkthroughModelOverride: 'anthropic/claude', walkthroughModelVariant: 'high', zenModel: 'zen/model', fallbackModel: 'openai/gpt', fallbackVariant: 'high', accountSwitchProviders: ['anthropic'],
+    walkthroughModelOverride: 'anthropic/claude', walkthroughModelVariant: 'high', zenModel: 'zen/model', fallbackModel: 'openai/gpt', fallbackVariant: 'high', accountSwitchProviders: ['anthropic'], claudeUsageGuardEnabled: true, claudeUsageGuardFiveHour: 90, claudeUsageGuardWeekly: 80,
     favoriteModels: [{ providerID: 'anthropic', modelID: 'claude' }], hiddenModels: [{ providerID: 'openai', modelID: 'gpt' }], collapsedModelProviders: ['openai'],
     recentModels: [{ providerID: 'anthropic', modelID: 'claude' }], lastSelectedModel: 'anthropic/claude', recentAgents: ['build'], favoriteAgents: ['build'], recentEfforts: { 'anthropic/claude': ['high'] }, lastUsedEfforts: { 'anthropic/claude': 'high', 'openai/gpt-5': null }, providerOrder: ['anthropic'],
     sessionRecapEnabled: true, sessionSuggestionEnabled: true, sessionWorkEnabled: true, sessionReviewOfferEnabled: true, sessionGoalEnabled: true, sessionGoalChecker: 'small-model', sessionGoalMaxAutoTurns: 50, sessionGoalDefaultBudgetEnabled: true, sessionGoalDefaultBudget: 5,
@@ -956,6 +956,15 @@ describe('settings registry gate', () => {
       return result[landedAs] === undefined;
     });
     expect(rejected).toEqual([]);
+  });
+
+  it('keeps the Claude usage guard thresholds only as whole percents from 50 to 100', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ claudeUsageGuardFiveHour: 50, claudeUsageGuardWeekly: 100, claudeUsageGuardEnabled: false }))
+      .toEqual({ claudeUsageGuardFiveHour: 50, claudeUsageGuardWeekly: 100, claudeUsageGuardEnabled: false });
+    expect(helpers.sanitizeSettingsUpdate({ claudeUsageGuardFiveHour: 49, claudeUsageGuardWeekly: 101 })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ claudeUsageGuardFiveHour: 87.5, claudeUsageGuardWeekly: '90', claudeUsageGuardEnabled: 'yes' })).toEqual({});
   });
 
   it('drops keys the registry does not list, computed flags, and desktop-shell-owned keys', () => {

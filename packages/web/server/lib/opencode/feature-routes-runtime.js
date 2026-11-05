@@ -2,6 +2,8 @@ import { registerFsRoutes } from '../fs/routes.js';
 import { createRipgrepResolver } from '../fs/ripgrep.js';
 import { registerEnvironmentRoutes } from '../environment/routes.js';
 import { registerQuotaRoutes } from '../quota/routes.js';
+import express from 'express';
+import { registerClaudeAccountRoutes } from '../claude-accounts/routes.js';
 import { registerSmallModelRoutes } from '../small-model/routes.js';
 import { registerWalkthroughRoutes } from '../walkthrough/routes.js';
 import { registerSessionGoalRoutes } from '../session-goal/routes.js';
@@ -277,6 +279,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       scheduledTaskService,
       openChamberSessionService,
       openChamberControlService,
+      claudeAccountsRuntime = null,
       waitForOpenCodeReady,
       getOpenChamberEventClients,
       writeSseEvent,
@@ -310,6 +313,9 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     // Before the generic OpenCode proxy: swallows the `openchamber/auto` model
     // switch and routes the sends that follow it.
     registerRoutingPromptRewrite(app, routingRuntime);
+    // Before the generic OpenCode proxy: "Use" and remove on a Claude Agent
+    // account move the Claude login too (`../claude-accounts/DOCUMENTATION.md`).
+    if (claudeAccountsRuntime) registerClaudeAccountRoutes(app, { express, runtime: claudeAccountsRuntime });
 
     registerOpenCodeRoutes(app, {
       crypto,

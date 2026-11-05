@@ -84,6 +84,9 @@ const MANAGED_PLUGIN_SETTINGS_KEYS = new Set([
   'accountSwitchProviders',
 ]);
 
+/** The Claude usage guard keeps a copy of these; a save of one tells it to read them again. */
+const CLAUDE_USAGE_GUARD_KEYS = new Set(['claudeUsageGuardEnabled', 'claudeUsageGuardFiveHour', 'claudeUsageGuardWeekly']);
+
 export const createSettingsRuntime = (deps) => {
   const {
     fsPromises,
@@ -108,6 +111,7 @@ export const createSettingsRuntime = (deps) => {
     onMessageSearchReasoningChanged = () => {},
     onPermissionDefaultModeChanged = () => {},
     onLastDirectoryChanged = () => {},
+    onClaudeUsageGuardSettingsChanged = () => {},
   } = deps;
 
   let persistSettingsLock = Promise.resolve();
@@ -1223,6 +1227,9 @@ export const createSettingsRuntime = (deps) => {
       }
       if (changedKeys.includes('permissionDefaultMode') && next.permissionDefaultMode !== current.permissionDefaultMode) {
         onPermissionDefaultModeChanged(next.permissionDefaultMode);
+      }
+      if (changedKeys.some((key) => CLAUDE_USAGE_GUARD_KEYS.has(key))) {
+        onClaudeUsageGuardSettingsChanged();
       }
       if (changedKeys.includes('lastDirectory') && next.lastDirectory !== current.lastDirectory) {
         onLastDirectoryChanged(next.lastDirectory);

@@ -15,7 +15,9 @@ import type { IconName } from "@/components/icon/icons";
 import { cn } from '@/lib/utils';
 import { useDeviceInfo } from '@/lib/device';
 import type { ModelMetadata } from '@/types';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useI18n } from '@/lib/i18n';
+import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { formatCompactNumber } from '@/lib/numberFormat';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -46,6 +48,23 @@ import { ClassificationProvidersPage } from '@/components/sections/classificatio
 import { SettingsBackButton } from '@/components/sections/shared/SettingsCards';
 import { ProviderAccounts } from './ProviderAccounts';
 import { ProviderAccountSwitchToggle } from './ProviderAccountSwitchToggle';
+import { ClaudeAccountAddFlow } from './ClaudeAccountAddFlow';
+import { ClaudeAccountNotices } from './ClaudeAccountNotices';
+import {
+  adoptClaudeLogin,
+  CLAUDE_AGENT_PROVIDER_ID,
+  countSavedClaudeLogins,
+  fetchClaudeAccounts,
+  findAdoptTarget,
+  hasUnsavedLiveLogin,
+  isOverUsageThreshold,
+  replaceLiveClaudeLogin,
+  saveLiveClaudeLoginAsNewAccount,
+  useClaudeAccounts,
+  type ClaudeRowsInfo,
+} from './claudeAccounts';
+import { ClaudeUnsavedLoginDialog } from './ClaudeUnsavedLoginDialog';
+import { ClaudeUsageGuardSettings } from './ClaudeUsageGuardSettings';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { CustomProviderForm } from './CustomProviderForm';
 
@@ -82,6 +101,9 @@ const formatTokens = (value?: number | null) => {
 const connectIntegrationKey = async (request: IntegrationKeyRequest): Promise<void> => {
   await getIntegrationClient().integration.connect.key(request);
 };
+
+/** How long after a switch the page does not say that OpenCode and this computer disagree about the Claude account. */
+const CLAUDE_SETTLE_MS = 3_000;
 
 const ADD_PROVIDER_ID = '__add_provider__';
 /** Not an OpenCode provider id: the page for OpenChamber's own classification providers (Jev). */
@@ -206,6 +228,38 @@ export const ProvidersPage: React.FC = () => {
   // "connected" signal in v2) is refetched even when the selection is unchanged.
   const [integrationsRevision, setIntegrationsRevision] = React.useState(0);
   const backgroundIntegrationsReadRef = React.useRef(false);
+  // Claude Agent's accounts are saved logins the server keeps; its page reads
+  // them next to the integration list and again whenever a credential changes.
+  // VS Code runs its own OpenCode, so there is nothing to read there.
+  const claudeVSCode = isVSCodeRuntime();
+  const { view: claudeView, refresh: refreshClaude } = useClaudeAccounts(
+    selectedProviderId === CLAUDE_AGENT_PROVIDER_ID && !claudeVSCode,
+    integrationsRevision,
+  );
+  /** The sign-in flow of the Claude Agent page: a new account, or signing in again under a row. */
+  const [claudeFlow, setClaudeFlow] = React.useState<{ credentialId?: string } | null>(null);
+  React.useEffect(() => {
+    setClaudeFlow(null);
+  }, [selectedProviderId]);
+  /** The account Use was pressed on while a Claude login nobody saved is active; the user decides first. */
+  const [unsavedPrompt, setUnsavedPrompt] = React.useState<CredentialConnection | null>(null);
+  const [claudeBusy, setClaudeBusy] = React.useState(false);
+  // Right after a switch OpenCode's list, the saved logins and this computer's login are read at slightly
+  // different moments: for a short while the page does not say that they disagree.
+  const [claudeSettling, setClaudeSettling] = React.useState(false);
+  const settleTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markClaudeSettling = React.useCallback(() => {
+    setClaudeSettling(true);
+    if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = setTimeout(() => {
+      settleTimerRef.current = null;
+      setClaudeSettling(false);
+    }, CLAUDE_SETTLE_MS);
+  }, []);
+  React.useEffect(() => () => {
+    if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
+  }, []);
+  const { confirm: confirmUse, dialog: confirmUseDialog } = useConfirmDialog();
   // An administrator turned on enterprise mode: providers come from the
   // OpenCode config, and the server refuses new ones and new keys.
   const enterpriseLocked = useEnterpriseMode();
@@ -367,6 +421,18 @@ export const ProvidersPage: React.FC = () => {
     setIntegrationsRevision((revision) => revision + 1);
   }, []);
 
+  // The server switched the Claude account (the usage guard, or limit failover), or the guard found no account
+  // left: OpenCode's list, the rows and their usage are all read again.
+  React.useEffect(() => subscribeOpenchamberEvents((event) => {
+    const claudeSwitch = event.type === 'limit-failover'
+      && event.failover.kind === 'account'
+      && event.failover.providerId === CLAUDE_AGENT_PROVIDER_ID;
+    if (event.type !== 'claude-usage-guard' && !claudeSwitch) return;
+    markClaudeSettling();
+    refreshIntegrations();
+    refreshClaude();
+  }), [markClaudeSettling, refreshIntegrations, refreshClaude]);
+
   const markAuthWriteSucceeded = React.useCallback((providerId: string) => {
     // Optimistically record a connection so a providers refresh that has not yet
     // landed cannot reopen the panel / hide models with a stale
@@ -509,21 +575,25 @@ export const ProvidersPage: React.FC = () => {
     account: CredentialConnection,
     action: () => Promise<void>,
     messages: { success?: string; failure: string },
+    /** Runs after a failure; true when it dealt with it, so no failure toast follows. */
+    onError?: () => Promise<boolean>,
   ) => {
     setAccountBusyId(account.id);
+    markClaudeSettling();
     try {
       await action();
       if (messages.success) toast.success(messages.success);
     } catch (error) {
       console.error('Provider account action failed:', error);
-      toast.error(messages.failure);
+      if (!(await onError?.())) toast.error(messages.failure);
     } finally {
       setAccountBusyId(null);
+      markClaudeSettling();
       refreshIntegrations();
     }
   };
 
-  const handleActivateAccount = (account: CredentialConnection) => runAccountAction(
+  const activateAccount = (account: CredentialConnection) => runAccountAction(
     account,
     async () => {
       await opencodeClient.getSdkClient().credential.activate({ credentialID: account.id });
@@ -532,7 +602,81 @@ export const ProvidersPage: React.FC = () => {
       success: t('settings.providers.accounts.toast.switched', { account: account.label }),
       failure: t('settings.providers.accounts.toast.switchFailed'),
     },
+    // The server refused because a login nobody saved is live (the page may have been stale, or the
+    // login's account unknown): the refusal carries no body here, so the state says it.
+    async () => {
+      if (selectedProviderId !== CLAUDE_AGENT_PROVIDER_ID || claudeVSCode) return false;
+      try {
+        if (!hasUnsavedLiveLogin(await fetchClaudeAccounts())) return false;
+      } catch {
+        return false;
+      }
+      setUnsavedPrompt(account);
+      refreshClaude();
+      return true;
+    },
   );
+
+  // Switching removes a Claude login nobody saved from the live files: ask first.
+  const unsavedClaudeLoginLive = selectedProviderId === CLAUDE_AGENT_PROVIDER_ID
+    && claudeView.status === 'ready'
+    && hasUnsavedLiveLogin(claudeView.state);
+  const handleActivateAccount = async (account: CredentialConnection) => {
+    if (unsavedClaudeLoginLive) {
+      setUnsavedPrompt(account);
+      return;
+    }
+    // The usage guard would move off an account that is over its threshold at the next look; a Use by hand is left alone for a while.
+    const usageState = selectedProviderId === CLAUDE_AGENT_PROVIDER_ID && claudeView.status === 'ready' ? claudeView.state : null;
+    if (usageState && isOverUsageThreshold(usageState, account.id, Date.now())) {
+      const proceed = await confirmUse({
+        title: t('settings.providers.claude.usageGuard.overUse.title'),
+        message: t('settings.providers.claude.usageGuard.overUse.message', { account: account.label }),
+        action: t('settings.providers.claude.usageGuard.overUse.action'),
+      });
+      if (!proceed) return;
+    }
+    await activateAccount(account);
+  };
+
+  const saveLiveClaudeLogin = async (): Promise<boolean> => {
+    setClaudeBusy(true);
+    try {
+      await saveLiveClaudeLoginAsNewAccount();
+      toast.success(t('settings.providers.claude.unsaved.saved'));
+      return true;
+    } catch (error) {
+      console.error('Failed to save the live Claude login:', error);
+      toast.error(t('settings.providers.claude.unsaved.saveFailed'));
+      return false;
+    } finally {
+      setClaudeBusy(false);
+      refreshIntegrations();
+      refreshClaude();
+    }
+  };
+
+  /** The user's choice in the unsaved-login dialog; the switch the dialog interrupted follows. */
+  const resolveUnsavedPrompt = async (choice: 'save' | 'replace') => {
+    const account = unsavedPrompt;
+    if (!account) return;
+    if (choice === 'save') {
+      if (!(await saveLiveClaudeLogin())) return;
+    } else {
+      setClaudeBusy(true);
+      try {
+        await replaceLiveClaudeLogin(account.id);
+      } catch (error) {
+        console.error('Failed to replace the live Claude login:', error);
+        toast.error(t('settings.providers.accounts.toast.switchFailed'));
+        setClaudeBusy(false);
+        return;
+      }
+      setClaudeBusy(false);
+    }
+    setUnsavedPrompt(null);
+    await activateAccount(account);
+  };
 
   const handleRenameAccount = (account: CredentialConnection, label: string) => runAccountAction(
     account,
@@ -551,6 +695,17 @@ export const ProvidersPage: React.FC = () => {
     {
       success: t('settings.providers.accounts.toast.removed'),
       failure: t('settings.providers.accounts.toast.removeFailed'),
+    },
+  );
+
+  const handleAdoptClaudeLogin = (account: CredentialConnection) => runAccountAction(
+    account,
+    async () => {
+      await adoptClaudeLogin(account.id);
+    },
+    {
+      success: t('settings.providers.claude.adopt.success', { account: account.label }),
+      failure: t('settings.providers.claude.adopt.failed'),
     },
   );
 
@@ -713,7 +868,11 @@ export const ProvidersPage: React.FC = () => {
   // other integration stay listed so they can be removed, but are not in use.
   const usedIntegrationId = selectedProvider.integrationID ?? selectedProvider.id;
   const usedCredentials = getCredentialConnections(findIntegrationForProvider(integrations ?? [], usedIntegrationId));
-  const activeAccountId = usedCredentials[0]?.id ?? null;
+  const isClaudeAgent = selectedProvider.id === CLAUDE_AGENT_PROVIDER_ID;
+  const claudeState = isClaudeAgent && claudeView.status === 'ready' ? claudeView.state : null;
+  // Claude Agent: the row OpenCode flags active, as the server read it together with the login that is live.
+  // The order of the list is OpenCode's and can lag a switch by a refresh.
+  const activeAccountId = claudeState?.activeCredentialId ?? usedCredentials[0]?.id ?? null;
   const unusedAccountIds = new Set(
     providerConnections.flatMap((connection) => (
       connection.type === 'credential' && !usedCredentials.some((used) => used.id === connection.id)
@@ -724,6 +883,38 @@ export const ProvidersPage: React.FC = () => {
   const storedCredentials = providerConnections.filter(
     (connection): connection is CredentialConnection => connection.type === 'credential',
   );
+  // Until the saved logins are read, or when reading them failed, adding an
+  // account would go through OpenCode's own connect, which does not know them.
+  const claudeAddHeldBack = isClaudeAgent && !claudeVSCode && (claudeView.status === 'loading' || claudeView.status === 'failed');
+  // A login whose account is unknown cannot be saved as an account, but it can still be replaced.
+  const saveLiveAllowed = Boolean(claudeState?.canAdd && claudeState.liveIdentity !== null);
+  const claudeRows: ClaudeRowsInfo | null = claudeState && {
+    accounts: claudeState.accounts,
+    now: Date.now(),
+    adoptTargetId: findAdoptTarget(claudeState, activeAccountId),
+    canSignIn: claudeState.canAdd,
+    onSignIn: (account) => setClaudeFlow({ credentialId: account.id }),
+    onAdopt: (account) => void handleAdoptClaudeLogin(account),
+  };
+  const finishClaudeFlow = () => {
+    setClaudeFlow(null);
+    markClaudeSettling();
+    refreshIntegrations();
+    refreshClaude();
+  };
+  const claudeAddControl = claudeState ? (claudeFlow ? (
+    <ClaudeAccountAddFlow
+      key={claudeFlow.credentialId ?? 'new'}
+      credentialId={claudeFlow.credentialId}
+      onFinished={finishClaudeFlow}
+      onCancel={() => setClaudeFlow(null)}
+    />
+  ) : claudeState.canAdd ? (
+    <Button variant="outline" size="xs" className="!font-normal" onClick={() => setClaudeFlow({})}>
+      <Icon name="add" className="size-3.5" />
+      {t('settings.providers.accounts.add')}
+    </Button>
+  ) : null) : null;
   const environmentConnections = providerConnections.filter((connection) => connection.type === 'env');
   // With no stored account in use, OpenCode can still use a key from an
   // environment variable or the config, or credentials on the server machine.
@@ -803,7 +994,7 @@ export const ProvidersPage: React.FC = () => {
     >
       <SettingsSection
         title={t('settings.providers.accounts.title')}
-        info={t('settings.providers.accounts.info')}
+        info={claudeState ? t('settings.providers.claude.accountsInfo') : t('settings.providers.accounts.info')}
         divider={false}
         headerAction={(
           <div className="flex items-center gap-1">
@@ -876,17 +1067,55 @@ export const ProvidersPage: React.FC = () => {
               onRename: (account, label) => void handleRenameAccount(account, label),
               onRemove: (account) => void handleRemoveAccount(account),
             }}
+            claude={claudeRows ? { rows: claudeRows, addControl: claudeAddControl } : undefined}
             inUseWithoutCredential={inUseWithoutCredential}
-            canAdd={!enterpriseLocked}
+            canAdd={!enterpriseLocked && !claudeAddHeldBack}
             connectKey={connectIntegrationKey}
             onKeySaved={() => markAuthWriteSucceeded(selectedProvider.id)}
             onSignedIn={() => handleOAuthConnected(selectedProvider.id)}
           />
         )}
 
+        {isClaudeAgent ? (
+          <ClaudeAccountNotices
+            view={claudeView}
+            vscode={claudeVSCode}
+            labels={Object.fromEntries(storedCredentials.map((credential) => [credential.id, credential.label]))}
+            onRetry={refreshClaude}
+            onSaveLive={saveLiveAllowed ? () => void saveLiveClaudeLogin() : undefined}
+            busy={claudeBusy}
+            settling={claudeSettling || accountBusyId !== null || claudeBusy}
+          />
+        ) : null}
+        {confirmUseDialog}
+        {isClaudeAgent ? (
+          <ClaudeUnsavedLoginDialog
+            accountLabel={unsavedPrompt?.label ?? null}
+            busy={claudeBusy}
+            onSaveNew={saveLiveAllowed ? () => void resolveUnsavedPrompt('save') : undefined}
+            saveNewBlockedReason={claudeState?.canAdd && !saveLiveAllowed ? t('settings.providers.claude.unsaved.noIdentity') : undefined}
+            onReplace={() => void resolveUnsavedPrompt('replace')}
+            onCancel={() => setUnsavedPrompt(null)}
+          />
+        ) : null}
+
         {/* The switch happens in the managed OpenCode plugin; VS Code runs its own OpenCode without it. */}
         {usedCredentials.length > 0 && !isVSCodeRuntime() ? (
-          <ProviderAccountSwitchToggle providerId={selectedProvider.id} accountCount={usedCredentials.length} />
+          <ProviderAccountSwitchToggle
+            providerId={selectedProvider.id}
+            // Claude Agent accounts can be switched to only with a saved login.
+            accountCount={isClaudeAgent
+              ? countSavedClaudeLogins(usedCredentials, claudeState?.accounts ?? {})
+              : usedCredentials.length}
+            needsAccountsText={isClaudeAgent ? t('settings.providers.claude.switchNeedsLogins') : undefined}
+          />
+        ) : null}
+        {/* Extra usage bills instead of rate-limiting, so limit failover never sees it: this watches the percentages. */}
+        {isClaudeAgent && !claudeVSCode && claudeState && usedCredentials.length > 0 ? (
+          <ClaudeUsageGuardSettings
+            accountCount={countSavedClaudeLogins(usedCredentials, claudeState.accounts)}
+            needsAccountsText={t('settings.providers.claude.switchNeedsLogins')}
+          />
         ) : null}
 
         {enterpriseLocked ? (

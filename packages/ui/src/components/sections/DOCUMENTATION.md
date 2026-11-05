@@ -264,6 +264,35 @@ plugin's `claude-code` integration sign-in through the shared
 finishes. Without the plugin, or when the integration list cannot be read, it
 shows the `claude auth login` command, which works in both cases.
 
+### Claude Agent accounts
+
+The Claude Agent provider page shows its OpenCode rows with the Claude login
+OpenChamber saved for each (`providers/claudeAccounts.ts` reads
+`/api/openchamber/claude-accounts`, `ProviderAccounts` shows the row line,
+`ClaudeAccountNotices` the warnings). Use, Remove and the "Switch account on
+limit" toggle are the existing ones: the server moves the Claude login when
+they run (`packages/web/server/lib/claude-accounts/DOCUMENTATION.md`). A row
+without a saved login offers Sign in, or Save current login on the active row,
+and cannot be used. Add account and Sign in again open
+`ClaudeAccountAddFlow.tsx`, which follows a sign-in the server runs in a
+temporary folder, so the login Claude Code uses does not change. While the
+saved logins are unread or failed to read, adding is held back instead of
+falling to OpenCode's own connect, which would replace the live login. VS Code,
+macOS and an OpenCode OpenChamber did not start show why the feature is
+unavailable. While a Claude login nobody saved is active, Use opens
+`ClaudeUnsavedLoginDialog` (save it as a new account, replace it, or cancel)
+and the warning on the page offers "Save as new account". A captured login
+whose row could not be created offers Try again without a new sign-in.
+`runtimeFetch` marks the account routes and OpenCode's credential routes with
+`X-Requested-With`, which the server requires. Under "Switch account on limit",
+`ClaudeUsageGuardSettings` holds "Switch before extra usage" with a 5-hour and a
+weekly threshold (50 to 100), stored in the profile settings; each row shows the
+last usage the server read ("5h 87% · week 42%"), and a persistent notice appears
+when every account is over its threshold, or when the live account cannot be
+watched (its usage cannot be read, or its login is not saved), and each row says
+how old its numbers are. Use on an account that is over a threshold asks first.
+After any switch (Use, add, remove, a sign-in, and the switches the server makes by itself, announced by `claude-usage-guard` or `limit-failover`) the page reads OpenCode's list and the saved logins again, takes the active Claude row from the server's `activeCredentialId`, and holds back the "OpenCode and this computer disagree" warning for 3 seconds. `useClaudeUsageGuardNotices` toasts the server's `claude-usage-guard` events.
+
 ### Policy-blocked MCP servers and skills
 
 OpenCode drops an MCP server or skill an `integration.use` deny names

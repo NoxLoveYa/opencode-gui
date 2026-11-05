@@ -6,6 +6,7 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createExhaustionRegistry } from '../claude-accounts/exhaustion.js';
 import { createLimitFailoverRuntime } from './runtime.js';
 import { classifyLimitFailure, DEFAULT_EXHAUSTION_MS, parseLimitResetAt, parseModelSetting } from './policy.js';
 
@@ -19,7 +20,7 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
-const createRuntime = ({ settings = { accountSwitchProviders: ['anthropic'] }, now = () => NOW } = {}) => {
+const createRuntime = ({ settings = { accountSwitchProviders: ['anthropic'] }, now = () => NOW, claudeAccounts } = {}) => {
   const broadcastUiEvent = vi.fn();
   const runtime = createLimitFailoverRuntime({
     fsPromises: fs,
@@ -29,6 +30,7 @@ const createRuntime = ({ settings = { accountSwitchProviders: ['anthropic'] }, n
     authorizeRequest: (req) => req.headers.authorization === 'Bearer token',
     broadcastUiEvent,
     now,
+    claudeAccounts,
   });
   return { runtime, broadcastUiEvent };
 };
@@ -227,6 +229,264 @@ describe('limit failover decisions', () => {
     expect(second).toEqual({ action: 'activate-credential', credentialID: ACCOUNT_B.id });
     runtime.settle(first.ticket, true);
     expect(broadcastUiEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('limit failover for Claude Agent', () => {
+  const PERSO = { id: 'crd_perso', label: 'Perso' };
+  const WORK = { id: 'crd_work', label: 'Work' };
+  const SPARE = { id: 'crd_spare', label: 'Spare' };
+
+  const createClaude = ({ saved = [PERSO.id, WORK.id, SPARE.id], available = true } = {}) => {
+    const calls = [];
+    const claudeAccounts = {
+      isAvailable: () => available,
+      hasSavedLogin: (id) => saved.includes(id),
+      syncLiveToStore: vi.fn(async () => { calls.push('sync'); }),
+      switchTo: vi.fn(async (id) => { calls.push(`switch:${id}`); return { previousCredentialId: PERSO.id, writtenFingerprint: `fp-${id}` }; }),
+    };
+    return { claudeAccounts, calls };
+  };
+
+  const claudeReport = (overrides = {}) => quotaReport({
+    providerID: 'claude-agent',
+    credentials: [PERSO, WORK, SPARE],
+    activeCredentialID: PERSO.id,
+    ...overrides,
+  });
+  const settings = { accountSwitchProviders: ['claude-agent'] };
+
+  describe('with the usage guard switching too', () => {
+    let clock;
+    const withRegistry = () => {
+      clock = NOW;
+      const registry = createExhaustionRegistry({ now: () => clock });
+      const { claudeAccounts, calls } = createClaude();
+      Object.assign(claudeAccounts, {
+        isExhausted: registry.isExhausted,
+        markExhausted: registry.markExhausted,
+        recentSwitchAt: registry.recentSwitchAt,
+      });
+      const { runtime } = createRuntime({ settings, claudeAccounts, now: () => clock });
+      return { registry, claudeAccounts, calls, runtime };
+    };
+
+    it('does not blame the account the guard switched to for a failure that was in flight on the one it left', async () => {
+      const { registry, claudeAccounts, runtime } = withRegistry();
+      // The guard moved the login from Perso to Work; OpenCode already shows Work active when the old request's failure arrives.
+      registry.noteSwitch(WORK.id);
+      const inFlight = claudeReport({ activeCredentialID: WORK.id });
+
+      await expect(runtime.decide(inFlight)).resolves.toEqual({ action: 'retry' });
+
+      expect(registry.isExhausted(WORK.id)).toBe(false);
+      expect(claudeAccounts.switchTo).not.toHaveBeenCalled();
+      // Every session gets that one retry; the same session failing again on Work is a real failure.
+      await expect(runtime.decide({ ...inFlight, sessionID: 'ses_2' })).resolves.toEqual({ action: 'retry' });
+      await expect(runtime.decide(inFlight)).resolves.toMatchObject({ action: 'activate-credential', credentialID: SPARE.id });
+      expect(registry.isExhausted(WORK.id)).toBe(true);
+    });
+
+    it('would have marked it exhausted and moved on, without the guard\'s note (the failure the audit described)', async () => {
+      const { registry, claudeAccounts, runtime } = withRegistry();
+
+      await expect(runtime.decide(claudeReport({ activeCredentialID: WORK.id }))).resolves.toMatchObject({ action: 'activate-credential' });
+
+      expect(registry.isExhausted(WORK.id)).toBe(true);
+      expect(claudeAccounts.switchTo).toHaveBeenCalled();
+    });
+
+    it('stops excusing failures once the guard\'s switch is a minute old', async () => {
+      const { registry, runtime } = withRegistry();
+      registry.noteSwitch(WORK.id);
+      clock += 61_000;
+
+      await expect(runtime.decide(claudeReport({ activeCredentialID: WORK.id }))).resolves.toMatchObject({ action: 'activate-credential' });
+      expect(registry.isExhausted(WORK.id)).toBe(true);
+    });
+
+    it('tells the guard which account ran out, and does not move to an account the guard knows is full', async () => {
+      const { registry, claudeAccounts, runtime } = withRegistry();
+      registry.markExhausted(WORK.id, NOW + 3_600_000);
+
+      await expect(runtime.decide(claudeReport())).resolves.toMatchObject({ action: 'activate-credential', credentialID: SPARE.id });
+
+      expect(registry.isExhausted(PERSO.id)).toBe(true);
+      expect(claudeAccounts.switchTo).toHaveBeenCalledWith(SPARE.id, expect.anything());
+    });
+
+    it('answers none when the guard knows every other account is full', async () => {
+      const { registry, runtime } = withRegistry();
+      registry.markExhausted(WORK.id, NOW + 3_600_000);
+      registry.markExhausted(SPARE.id, NOW + 3_600_000);
+
+      await expect(runtime.decide(claudeReport())).resolves.toEqual({ action: 'none' });
+    });
+
+    it('shares nothing for other providers: an account of the same id elsewhere is not skipped', async () => {
+      const { registry, claudeAccounts } = withRegistry();
+      registry.noteSwitch(ACCOUNT_B.id);
+      registry.markExhausted(ACCOUNT_B.id, NOW + 3_600_000);
+      const { runtime } = createRuntime({ claudeAccounts });
+
+      await expect(runtime.decide(quotaReport())).resolves.toMatchObject({ action: 'activate-credential', credentialID: ACCOUNT_B.id });
+      expect(registry.isExhausted(ACCOUNT_A.id)).toBe(false);
+    });
+  });
+
+  it('skips rows without a saved login', async () => {
+    const { claudeAccounts } = createClaude({ saved: [PERSO.id, SPARE.id] });
+    const { runtime } = createRuntime({ settings, claudeAccounts });
+
+    await expect(runtime.decide(claudeReport())).resolves.toMatchObject({ action: 'activate-credential', credentialID: SPARE.id });
+    expect(claudeAccounts.switchTo).toHaveBeenCalledWith(SPARE.id, expect.objectContaining({ budgetMs: expect.any(Number) }));
+  });
+
+  it('gives the whole swap, sync included, about 2.5 seconds, far below the 10 the plugin waits', async () => {
+    let clock = NOW;
+    const { claudeAccounts } = createClaude();
+    // Each step of the swap costs time.
+    claudeAccounts.syncLiveToStore.mockImplementation(async () => { clock += 800; });
+    const { runtime } = createRuntime({ settings, claudeAccounts, now: () => clock });
+
+    await runtime.decide(claudeReport());
+
+    const syncBudget = claudeAccounts.syncLiveToStore.mock.calls[0][0].budgetMs;
+    const switchBudget = claudeAccounts.switchTo.mock.calls[0][1].budgetMs;
+    expect(syncBudget).toBeLessThanOrEqual(2_500);
+    expect(switchBudget).toBe(syncBudget - 800);
+    expect(switchBudget).toBeLessThan(10_000);
+  });
+
+  it('answers none without swapping when the sync used the budget up', async () => {
+    let clock = NOW;
+    const { claudeAccounts } = createClaude();
+    claudeAccounts.syncLiveToStore.mockImplementation(async () => { clock += 3_000; });
+    const { runtime, broadcastUiEvent } = createRuntime({ settings, claudeAccounts, now: () => clock });
+
+    await expect(runtime.decide(claudeReport())).resolves.toEqual({ action: 'none' });
+
+    expect(claudeAccounts.switchTo).not.toHaveBeenCalled();
+    expect(broadcastUiEvent).not.toHaveBeenCalled();
+  });
+
+  it('answers none while a login nobody saved is live: it is never replaced by failover', async () => {
+    const { claudeAccounts } = createClaude();
+    claudeAccounts.switchTo.mockRejectedValue(Object.assign(new Error('unsaved'), { code: 'live-login-unsaved' }));
+    const { runtime } = createRuntime({ settings, claudeAccounts });
+
+    await expect(runtime.decide(claudeReport())).resolves.toEqual({ action: 'none' });
+    // Not even a retry of the same target replaces it.
+    await expect(runtime.decide(claudeReport({ sessionID: 'ses_2' }))).resolves.toEqual({ action: 'none' });
+  });
+
+  it('swaps back a switch whose plugin never reported, when OpenCode did not take the row', async () => {
+    let clock = NOW;
+    const { claudeAccounts } = createClaude();
+    const { runtime } = createRuntime({ settings, claudeAccounts, now: () => clock });
+    await runtime.decide(claudeReport());
+    clock += 61_000;
+    claudeAccounts.switchTo.mockClear();
+
+    // The next report still shows Perso active: the activation never happened.
+    await runtime.decide(claudeReport({ sessionID: 'ses_2' }));
+
+    expect(claudeAccounts.switchTo.mock.calls[0]).toEqual([PERSO.id, expect.objectContaining({ onlyIfLiveFingerprint: `fp-${WORK.id}` })]);
+  });
+
+  it('keeps a switch whose plugin never reported when OpenCode did take the row', async () => {
+    let clock = NOW;
+    const { claudeAccounts } = createClaude();
+    const { runtime } = createRuntime({ settings, claudeAccounts, now: () => clock });
+    await runtime.decide(claudeReport());
+    clock += 61_000;
+    claudeAccounts.switchTo.mockClear();
+
+    // Work is active: OpenCode took it, only the report was lost. Work then hits its limit.
+    await runtime.decide(claudeReport({ sessionID: 'ses_2', activeCredentialID: WORK.id }));
+
+    expect(claudeAccounts.switchTo.mock.calls.some(([, options]) => options?.onlyIfLiveFingerprint === `fp-${WORK.id}`)).toBe(false);
+  });
+
+  it('answers none when no other row has a saved login', async () => {
+    const { claudeAccounts } = createClaude({ saved: [PERSO.id] });
+    const { runtime } = createRuntime({ settings, claudeAccounts });
+
+    await expect(runtime.decide(claudeReport())).resolves.toEqual({ action: 'none' });
+    expect(claudeAccounts.switchTo).not.toHaveBeenCalled();
+  });
+
+  it('syncs live to store, then swaps the login, before it answers', async () => {
+    const { claudeAccounts, calls } = createClaude();
+    const { runtime } = createRuntime({ settings, claudeAccounts });
+
+    const answer = await runtime.decide(claudeReport());
+
+    expect(answer).toMatchObject({ action: 'activate-credential', credentialID: WORK.id });
+    // Both finished by the time the answer exists: the plugin activates the row only after this.
+    expect(calls).toEqual(['sync', `switch:${WORK.id}`]);
+  });
+
+  it('answers none when the login could not be swapped, and keeps no mark of a switch', async () => {
+    const { claudeAccounts } = createClaude();
+    claudeAccounts.switchTo.mockRejectedValueOnce(new Error('locked'));
+    const { runtime, broadcastUiEvent } = createRuntime({ settings, claudeAccounts });
+
+    await expect(runtime.decide(claudeReport())).resolves.toEqual({ action: 'none' });
+    expect(broadcastUiEvent).not.toHaveBeenCalled();
+    // The next report still gets a real decision on the same target.
+    await expect(runtime.decide(claudeReport({ sessionID: 'ses_2' }))).resolves.toMatchObject({ action: 'activate-credential' });
+  });
+
+  it('swaps the login back when OpenCode could not activate the row', async () => {
+    const { claudeAccounts, calls } = createClaude();
+    const { runtime, broadcastUiEvent } = createRuntime({ settings, claudeAccounts });
+    const answer = await runtime.decide(claudeReport());
+
+    expect(runtime.settle(answer.ticket, false)).toBe(true);
+
+    expect(calls).toEqual(['sync', `switch:${WORK.id}`, `switch:${PERSO.id}`]);
+    // Only while the live token is still the one that was written.
+    expect(claudeAccounts.switchTo).toHaveBeenLastCalledWith(PERSO.id, expect.objectContaining({ onlyIfLiveFingerprint: `fp-${WORK.id}` }));
+    expect(broadcastUiEvent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the login where it is once OpenCode activated the row', async () => {
+    const { claudeAccounts, calls } = createClaude();
+    const { runtime, broadcastUiEvent } = createRuntime({ settings, claudeAccounts });
+    const answer = await runtime.decide(claudeReport());
+
+    runtime.settle(answer.ticket, true);
+
+    expect(calls).toEqual(['sync', `switch:${WORK.id}`]);
+    expect(broadcastUiEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('swaps once when two sessions report together', async () => {
+    const { claudeAccounts } = createClaude();
+    const { runtime } = createRuntime({ settings, claudeAccounts });
+
+    const [first, second] = await Promise.all([
+      runtime.decide(claudeReport({ sessionID: 'ses_1' })),
+      runtime.decide(claudeReport({ sessionID: 'ses_2' })),
+    ]);
+
+    expect(first).toMatchObject({ action: 'activate-credential', credentialID: WORK.id });
+    expect(second).toEqual({ action: 'activate-credential', credentialID: WORK.id });
+    expect(claudeAccounts.switchTo).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats other providers exactly as before, and Claude Agent when the feature is unavailable', async () => {
+    const { claudeAccounts } = createClaude({ saved: [] });
+    const { runtime } = createRuntime({ claudeAccounts });
+    await expect(runtime.decide(quotaReport())).resolves.toMatchObject({ action: 'activate-credential', credentialID: ACCOUNT_B.id });
+    expect(claudeAccounts.switchTo).not.toHaveBeenCalled();
+    expect(claudeAccounts.syncLiveToStore).not.toHaveBeenCalled();
+
+    const unavailable = createClaude({ available: false });
+    const { runtime: external } = createRuntime({ settings, claudeAccounts: unavailable.claudeAccounts });
+    await expect(external.decide(claudeReport())).resolves.toMatchObject({ action: 'activate-credential', credentialID: WORK.id });
+    expect(unavailable.claudeAccounts.switchTo).not.toHaveBeenCalled();
   });
 });
 

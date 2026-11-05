@@ -9,6 +9,20 @@ const PLUGIN_ID = 'openchamber-limit-failover';
 const ROUTE = '/api/openchamber/limit-failover';
 
 /**
+ * The Claude Agent provider's accounts are rows with no token: the login lives
+ * in Claude Code's own files, so a switch has to move that login first
+ * (`../claude-accounts/DOCUMENTATION.md`).
+ */
+const CLAUDE_PROVIDER_ID = 'claude-agent';
+
+/**
+ * The plugin waits 10 seconds for an answer. The whole Claude swap, every lock
+ * wait included, has to finish well inside that, or the answer is `none` and
+ * nothing was written.
+ */
+const CLAUDE_SWAP_BUDGET_MS = 2_500;
+
+/**
  * A failure that reports an account we switched to this recently most likely
  * comes from a request sent with the previous account before the switch.
  */
@@ -125,6 +139,15 @@ export default {
  * @param {(req: import('express').Request) => boolean} dependencies.authorizeRequest the agent tool's callback check
  * @param {(event: { type: string, properties: object }) => void} [dependencies.broadcastUiEvent]
  * @param {() => number} [dependencies.now]
+ * @param {{
+ *   isAvailable: () => boolean,
+ *   hasSavedLogin: (credentialId: string) => boolean,
+ *   syncLiveToStore: (options?: { budgetMs?: number }) => Promise<unknown>,
+ *   switchTo: (credentialId: string, options?: { budgetMs?: number, onlyIfLiveFingerprint?: string }) => Promise<{ previousCredentialId: string | null, writtenFingerprint: string | null }>,
+ *   isExhausted?: (credentialId: string) => boolean,
+ *   markExhausted?: (credentialId: string, until: number) => void,
+ *   recentSwitchAt?: (credentialId: string) => number | undefined,
+ * } | null} [dependencies.claudeAccounts] `../claude-accounts/runtime.js` `failover`; without it Claude Agent is not switched
  */
 export const createLimitFailoverRuntime = ({
   fsPromises,
@@ -134,6 +157,7 @@ export const createLimitFailoverRuntime = ({
   authorizeRequest,
   broadcastUiEvent = () => {},
   now = Date.now,
+  claudeAccounts = null,
 }) => {
   const pluginDirectory = path.join(instanceDir, 'limit-failover', PLUGIN_ID);
 
@@ -164,9 +188,14 @@ export const createLimitFailoverRuntime = ({
       if (when <= at - SWITCH_GRACE_MS) settledAt.delete(key);
     }
     // A plugin that never reported back (OpenCode stopped mid-switch) leaves nothing to announce.
+    const expired = [];
     for (const [id, ticket] of tickets) {
-      if (ticket.openedAt <= at - SWITCH_GRACE_MS) tickets.delete(id);
+      if (ticket.openedAt <= at - SWITCH_GRACE_MS) {
+        tickets.delete(id);
+        expired.push(ticket);
+      }
     }
+    return expired;
   };
 
   const materializePlugin = async () => {
@@ -189,14 +218,20 @@ export const createLimitFailoverRuntime = ({
    * has not run out. With no stored account active (an environment key, or
    * the active one could not be read) every stored account is a candidate.
    */
-  const nextCredential = (report, at) => {
+  const nextCredential = (report, at, isEligible = () => true) => {
     const { credentials, activeCredentialID } = report;
     const start = credentials.findIndex((credential) => credential.id === activeCredentialID);
     const order = start === -1
       ? credentials
       : [...credentials.slice(start + 1), ...credentials.slice(0, start)];
-    return order.find((candidate) => !isExhausted(candidate.id, at)) ?? null;
+    return order.find((candidate) => isEligible(candidate) && !isExhausted(candidate.id, at)) ?? null;
   };
+
+  /**
+   * Claude Agent accounts count only with a saved login, and the login has to
+   * be live before the plugin activates the row and retries.
+   */
+  const usesClaudeLogins = (report) => report.providerID === CLAUDE_PROVIDER_ID && claudeAccounts?.isAvailable() === true;
 
   /**
    * What the plugin should do about one reported failure:
@@ -208,31 +243,62 @@ export const createLimitFailoverRuntime = ({
     const failure = classifyLimitFailure(report, at);
     if (!failure) return { action: 'none' };
 
-    forgetOldSettlements(at);
+    const expiredTickets = forgetOldSettlements(at);
     const active = report.activeCredentialID;
     if (active) {
       const key = `${report.sessionID}:${active}`;
-      const switched = switchedAt.get(active);
+      // The usage guard switches accounts too: a failure in flight on the account it left is not the new one's.
+      const switched = switchedAt.get(active) ?? (usesClaudeLogins(report) ? claudeAccounts.recentSwitchAt?.(active) : undefined);
       if (switched !== undefined && !((settledAt.get(key) ?? -Infinity) >= switched)) {
         settledAt.set(key, at);
         return { action: 'retry' };
       }
       exhaustedUntil.set(active, failure.resetAt);
+      // The guard skips an account that is out, and the other way round.
+      if (usesClaudeLogins(report)) claudeAccounts.markExhausted?.(active, failure.resetAt);
     }
 
     const settings = await Promise.resolve(readSettings()).catch(() => null);
     const switchProviders = Array.isArray(settings?.accountSwitchProviders) ? settings.accountSwitchProviders : [];
     if (switchProviders.includes(report.providerID)) {
-      const next = nextCredential(report, at);
+      const claude = usesClaudeLogins(report);
+      const remainingBudget = () => CLAUDE_SWAP_BUDGET_MS - (now() - at);
+      if (claude) {
+        // A switch whose plugin never reported, and whose row OpenCode did not take, leaves the old login live.
+        for (const ticket of expiredTickets) {
+          if (!ticket.swappedFromCredentialID || ticket.credentialID === active || remainingBudget() <= 0) continue;
+          await claudeAccounts
+            .switchTo(ticket.swappedFromCredentialID, { budgetMs: remainingBudget(), onlyIfLiveFingerprint: ticket.writtenFingerprint })
+            .catch(() => {});
+        }
+        // Fresh tokens first: the saved copy of the active account is as the CLI last left it.
+        await claudeAccounts.syncLiveToStore({ budgetMs: Math.max(0, remainingBudget()) });
+      }
+      const next = nextCredential(report, at, claude ? (candidate) => claudeAccounts.hasSavedLogin(candidate.id) && !claudeAccounts.isExhausted?.(candidate.id) : undefined);
       if (next) {
-        settledAt.set(`${report.sessionID}:${next.id}`, at);
         // Another session's report already chose this account and its plugin
         // has not activated it yet: same answer, no second announcement.
-        if (switchedAt.has(next.id)) return { action: 'activate-credential', credentialID: next.id };
+        if (switchedAt.has(next.id)) {
+          settledAt.set(`${report.sessionID}:${next.id}`, at);
+          return { action: 'activate-credential', credentialID: next.id };
+        }
+        let swap = null;
+        if (claude) {
+          try {
+            if (remainingBudget() <= 0) throw new Error('out of time');
+            swap = await claudeAccounts.switchTo(next.id, { budgetMs: remainingBudget() });
+          } catch {
+            // The login did not move (a lock held too long, or a login nobody saved is live), so activating the row would change nothing: OpenCode's own decision stands.
+            return { action: 'none' };
+          }
+        }
+        settledAt.set(`${report.sessionID}:${next.id}`, at);
         switchedAt.set(next.id, at);
         const ticket = openTicket(at, {
           sessionID: report.sessionID,
           credentialID: next.id,
+          swappedFromCredentialID: swap?.previousCredentialId ?? null,
+          writtenFingerprint: swap?.writtenFingerprint ?? null,
           announcement: {
             kind: 'account',
             sessionId: report.sessionID,
@@ -278,6 +344,12 @@ export const createLimitFailoverRuntime = ({
     } else if (ticket.credentialID) {
       switchedAt.delete(ticket.credentialID);
       settledAt.delete(`${ticket.sessionID}:${ticket.credentialID}`);
+      // OpenCode did not take the account, so the login that moved goes back.
+      if (ticket.swappedFromCredentialID) {
+        claudeAccounts
+          ?.switchTo(ticket.swappedFromCredentialID, { budgetMs: CLAUDE_SWAP_BUDGET_MS, onlyIfLiveFingerprint: ticket.writtenFingerprint })
+          .catch(() => {});
+      }
     }
     return true;
   };

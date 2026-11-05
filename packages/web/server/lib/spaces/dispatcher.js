@@ -77,6 +77,7 @@ const HOST_ONLY_ROUTES = Object.freeze([
   '/api/push',
   '/api/notifications',
   '/api/openchamber/tunnel',
+  '/api/openchamber/claude-accounts',
 ]);
 
 // Route families refused across the boundary: they would move something between the host and

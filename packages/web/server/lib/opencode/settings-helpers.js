@@ -844,6 +844,12 @@ export const createSettingsHelpers = (dependencies) => {
     if (Array.isArray(candidate.accountSwitchProviders)) {
       result.accountSwitchProviders = normalizeStringArray(candidate.accountSwitchProviders);
     }
+    const usageGuardEnabled = z.boolean().safeParse(candidate.claudeUsageGuardEnabled);
+    if (usageGuardEnabled.success) result.claudeUsageGuardEnabled = usageGuardEnabled.data;
+    for (const key of ['claudeUsageGuardFiveHour', 'claudeUsageGuardWeekly']) {
+      const percent = z.number().int().min(50).max(100).safeParse(candidate[key]);
+      if (percent.success) result[key] = percent.data;
+    }
     if (typeof candidate.defaultGitIdentityId === 'string') {
       const trimmed = candidate.defaultGitIdentityId.trim();
       result.defaultGitIdentityId = trimmed.length > 0 ? trimmed : undefined;

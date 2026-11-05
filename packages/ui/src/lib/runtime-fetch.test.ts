@@ -123,6 +123,31 @@ describe('runtimeFetch transport contract', () => {
     }
   });
 
+  test('marks the requests that move the Claude login, and only those', async () => {
+    const previous = getRuntimeUrlResolver();
+    const seen: Array<{ url: string; method: string; marker: string | null }> = [];
+    try {
+      configureRuntimeUrlResolver({ apiBaseUrl: 'https://demo.example' });
+      globalThis.fetch = async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        seen.push({ url: request.url, method: request.method, marker: request.headers.get('x-requested-with') });
+        return new Response(null, { status: 204 });
+      };
+
+      // The SDK passes a Request with no body for activate.
+      await runtimeFetch(new Request('https://demo.example/api/credential/crd_1/activate', { method: 'POST' }));
+      await runtimeFetch('/api/credential/crd_1', { method: 'DELETE' });
+      await runtimeFetch('/api/openchamber/claude-accounts/logins/abc', { method: 'DELETE' });
+      await runtimeFetch('/api/openchamber/claude-accounts');
+      await runtimeFetch('/api/session/ses_1/abort', { method: 'POST' });
+
+      expect(seen.map((entry) => entry.marker)).toEqual(['OpenChamber', 'OpenChamber', 'OpenChamber', null, null]);
+    } finally {
+      setRuntimeUrlResolver(previous);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('preserves bodies from actual SDK mutation requests on same-origin runtimes', async () => {
     const previous = getRuntimeUrlResolver();
     const originalWindow = globalThis.window;
