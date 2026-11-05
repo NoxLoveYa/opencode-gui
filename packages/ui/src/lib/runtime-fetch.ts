@@ -91,6 +91,22 @@ const withSpaceDirectory = (input: string | URL | Request, init: RequestInit, di
   return { ...init, headers: [...own, ...Object.entries(spaceHeaders)] };
 };
 
+// Requests that move the Claude login (the account routes, and OpenCode's credential routes, which
+// the server intercepts for Claude Agent rows) carry a header a page on another origin cannot set
+// without a preflight; the server refuses them without it or a JSON body.
+const INTENT_PATH = /\/api\/(?:credential\/|openchamber\/claude-accounts)/;
+
+const withIntentHeader = (input: string | URL | Request, init: RequestInit): RequestInit => {
+  const method = String(init.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  if (method === 'GET' || method === 'HEAD') return init;
+  const path = new URL(input instanceof Request ? input.url : input.toString(), TUNNEL_PARSE_BASE).pathname;
+  if (!INTENT_PATH.test(path)) return init;
+  const own: [string, string][] = !init.headers ? []
+    : init.headers instanceof Headers ? Array.from(init.headers.entries())
+    : Array.isArray(init.headers) ? init.headers : Object.entries(init.headers);
+  return { ...init, headers: [...own, ['x-requested-with', 'OpenChamber']] };
+};
+
 /**
  * Where the active runtime lives: its origin plus any sub-path prefix the host
  * is served under (https://host/openchamber), or null for a same-origin runtime.
@@ -327,7 +343,7 @@ export const runtimeFetch = async (rawInput: string | URL | Request, init: Runti
   const { query, directory, ...ownInit } = init;
   // Before either transport: the relay and the network see the same headers.
   const input = rawInput;
-  const requestInit = withSpaceDirectory(input, ownInit, directory);
+  const requestInit = withIntentHeader(input, withSpaceDirectory(input, ownInit, directory));
 
   // Resolve the transport once — relay tunnel or network — then apply the SAME
   // read-coalescing to both. On a relay the tunnel is bandwidth/latency-bound, so

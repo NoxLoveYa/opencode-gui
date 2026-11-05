@@ -7,7 +7,7 @@ vi.mock('./auth.js', () => ({
   loadClaudeCredential: async () => credential(),
 }));
 
-import { fetchQuota, isConfigured, resetClaudeQuotaCache } from './index.js';
+import { fetchClaudeUsageForToken, fetchQuota, isConfigured, resetClaudeQuotaCache } from './index.js';
 
 const CREDENTIAL = {
   accessToken: 'access-a',
@@ -173,5 +173,51 @@ describe('Claude quota provider', () => {
     expect(result.ok).toBe(false);
     expect(result.usage).toBeNull();
     expect(result.error).toBe('socket hang up');
+  });
+});
+
+describe('usage of a saved login', () => {
+  const saved = { accessToken: 'access-saved', expiresAt: Date.now() + 3_600_000 };
+
+  it('reads the windows with that token and leaves the live cache and cooldown alone', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(PAYLOAD));
+
+    const result = await fetchClaudeUsageForToken(saved, { fetchImpl: fetchMock });
+
+    expect(result).toMatchObject({ ok: true, usage: { windows: { '5h': { usedPercent: 5 }, '7d': { usedPercent: 4 } } } });
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer access-saved');
+
+    // The live reader still has its own state: a fetch for the saved login cached nothing for it.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(errorResponse(429)));
+    expect((await fetchQuota()).ok).toBe(false);
+  });
+
+  it('does not ask Anthropic with an expired token, and never refreshes it', async () => {
+    const fetchMock = vi.fn();
+
+    const result = await fetchClaudeUsageForToken({ ...saved, refreshToken: 'refresh-saved', expiresAt: Date.now() - 1 }, { fetchImpl: fetchMock });
+
+    expect(result).toEqual({ ok: false, errorKind: 'expired' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('gives both usage requests a timeout, so a hung connection ends', async () => {
+    const live = vi.fn().mockResolvedValue(jsonResponse(PAYLOAD));
+    vi.stubGlobal('fetch', live);
+    await fetchQuota();
+    expect(live.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+
+    const savedFetch = vi.fn().mockResolvedValue(jsonResponse(PAYLOAD));
+    await fetchClaudeUsageForToken(saved, { fetchImpl: savedFetch });
+    expect(savedFetch.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('names a rate limit with its delay, a refused token, a server error and a network failure', async () => {
+    const answer = (response) => fetchClaudeUsageForToken(saved, { fetchImpl: vi.fn().mockResolvedValue(response) });
+
+    expect(await answer(errorResponse(429, { 'retry-after': '90' }))).toEqual({ ok: false, errorKind: 'rate-limited', retryAfterMs: 90_000 });
+    expect(await answer(errorResponse(401))).toEqual({ ok: false, errorKind: 'expired' });
+    expect(await answer(errorResponse(500))).toEqual({ ok: false, errorKind: 'http' });
+    expect(await fetchClaudeUsageForToken(saved, { fetchImpl: vi.fn().mockRejectedValue(new Error('x')) })).toEqual({ ok: false, errorKind: 'network' });
   });
 });

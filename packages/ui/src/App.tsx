@@ -28,6 +28,7 @@ import { useSourceControlProviderSync } from '@/hooks/useSourceControlProviderSy
 import { useTrackerProviderSync } from '@/hooks/useTrackerProviderSync';
 import { useGuestCatalogSync } from '@/hooks/useGuestCatalogSync';
 import { useLimitFailoverNotices } from '@/hooks/useLimitFailoverNotices';
+import { useClaudeUsageGuardNotices } from '@/hooks/useClaudeUsageGuardNotices';
 import { useEnterprisePolicySync } from '@/hooks/useEnterprisePolicySync';
 import { useRelayLimitToast } from '@/hooks/useRelayLimitToast';
 import { useRoutingSync } from '@/hooks/useRoutingSync';
@@ -669,6 +670,7 @@ function App({ apis }: AppProps) {
   useTrackerProviderSync(apis.trackers);
   useGuestCatalogSync();
   useLimitFailoverNotices();
+  useClaudeUsageGuardNotices();
   useRoutingSync();
   useEnterprisePolicySync();
   // Desktop windows on a relay host; the phone has its own handling in MobileApp.

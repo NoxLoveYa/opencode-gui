@@ -1,6 +1,68 @@
 import { describe, expect, test } from 'bun:test';
 
-import { getClaudeCliAuthStatus } from './claude-cli-auth.js';
+import { getClaudeCliAuthStatus, resolveClaudeCommand } from './claude-cli-auth.js';
+
+describe('resolveClaudeCommand', () => {
+  test('prefers the real claude.exe on Windows', () => {
+    const asked = [];
+    const command = resolveClaudeCommand({
+      platform: 'win32',
+      env: {},
+      spawnSyncFn(program, args) {
+        asked.push([program, ...args]);
+        return { stdout: 'C:\\Tools\\claude.exe\r\n' };
+      },
+    });
+
+    expect(command).toBe('C:\\Tools\\claude.exe');
+    expect(asked).toEqual([['where', 'claude.exe']]);
+  });
+
+  test('searches from the system folder on Windows, never from the current directory', () => {
+    const options = [];
+    resolveClaudeCommand({
+      platform: 'win32',
+      env: { SystemRoot: 'D:\\Win' },
+      spawnSyncFn(program, args, spawnOptions) {
+        options.push(spawnOptions);
+        return { stdout: '' };
+      },
+    });
+
+    expect(options.length).toBe(2);
+    for (const spawnOptions of options) expect(spawnOptions.cwd).toBe('D:\\Win');
+  });
+
+  test('finds the exe inside the npm package next to a Windows shim', () => {
+    const packaged = 'C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe';
+    const command = resolveClaudeCommand({
+      platform: 'win32',
+      env: {},
+      spawnSyncFn: (program, args) => ({ stdout: args[0] === 'claude' ? 'C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\n' : '' }),
+      existsSync: (candidate) => candidate === packaged,
+    });
+
+    expect(command).toBe(packaged);
+  });
+
+  test('uses the claude on PATH elsewhere, then the login shell', () => {
+    const onPath = resolveClaudeCommand({
+      platform: 'linux',
+      env: { PATH: '/a:/b' },
+      existsSync: (candidate) => candidate === '/b/claude',
+      spawnSyncFn: () => { throw new Error('not needed'); },
+    });
+    expect(onPath).toBe('/b/claude');
+
+    const viaShell = resolveClaudeCommand({
+      platform: 'linux',
+      env: { PATH: '/a', SHELL: '/bin/zsh' },
+      existsSync: () => false,
+      spawnSyncFn: () => ({ stdout: '/home/u/.local/bin/claude\n' }),
+    });
+    expect(viaShell).toBe('/home/u/.local/bin/claude');
+  });
+});
 
 describe('getClaudeCliAuthStatus', () => {
   test('reports the authoritative Claude CLI login state', () => {

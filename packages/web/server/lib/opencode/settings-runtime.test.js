@@ -11,6 +11,7 @@ const createRuntime = async ({
   onManagedPluginSettingsChanged = undefined,
   onPermissionDefaultModeChanged = undefined,
   onLastDirectoryChanged = undefined,
+  onClaudeUsageGuardSettingsChanged = undefined,
   chatRoots = undefined,
   fs = fsPromises,
 } = {}) => {
@@ -37,6 +38,7 @@ const createRuntime = async ({
     onManagedPluginSettingsChanged,
     onPermissionDefaultModeChanged,
     onLastDirectoryChanged,
+    onClaudeUsageGuardSettingsChanged,
   });
 
   return {
@@ -127,6 +129,21 @@ describe('settings runtime', () => {
       await runtime.persistSettings({ fallbackModel: 'openai/gpt-5.6' });
       await runtime.persistSettings({ accountSwitchProviders: ['anthropic'] });
       expect(onManagedPluginSettingsChanged).toHaveBeenCalledTimes(3);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('tells the Claude usage guard to read its settings again only when one of them was saved', async () => {
+    const onClaudeUsageGuardSettingsChanged = vi.fn();
+    const { runtime, cleanup } = await createRuntime({ onClaudeUsageGuardSettingsChanged });
+    try {
+      await runtime.persistSettings({ lightThemeId: 'flexoki-light' });
+      expect(onClaudeUsageGuardSettingsChanged).not.toHaveBeenCalled();
+
+      await runtime.persistSettings({ claudeUsageGuardEnabled: true });
+      await runtime.persistSettings({ claudeUsageGuardFiveHour: 90, claudeUsageGuardWeekly: 80 });
+      expect(onClaudeUsageGuardSettingsChanged).toHaveBeenCalledTimes(2);
     } finally {
       await cleanup();
     }

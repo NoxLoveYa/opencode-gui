@@ -7,6 +7,8 @@ interface ProviderAccountSwitchToggleProps {
   providerId: string;
   /** Stored accounts requests can go through; switching needs two. */
   accountCount: number;
+  /** Replaces the hint shown while there are fewer than two accounts. */
+  needsAccountsText?: string;
 }
 
 /**
@@ -15,7 +17,7 @@ interface ProviderAccountSwitchToggleProps {
  * error arrives (`lib/limit-failover`), so a change applies to the next one.
  * Off by default: a second account can be a work account kept apart on purpose.
  */
-export const ProviderAccountSwitchToggle: React.FC<ProviderAccountSwitchToggleProps> = ({ providerId, accountCount }) => {
+export const ProviderAccountSwitchToggle: React.FC<ProviderAccountSwitchToggleProps> = ({ providerId, accountCount, needsAccountsText }) => {
   const { t } = useI18n();
   const [providers, setProviders] = React.useState<string[] | null>(null);
 
@@ -60,7 +62,7 @@ export const ProviderAccountSwitchToggle: React.FC<ProviderAccountSwitchTogglePr
       label={t('settings.providers.accounts.switchOnLimit')}
       ariaLabel={t('settings.providers.accounts.switchOnLimit')}
       info={t('settings.providers.accounts.switchOnLimitInfo')}
-      description={canSwitch ? undefined : t('settings.providers.accounts.switchOnLimitNeedsAccounts')}
+      description={canSwitch ? undefined : (needsAccountsText ?? t('settings.providers.accounts.switchOnLimitNeedsAccounts'))}
     />
   );
 };

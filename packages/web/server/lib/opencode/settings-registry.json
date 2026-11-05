@@ -677,6 +677,15 @@
     "accountSwitchProviders": {
       "scope": "profile"
     },
+    "claudeUsageGuardEnabled": {
+      "scope": "profile"
+    },
+    "claudeUsageGuardFiveHour": {
+      "scope": "profile"
+    },
+    "claudeUsageGuardWeekly": {
+      "scope": "profile"
+    },
     "zenModel": {
       "scope": "profile"
     },

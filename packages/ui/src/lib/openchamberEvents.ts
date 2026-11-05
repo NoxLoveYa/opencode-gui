@@ -179,6 +179,25 @@ const limitFailoverSchema = z.discriminatedUnion('kind', [
 ]);
 type LimitFailoverEvent = { type: 'limit-failover'; failover: z.infer<typeof limitFailoverSchema> };
 
+/**
+ * The server watches Claude usage while a Claude Agent session works, and moved
+ * to another account before paid extra usage could start (`switched`), or found
+ * every account over its threshold and stayed (`all-over`).
+ */
+const claudeUsageGuardSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('switched'),
+    fromAccount: z.string().nullable(),
+    toAccount: z.string().min(1),
+    window: z.enum(['5h', 'week']),
+    percent: z.number(),
+  }),
+  z.object({ kind: z.literal('all-over'), window: z.enum(['5h', 'week']), percent: z.number() }),
+  // The live account's usage cannot be read, or its login is not one that was saved: nothing is watching it.
+  z.object({ kind: z.literal('unprotected'), reason: z.enum(['unreadable', 'unsaved']) }),
+]);
+type ClaudeUsageGuardEvent = { type: 'claude-usage-guard'; guard: z.infer<typeof claudeUsageGuardSchema> };
+
 /** Jev routing events; each carries what the routing store needs and nothing the UI must re-derive. */
 const routingUpdatedSchema = z.object({
   available: z.boolean(),
@@ -311,6 +330,7 @@ type OpenChamberEvent =
   | GuestsChangedEvent
   | ThemesChangedEvent
   | LimitFailoverEvent
+  | ClaudeUsageGuardEvent
   | ProjectContextChangedEvent
   | SessionFoldersChangedEvent
   | SessionDraftsChangedEvent
@@ -647,6 +667,12 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
   if (envelope.type === 'openchamber:limit-failover') {
     const parsed = limitFailoverSchema.safeParse(envelope.properties);
     if (parsed.success) for (const listener of listeners) listener({ type: 'limit-failover', failover: parsed.data });
+    return;
+  }
+
+  if (envelope.type === 'openchamber:claude-usage-guard') {
+    const parsed = claudeUsageGuardSchema.safeParse(envelope.properties);
+    if (parsed.success) for (const listener of listeners) listener({ type: 'claude-usage-guard', guard: parsed.data });
     return;
   }
 

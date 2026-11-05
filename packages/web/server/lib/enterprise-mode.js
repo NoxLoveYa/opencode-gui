@@ -35,6 +35,10 @@ import { z } from 'zod';
  *   policy is the real lock; this closes the way in through the app.
  *   Signing in to a remote MCP server from the OpenCode config uses the same
  *   routes and stays allowed.
+ * - Claude Agent accounts: adding one, signing in to a row again and saving
+ *   the live Claude login to a row are refused with the same code
+ *   (`claude-accounts/runtime.js`). "Use", removing a row and limit failover
+ *   still switch between the saved logins that exist.
  * - Jev classification is off, unless the administrator pinned their own
  *   endpoint (`routing/runtime.js`).
  * - External tunnels are refused: Cloudflare and ngrok see plain text, and

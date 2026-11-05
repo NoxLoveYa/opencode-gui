@@ -22,6 +22,7 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const OAUTH_BETA_HEADER = 'oauth-2025-04-20';
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_COOLDOWN_MS = 60 * 60 * 1000;
+const USAGE_TIMEOUT_MS = 10_000;
 const SESSION_EXPIRED_ERROR = 'Claude session expired. Open Claude Code to sign in again.';
 
 /**
@@ -99,7 +100,8 @@ const fetchQuotaUncoalesced = async () => {
       headers: {
         Authorization: `Bearer ${credential.accessToken}`,
         'anthropic-beta': OAUTH_BETA_HEADER
-      }
+      },
+      signal: AbortSignal.timeout(USAGE_TIMEOUT_MS)
     });
   } catch (error) {
     return failure(error instanceof Error ? error.message : 'Request failed');
@@ -149,6 +151,45 @@ export const fetchQuota = () => {
   });
   pendingFetch = pending;
   return pendingFetch;
+};
+
+/**
+ * Usage of a login that is not the live one, read with the access token it was
+ * saved with. Touches none of this module's caches or cooldown (those belong to
+ * the live login), never refreshes a token (a refresh would rotate it behind
+ * Claude Code's back), and answers `expired` without a request when the token
+ * has ended.
+ *
+ * @param {{ accessToken: string, expiresAt?: number|null }} credential
+ * @param {{ fetchImpl?: typeof fetch, now?: () => number }} [options]
+ * @returns {Promise<{ ok: true, usage: object } | { ok: false, errorKind: string, retryAfterMs?: number }>}
+ */
+export const fetchClaudeUsageForToken = async (credential, { fetchImpl = fetch, now = Date.now } = {}) => {
+  const { accessToken, expiresAt } = credential;
+  if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now()) {
+    return { ok: false, errorKind: 'expired' };
+  }
+  let response;
+  try {
+    response = await fetchImpl(USAGE_URL, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, 'anthropic-beta': OAUTH_BETA_HEADER },
+      signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, errorKind: 'network' };
+  }
+  if (response.status === 429) return { ok: false, errorKind: 'rate-limited', retryAfterMs: cooldownFromHeader(response) };
+  if (response.status === 401 || response.status === 403) return { ok: false, errorKind: 'expired' };
+  if (!response.ok) return { ok: false, errorKind: 'http' };
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, errorKind: 'invalid' };
+  }
+  const { windows, models } = toClaudeUsage(payload);
+  return { ok: true, usage: Object.keys(models).length > 0 ? { windows, models } : { windows } };
 };
 
 /** Test seam: clears the rate-limit cache between cases. */

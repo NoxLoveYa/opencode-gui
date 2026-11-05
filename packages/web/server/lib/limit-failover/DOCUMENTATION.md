@@ -45,6 +45,37 @@ same token.
    An applied switch is broadcast as `openchamber:limit-failover`; a failed one
    is forgotten, so its account does not count as just switched to.
 
+### Claude Agent
+
+The rows of `claude-agent` hold no token: the login is Claude Code's own
+`~/.claude` files, so activating a row alone changes nothing. For this provider
+`decide` goes through `../claude-accounts` (`claudeAccounts`, built from
+`runtime.failover`) when it is available, which means a managed OpenCode:
+
+1. The candidates are the reported rows that have a saved login, minus rows
+   marked exhausted. Every other rule applies as before.
+2. Before it picks, `decide` copies the live login into the store, so the active
+   account's saved copy is as fresh as Claude Code left it.
+3. It swaps the chosen row's login in, and answers `activate-credential` only
+   after the swap finished. The plugin therefore activates the row and retries
+   with the new login already on disk. A swap that fails answers `none`, and
+   OpenCode's own decision stands. That includes a live login no saved account
+   holds: failover never replaces it (`../claude-accounts/DOCUMENTATION.md`).
+4. The sync and the swap share one budget of 2.5 seconds
+   (`CLAUDE_SWAP_BUDGET_MS`), every lock wait included, against the 10 seconds
+   the plugin waits. Past it the answer is `none` and nothing was written.
+   Failover only reacts to a rate-limit error. An account with extra usage is billed at 100% instead, which this never sees: the claude-accounts usage guard watches the percentages and switches before that. Both switch through the same queue; the guard's swap is refused when failover moved the login first, and it looks again. They share what they know (`../claude-accounts/exhaustion.js`): an account either marked exhausted is skipped by the other, and a failure reported on the account the guard just switched to (for a minute) is a request that was in flight on the one it left, so it gets the same one retry as a switch of failover's own and does not mark the new account exhausted.
+5. `settle(ticket, false)` swaps the previous login back, and so does a ticket
+   whose plugin never reported, at the next report, when that report shows OpenCode
+   did not take the row. Both swap back only while the live token is still the one
+   the switch wrote.
+
+A running `claude.exe` has to notice the new file for the retry to run on the
+new account. That is expected from the CLI's mtime check and has not been
+observed live (`../claude-accounts/DOCUMENTATION.md`, *Unverified in a live
+runtime*). The retry otherwise fails with the same limit, the grace logic turns
+that into one `retry`, and OpenCode's error shows.
+
 Verified end to end on OpenCode 2.0.32 with a fake provider: an exhausted
 account switched to the next one and the turn finished there; with only a
 fallback set the session moved to it; with every account out it switched
@@ -70,6 +101,8 @@ accounts first, then moved to the fallback.
 - The fallback model is never chosen for a session already on it, so a limit
   on the fallback ends in OpenCode's own error and not in a loop.
 - Decisions run one at a time.
+- A Claude Agent account is switched to only when it has a saved login, and its
+  login is live before the answer goes back (*Claude Agent*, above).
 - Works only with an OpenCode OpenChamber starts: an external OpenCode
   (`OPENCODE_HOST`, skip-start) and VS Code never load the plugin, the
   Settings hints say so, and VS Code hides both controls.

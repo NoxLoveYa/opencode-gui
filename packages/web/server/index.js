@@ -176,6 +176,7 @@ import { createDevTunnelRuntime } from './lib/dev-tunnel/runtime.js';
 import { registerBrowserControlRoutes } from './lib/browser-control/routes.js';
 import { createManagedConfigRuntime } from './lib/opencode/managed-config-file.js';
 import { createLimitFailoverRuntime } from './lib/limit-failover/runtime.js';
+import { createClaudeAccountsRuntime } from './lib/claude-accounts/runtime.js';
 import { prepareInstanceDir } from './lib/opencode/instance-dir.js';
 import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
 import { createSessionMetadataStore, createOpenCodeSessionMetadata } from './lib/openchamber-sessions/session-metadata-store.js';
@@ -497,6 +498,8 @@ const settingsRuntime = createSettingsRuntime({
   upsertManagedRemoteTunnelToken,
   chatRoots: [path.join(OPENCHAMBER_USER_CONFIG_ROOT, 'chats'), OPENCHAMBER_CHATS_DIR],
   onManagedPluginSettingsChanged: () => managedConfigRuntime?.refreshManagedConfigFile(),
+  // Declared further down; settings are only saved once the server serves requests.
+  onClaudeUsageGuardSettingsChanged: () => claudeAccountsRuntime.invalidateSettings(),
   // Declared further down; settings are only saved once the server serves requests.
   onMessageSearchEnabledChanged: (enabled) => messageSearchRuntime.setEnabled(enabled),
   onMessageSearchReasoningChanged: (enabled) => messageSearchRuntime.setReasoningEnabled(enabled),
@@ -1829,6 +1832,27 @@ configureOpenCodeCredentials(openCodeCredentialSource({
   getLaunchEnvironment: () => openCodeLifecycleRuntime.getManagedOpenCodeProcessEnv(),
   getDefaultDirectory: () => openCodeLifecycleRuntime.getDefaultOpenCodeDirectory(),
 }));
+// Saved Claude logins for the Claude Agent provider's accounts. Only a managed
+// OpenCode, whose environment OpenChamber knows, has its Claude login changed.
+const claudeAccountsRuntime = createClaudeAccountsRuntime({
+  dataDir: OPENCHAMBER_DATA_DIR,
+  // An OpenCode in WSL reads the Claude login of the Linux side, not this machine's.
+  isManagedOpenCode: () => !(isExternalOpenCode || ENV_SKIP_OPENCODE_START || useWslForOpencode),
+  getLaunchEnv: () => openCodeLifecycleRuntime.getManagedOpenCodeProcessEnv(),
+  getOpenCodeClient: (directory) => openCodeSessionClient(directory),
+  getDefaultDirectory: () => openCodeLifecycleRuntime.getDefaultOpenCodeDirectory(),
+  isEnterpriseMode: () => isEnterpriseMode(),
+  // The usage guard switches accounts before paid extra usage starts, when the user turned it on.
+  readSettings: () => readSettingsFromDiskMigrated(),
+  broadcastUiEvent: (event) => broadcastOpenChamberUiEvent(event),
+});
+// The guard looks only while a session is busy, which the hub's session statuses tell.
+claudeAccountsRuntime.watchSessions(globalMessageStreamHub);
+// A sign-in's login process, and the guard's timer, must not outlive the server.
+process.once('exit', () => {
+  claudeAccountsRuntime.stopLogins();
+  claudeAccountsRuntime.stopUsageGuard();
+});
 // A new worktree runs the start command OpenCode keeps on the project record.
 configureProjectStartCommandSource(openCodeProjectStartCommandSource({ buildOpenCodeUrl, getOpenCodeAuthHeaders }));
 
@@ -2247,6 +2271,12 @@ const finishOpenCodeBootstrap = () => {
   void waitForOpenCodeReady()
     .then(() => openChamberSessionService.sessionArchive.migrateLegacy())
     .catch((error) => console.warn('[openchamber-sessions] session archive migration failed:', error?.message ?? error));
+  // The saved copy of the account Claude Code is signed in to is refreshed
+  // from the live login. Nothing swaps at startup.
+  claudeAccountsRuntime.sweepStale();
+  void waitForOpenCodeReady()
+    .then(() => claudeAccountsRuntime.syncLive())
+    .catch((error) => console.warn('[claude-accounts] startup sync failed:', error?.message ?? error));
 };
 const killProcessOnPort = (...args) => openCodeLifecycleRuntime.killProcessOnPort(...args);
 const waitForPortRelease = (...args) => openCodeLifecycleRuntime.waitForPortRelease(...args);
@@ -2353,6 +2383,7 @@ async function main(options = {}) {
     readSettings: () => readSettingsFromDiskMigrated(),
     authorizeRequest: (req) => agentToolRuntime.authorizeRequest(req),
     broadcastUiEvent: (event) => broadcastOpenChamberUiEvent(event),
+    claudeAccounts: claudeAccountsRuntime.failover,
   });
   managedConfigRuntime = createManagedConfigRuntime({
     fsPromises,
@@ -2990,6 +3021,7 @@ async function main(options = {}) {
     scheduledTaskService,
     openChamberSessionService,
     openChamberControlService,
+    claudeAccountsRuntime,
     waitForOpenCodeReady,
     emitSessionCreatedEvent,
     getOpenChamberEventClients: () => uiOpenChamberEventClients,

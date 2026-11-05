@@ -571,6 +571,11 @@ export const SETTINGS_REGISTRY = {
   fallbackModel: field({ scope: 'profile', parse: parseNonEmptyString }),
   fallbackVariant: field({ scope: 'profile', parse: parseNonEmptyString }),
   accountSwitchProviders: field({ scope: 'profile', parse: parseStringSet }),
+  // Read by the server while a Claude Agent session works (claude-accounts usage guard): switch account
+  // before the 5-hour or weekly window reaches its threshold, which is where paid extra usage starts.
+  claudeUsageGuardEnabled: field({ scope: 'profile', parse: parseBoolean }),
+  claudeUsageGuardFiveHour: field({ scope: 'profile', parse: parseIntegerInRange(50, 100) }),
+  claudeUsageGuardWeekly: field({ scope: 'profile', parse: parseIntegerInRange(50, 100) }),
   zenModel: field({ scope: 'profile', parse: parseNonEmptyTrimmedString }),
   // The model-prefs auto-save owns these with its own debounce.
   favoriteModels: field<ModelRef[]>({ scope: 'profile', parse: parseModelRefs(64), ui: uiStore('favoriteModels', setUi('favoriteModels'), { autoSave: false }) }),
