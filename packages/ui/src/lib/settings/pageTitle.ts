@@ -32,6 +32,7 @@ const SETTINGS_PAGE_TITLE_KEYS = {
   'magic-prompts': 'settings.page.magicPrompts.title',
   snippets: 'settings.page.snippets.title',
   notifications: 'settings.page.notifications.title',
+  sounds: 'settings.page.sounds.title',
   voice: 'settings.page.voice.title',
   tunnel: 'settings.page.tunnel.title',
   'isolated-spaces': 'settings.openchamber.spaces.title',

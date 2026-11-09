@@ -321,6 +321,17 @@ export const CommandPalette: React.FC = () => {
         }),
       },
       {
+        id: 'toggle-sounds-mute',
+        secondary: true,
+        title: t('commandPalette.item.toggleSoundsMute'),
+        icon: <Icon name="volume-up" className="me-2 h-4 w-4" />,
+        shortcutId: 'toggle_sounds_mute',
+        searchText: t('commandPalette.item.toggleSoundsMute'),
+        onSelect: run(() => {
+          shortcutRegistry.invoke('toggle_sounds_mute');
+        }),
+      },
+      {
         id: 'open-status',
         secondary: true,
         title: t('commandPalette.item.showOpenCodeStatus'),

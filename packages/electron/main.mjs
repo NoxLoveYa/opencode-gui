@@ -77,6 +77,7 @@ import {
 import { isSplashColor, redactHostsConfigForRemote } from './remote-page-policy.mjs';
 import { connectDefaultSshInstanceAtStartup, resolveDefaultSshInstanceId } from './startup-ssh.mjs';
 import { findReusableHostWindowIndex, normalizeNotificationInput, readTrimmedString, resolveHostEntryForRuntimeKey, resolveSenderHostId, runtimeKeyForDeepLinkHost, stampForwardedNotification } from './notification-host-routing.mjs';
+import { createNotificationSoundCoverage } from './notification-sound-coverage.mjs';
 import { isPackagedUiRuntimeRequest } from './packaged-ui-routing.mjs';
 import { RUNTIME_CONFIG_SCRIPT, RUNTIME_CONFIG_SCRIPT_PATHNAME, createRuntimeConfigGate, injectRuntimeConfig, isRuntimeConfigFrame } from './packaged-runtime-config.mjs';
 import { settleMainProcessCompileCache } from './compile-cache.mjs';
@@ -1356,6 +1357,10 @@ const activeNotifications = new Set();
 const nativeNotificationClaims = new Map();
 const NATIVE_NOTIFICATION_DEDUPE_TTL_MS = 5000;
 // Ids of the notifications this run delivered on macOS, by session, so viewing
+// The kinds a window plays an OpenChamber sound for, reported by that window.
+// Their notifications are shown without the OS sound.
+const notificationSoundCoverage = createNotificationSoundCoverage();
+const windowsReportingSoundCoverage = new WeakSet();
 // the session removes them from Notification Center. Only macOS can remove a
 // delivered notification.
 const deliveredNotificationIdsBySession = new Map();
@@ -1426,11 +1431,13 @@ const maybeShowNativeNotification = (rawInput) => {
 
   const notificationId = globalThis.crypto.randomUUID();
   const notification = new Notification({
+  // A window that shows the instance this came from and plays its own sound for this kind has the only sound.
+  const soundCovered = notificationSoundCoverage.isCovered(payload.kind, runtimeKey);
     id: notificationId,
     title,
     body,
-    silent: false,
-    ...(process.platform === 'darwin' ? { sound: 'Glass' } : {}),
+    silent: soundCovered,
+    ...(process.platform === 'darwin' && !soundCovered ? { sound: 'Glass' } : {}),
   });
   if (process.platform === 'darwin' && sessionId) {
     const ids = deliveredNotificationIdsBySession.get(sessionId) ?? [];
@@ -4731,6 +4738,22 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_clear_session_notifications': {
+    case 'desktop_set_notification_sound_coverage': {
+      // Local pages only (not in COMMANDS_SAFE_FOR_REMOTE): a remote page must
+      // not decide which sound the app's notifications make.
+      if (!browserWindow || browserWindow.isDestroyed()) return null;
+      const windowId = browserWindow.id;
+      notificationSoundCoverage.report(windowId, args?.kinds, args?.runtimeKey);
+      if (!windowsReportingSoundCoverage.has(browserWindow)) {
+        windowsReportingSoundCoverage.add(browserWindow);
+        browserWindow.once('closed', () => notificationSoundCoverage.forget(windowId));
+        // The report speaks for the page that made it; a page loaded after it reports for itself.
+        // On commit: a navigation that only started can still leave this document in place.
+        browserWindow.webContents.on('did-navigate', () => notificationSoundCoverage.forget(windowId));
+      }
+      return null;
+    }
+
       const sessionId = readTrimmedString(args?.sessionId);
       if (sessionId) clearSessionNotifications(sessionId);
       return null;

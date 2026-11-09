@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { dictationClient, type DictationStartOptions } from '@/lib/dictation/dictation-client';
 import { DictationStreamSender } from '@/lib/dictation/dictation-stream-sender';
 import { useDictationAudioSource, type DictationLevelListener } from '@/lib/dictation/use-dictation-audio-source';
+import { soundSignals } from '@/lib/sounds/signals';
 import { useConfigStore } from '@/stores/useConfigStore';
 
 export type DictationStatus = 'idle' | 'recording' | 'uploading' | 'failed';
@@ -97,6 +98,13 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         onTranscriptRef.current = onTranscript;
         onErrorRef.current = onError;
     }, [onTranscript, onError]);
+
+    // This instance's hold on the other sounds while it records; a hook never releases another's.
+    const captureHoldRef = useRef<(() => void) | null>(null);
+    const releaseCaptureHold = useCallback(() => {
+        captureHoldRef.current?.();
+        captureHoldRef.current = null;
+    }, []);
 
     const senderRef = useRef<DictationStreamSender | null>(null);
     if (!senderRef.current) {
@@ -229,8 +237,15 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         statusRef.current = 'recording';
         clearStreamingState();
 
+        // The start sound plays before the microphone opens, and the capture
+        // throws away what it hears while the sound could still be sounding.
+        // Every other sound is held back for as long as the microphone records.
+        const startSound = soundSignals.dictationStarted();
+        releaseCaptureHold();
+        captureHoldRef.current = soundSignals.beginDictationCapture();
+
         try {
-            await audio.start();
+            await audio.start({ discardUntil: startSound });
             startDurationTracking();
             // Open the stream eagerly so audio uploads while the user speaks
             // and only the tail is left to transcribe on stop.
@@ -242,6 +257,7 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
             });
         } catch (err) {
             await audio.stop().catch(() => undefined);
+            releaseCaptureHold();
             stopDurationTracking();
             setStatus('idle');
             statusRef.current = 'idle';
@@ -249,7 +265,7 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         } finally {
             gate.starting = false;
         }
-    }, [audio, canStart, clearError, clearStreamingState, reportError, startDurationTracking, stopDurationTracking]);
+    }, [audio, canStart, clearError, clearStreamingState, releaseCaptureHold, reportError, startDurationTracking, stopDurationTracking]);
 
     const cancelDictation = useCallback(async () => {
         const gate = actionGateRef.current;
@@ -260,6 +276,8 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
             return;
         }
         gate.cancelling = true;
+        // Cancelling an upload follows a recording that already ended with its own stop sound.
+        const wasRecording = statusRef.current === 'recording';
         stopDurationTracking();
         setDuration(0);
         clearError();
@@ -275,6 +293,9 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
             // no-op
         }
         clearStreamingState();
+        // Nothing of this recording is kept, so the stop sound need not wait for the microphone to close.
+        releaseCaptureHold();
+        if (wasRecording) soundSignals.dictationStopped();
 
         try {
             await audio.stop();
@@ -283,7 +304,7 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         } finally {
             gate.cancelling = false;
         }
-    }, [audio, clearError, clearStreamingState, stopDurationTracking]);
+    }, [audio, clearError, clearStreamingState, releaseCaptureHold, stopDurationTracking]);
 
     const confirmDictation = useCallback(async (): Promise<string | null> => {
         const gate = actionGateRef.current;
@@ -300,6 +321,9 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
 
         try {
             await audio.stop();
+            // The microphone is closed, so the stop sound stays out of the recording.
+            releaseCaptureHold();
+            soundSignals.dictationStopped();
             setStatus('uploading');
             statusRef.current = 'uploading';
 
@@ -311,12 +335,13 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
             const result = await senderRef.current!.finish(finalSeq);
             return handleSuccess(result.text);
         } catch (err) {
+            releaseCaptureHold();
             handleFailure(err);
             return null;
         } finally {
             gate.confirming = false;
         }
-    }, [audio, clearError, handleFailure, handleSuccess, stopDurationTracking]);
+    }, [audio, clearError, handleFailure, handleSuccess, releaseCaptureHold, stopDurationTracking]);
 
     const retryFailedDictation = useCallback(async (): Promise<string | null> => {
         if (statusRef.current !== 'failed' || !senderRef.current?.hasSegments()) {
@@ -396,8 +421,10 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
             stopDurationTracking();
             void audioStopRef.current().catch(() => undefined);
             senderRef.current?.cancel();
+            // Only this instance's own hold goes; another instance's recording keeps the other sounds held back.
+            releaseCaptureHold();
         };
-    }, [stopDurationTracking]);
+    }, [releaseCaptureHold, stopDurationTracking]);
 
     return {
         status,

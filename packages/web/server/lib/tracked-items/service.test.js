@@ -147,6 +147,93 @@ describe('tracked items service', () => {
     expect(calls.github).toHaveLength(3);
   });
 
+  describe('which pushed changes are live news', () => {
+    const passed = { state: 'success', total: 1, success: 1, failure: 0, pending: 0 };
+    const pending = { state: 'pending', total: 1, success: 0, failure: 0, pending: 1 };
+
+    const withChecks = (initial, persistence = null) => {
+      const box = { checks: initial, fail: false };
+      const context = setup({
+        persistence,
+        readers: {
+          github: async (input) => {
+            if (box.fail) throw new Error('down');
+            return { status: 'ok', pulls: input.pulls.map((ref) => pullSummary(ref, 'open', { checks: box.checks })), issues: [], discussions: [] };
+          },
+        },
+      });
+      const lastPush = () => context.sent.at(-1)?.event.properties.states[0];
+      return { ...context, box, lastPush };
+    };
+
+    it('marks a change found by the next scheduled read as continuous, and the first answer as not', async () => {
+      const { service, sent, box, lastPush } = withChecks(pending);
+      service.setInterest('c1', itemsOf(githubPull(1)));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lastPush().continuous).toBeUndefined();
+
+      box.checks = passed;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(sent).toHaveLength(2);
+      expect(lastPush()).toMatchObject({ key: trackedItemKey(githubPull(1)), continuous: true });
+      expect(lastPush().state.checks.state).toBe('success');
+    });
+
+    it('does not mark the catch-up read after the window was hidden for a long time', async () => {
+      const { service, box, lastPush } = withChecks(pending);
+      service.setInterest('c1', itemsOf(githubPull(1)));
+      await vi.advanceTimersByTimeAsync(0);
+      service.setPresence('c1', false);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      box.checks = passed;
+      service.setPresence('c1', true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lastPush().state.checks.state).toBe('success');
+      expect(lastPush().continuous).toBeUndefined();
+    });
+
+    it('does not mark the read after a failed one, however soon it comes', async () => {
+      const { service, box, lastPush } = withChecks(pending);
+      service.setInterest('c1', itemsOf(githubPull(1)));
+      await vi.advanceTimersByTimeAsync(0);
+      box.fail = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+      box.fail = false;
+      box.checks = passed;
+      service.refresh([githubPull(1)]);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(lastPush().state.checks.state).toBe('success');
+      expect(lastPush().continuous).toBeUndefined();
+    });
+
+    it('does not mark the first read of a state restored after a restart', async () => {
+      const saved = [{ key: trackedItemKey(githubPull(1)), item: githubPull(1), state: pullSummary({ owner: 'acme', repo: 'app', number: 1 }, 'open', { checks: pending }), fetchedAt: Date.now() - 1000 }];
+      const { service, box, lastPush } = withChecks(passed, { load: vi.fn(async () => saved), save: vi.fn(async () => {}) });
+      await service.ready();
+      service.setInterest('c1', itemsOf(githubPull(1)));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lastPush().state.checks.state).toBe('success');
+      expect(lastPush().continuous).toBeUndefined();
+
+      box.checks = pending;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(lastPush()).toMatchObject({ continuous: true });
+    });
+
+    it('leaves the records a server module hears unchanged', async () => {
+      const { service, box } = withChecks(pending);
+      const heard = [];
+      service.subscribe((states) => heard.push(...states));
+      service.setServerInterest('pr-watch', itemsOf(githubPull(1)));
+      await vi.advanceTimersByTimeAsync(0);
+      box.checks = passed;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heard).toHaveLength(2);
+      expect(Object.keys(heard[1]).sort()).toEqual(['fetchedAt', 'item', 'key', 'requestedAt', 'state']);
+    });
+  });
+
   it('never asks about a merged pull request again and clears an item the provider no longer answers', async () => {
     let answerTwo = true;
     const { service, sent, calls } = setup({

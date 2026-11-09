@@ -3,9 +3,9 @@ import { z } from 'zod';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeKey } from '@/lib/runtime-switch';
-import { useTrackedItemsStore } from '@/stores/useTrackedItemsStore';
+import { useTrackedItemsStore, type TrackedRecordsSource } from '@/stores/useTrackedItemsStore';
 import { useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
-import { trackedItemKey, trackedItemRecordsSchema, type TrackedItem, type TrackedItemState } from './model';
+import { trackedItemKey, trackedItemRecordsSchema, type ParsedRecord, type TrackedItem } from './model';
 
 /**
  * What this client shows, told to the server once per change.
@@ -31,7 +31,7 @@ const interestResponseSchema = z.object({ states: z.unknown() });
 
 type StreamEvent =
   | { type: 'event-stream-ready'; connectionId: string | null }
-  | { type: 'tracked-items-changed'; records: Array<{ key: string; record: TrackedItemState }> }
+  | { type: 'tracked-items-changed'; records: ParsedRecord[] }
   | { type: 'source-control-activity'; directory: string }
   | { type: string };
 
@@ -41,7 +41,8 @@ type PresenceRequest = { path: '/api/tracked-items/presence'; body: { connection
 type Dependencies = {
   subscribe: (listener: (event: StreamEvent) => void) => void;
   post: (request: InterestRequest | PresenceRequest) => Promise<Response>;
-  apply: (records: Array<{ key: string; record: TrackedItemState }>) => void;
+  /** `source` tells the answer to what this client follows from a change the server pushed live. */
+  apply: (records: ParsedRecord[], source: TrackedRecordsSource) => void;
   isVisible: () => boolean;
   onVisibilityChange: (listener: () => void) => void;
   /** An agent turn finished in a directory: branches there may have a new pull request. */
@@ -105,7 +106,7 @@ export function createTrackedItemsInterest({
       const parsed = interestResponseSchema.safeParse(await response.json());
       if (!parsed.success) throw new Error('Tracked items answered without states');
       sentSignature = signature;
-      apply(trackedItemRecordsSchema.parse(parsed.data.states));
+      apply(trackedItemRecordsSchema.parse(parsed.data.states), 'answer');
     } catch (error) {
       if (requestGeneration !== generation) return;
       warn(`[tracked-items] could not tell the server what is shown: ${String(error)}`);
@@ -124,7 +125,7 @@ export function createTrackedItemsInterest({
         scheduleFlush(0);
         return;
       }
-      if (event.type === 'tracked-items-changed' && 'records' in event) apply(event.records);
+      if (event.type === 'tracked-items-changed' && 'records' in event) apply(event.records, 'push');
       if (event.type === 'source-control-activity' && 'directory' in event) onBranchActivity(event.directory);
     });
     onVisibilityChange(() => {
@@ -160,8 +161,8 @@ const trackedItemsInterest = createTrackedItemsInterest({
   }),
   // The runtime is read when the answer lands: records belong to the runtime
   // that sent them. A branch's open pull request also lands on its entry.
-  apply: (records) => {
-    useTrackedItemsStore.getState().apply(getRuntimeKey(), records);
+  apply: (records, source) => {
+    useTrackedItemsStore.getState().apply(getRuntimeKey(), records, source);
     useGitHubPrStatusStore.getState().applyTrackedPulls(records);
   },
   isVisible: () => document.visibilityState !== 'hidden',

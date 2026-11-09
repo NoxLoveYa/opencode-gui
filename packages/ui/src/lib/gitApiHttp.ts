@@ -70,6 +70,7 @@ import { runtimeFetch } from './runtime-fetch';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { getRuntimeKey } from './runtime-switch';
 import { notifyGitStatusInvalidated, subscribeGitStatusInvalidations } from './gitStatusInvalidation';
+import { notifyGitCommit } from './gitCommitEvents';
 import { notifyGitPush } from './gitPushEvents';
 import { GitPathUnavailableError, gitPathUnavailableBodySchema, gitSubmoduleStateSchema } from './api/git-path-diff';
 
@@ -1793,6 +1794,7 @@ export async function createGitCommit(
   message: string,
   options: CreateGitCommitOptions = {}
 ): Promise<GitCommitResult> {
+  const runtimeKey = getRuntimeKey();
   const response = await runtimeFetch(buildUrl(`${API_BASE}/commit`, directory), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1807,7 +1809,9 @@ export async function createGitCommit(
     const error = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(error.error || 'Failed to create commit');
   }
-  return completeStatusMutation(directory, response);
+  const result = await completeStatusMutation<GitCommitResult>(directory, response);
+  if (result.success) notifyGitCommit(directory, runtimeKey);
+  return result;
 }
 
 export async function gitPush(

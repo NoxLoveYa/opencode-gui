@@ -1,5 +1,6 @@
 import type { I18nKey, I18nParams } from '@/lib/i18n/store';
 import { getCustomizableShortcutActions } from '@/lib/shortcuts';
+import { SOUND_EVENT_IDS, SOUND_EVENTS, isSoundEventAvailable, soundEventSearchItemId } from '@/lib/sounds/events';
 import { isIsolatedSpacesPageVisible } from '@/lib/spaces/release';
 import { useUIStore } from '@/stores/useUIStore';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -1630,6 +1631,52 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['background', 'push'],
     isAvailable: (ctx) => ctx.isWeb && !ctx.isDesktop && !ctx.isVSCode,
   },
+  {
+    id: 'sounds.enabled',
+    page: 'sounds',
+    titleKey: 'settings.sounds.master.label',
+    keywords: ['sound', 'audio', 'chime', 'beep', 'on', 'off', 'enable'],
+  },
+  {
+    id: 'sounds.volume',
+    page: 'sounds',
+    titleKey: 'settings.sounds.volume.label',
+    keywords: ['sound', 'audio', 'loudness', 'louder', 'quieter'],
+  },
+  {
+    id: 'sounds.mute',
+    page: 'sounds',
+    titleKey: 'settings.sounds.mute.label',
+    keywords: ['sound', 'audio', 'silent', 'silence', 'unmute', 'shortcut'],
+  },
+  {
+    id: 'sounds.quiet-hours',
+    page: 'sounds',
+    titleKey: 'settings.sounds.quietHours.title',
+    keywords: ['sound', 'audio', 'night', 'schedule', 'do not disturb', 'silent', 'sleep'],
+  },
+  {
+    id: 'sounds.reminder-interval',
+    page: 'sounds',
+    titleKey: 'settings.sounds.reminder.interval.label',
+    keywords: ['sound', 'audio', 'reminder', 'repeat', 'interval', 'seconds', 'needs you', 'waiting'],
+  },
+  {
+    id: 'sounds.reminder-repeats',
+    page: 'sounds',
+    titleKey: 'settings.sounds.reminder.repeats.label',
+    keywords: ['sound', 'audio', 'reminder', 'repeat', 'stop', 'times', 'needs you', 'waiting'],
+  },
+  // One entry per event row the Sounds page shows.
+  ...SOUND_EVENT_IDS
+    .filter((id) => SOUND_EVENTS[id].wired)
+    .map((id): SettingsSearchItem => ({
+      id: soundEventSearchItemId(id),
+      page: 'sounds',
+      titleKey: SOUND_EVENTS[id].labelKey,
+      keywords: ['sound', 'audio', 'chime', 'beep', 'volume', 'play when', 'background'],
+      isAvailable: (ctx) => isSoundEventAvailable(id, ctx),
+    })),
 
   {
     id: 'integrations.browse',

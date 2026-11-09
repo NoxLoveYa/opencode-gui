@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 
-import { clearDesktopSessionNotifications, createDesktopClipboardAPI, isBrowserClientRuntime, isDesktopLocalOriginActive, openSessionInOwningHostWindow, takePendingDesktopSessionLinks } from './desktop';
+import { clearDesktopSessionNotifications, createDesktopClipboardAPI, isBrowserClientRuntime, isDesktopLocalOriginActive, openSessionInOwningHostWindow, reportDesktopNotificationSoundCoverage, takePendingDesktopSessionLinks } from './desktop';
 
 describe('clearing session notifications', () => {
   const originalWindow = globalThis.window;
@@ -32,6 +32,59 @@ describe('clearing session notifications', () => {
   test('stays quiet where delivered notifications cannot be removed', () => {
     const calls = desktopWindow('win32');
     clearDesktopSessionNotifications('ses_1');
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('reporting the notification kinds a sound covers', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'window');
+  });
+
+  type CoverageArgs = { kinds?: readonly string[]; runtimeKey?: string };
+
+  const installElectronWindow = (apiBaseUrl: string) => {
+    const calls: Array<{ command: string; args: CoverageArgs }> = [];
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        location: { origin: 'openchamber-ui://app' },
+        __OPENCHAMBER_ELECTRON__: { runtime: 'electron' },
+        __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:51761',
+        __OPENCHAMBER_API_BASE_URL__: apiBaseUrl,
+        __OPENCHAMBER_DESKTOP__: {
+          invoke: async (command: string, args: CoverageArgs) => {
+            calls.push({ command, args });
+            return null;
+          },
+        },
+      },
+    });
+    return calls;
+  };
+
+  test('sends the kinds and the instance the window shows to the Electron shell', () => {
+    const calls = installElectronWindow('http://127.0.0.1:51761');
+    reportDesktopNotificationSoundCoverage(['ready', 'error']);
+    reportDesktopNotificationSoundCoverage([]);
+    expect(calls).toEqual([
+      { command: 'desktop_set_notification_sound_coverage', args: { kinds: ['ready', 'error'], runtimeKey: 'local' } },
+      { command: 'desktop_set_notification_sound_coverage', args: { kinds: [], runtimeKey: 'local' } },
+    ]);
+  });
+
+  test('reports no kinds while the window shows another instance, which clears an earlier report', () => {
+    const calls = installElectronWindow('https://remote.example.com');
+    reportDesktopNotificationSoundCoverage(['ready', 'error']);
+    expect(calls.map((call) => call.args.kinds)).toEqual([[]]);
+  });
+
+  test('does nothing outside the Electron shell', () => {
+    const calls: string[] = [];
+    globalThis.window = Object.assign(Object.create(null), {
+      __OPENCHAMBER_DESKTOP__: { invoke: async (command: string) => { calls.push(command); return null; } },
+    });
+    reportDesktopNotificationSoundCoverage(['ready']);
     expect(calls).toEqual([]);
   });
 });

@@ -496,6 +496,16 @@ The server (`packages/web/server/lib/fs/ripgrep.js`) looks for ripgrep in this o
   in the window that shows its instance and raises that window; the
   receiving window is brought forward first only when it already shows the
   same instance, so the local window does not jump in front of a remote one.
+  A local window that plays an OpenChamber sound for a notification kind
+  (`ready`, `error`, `question`, `permission`) reports it with
+  `desktop_set_notification_sound_coverage`, and main then shows those
+  notifications with `silent: true`, so only one sound plays. The report is
+  per window (`notification-sound-coverage.mjs`), local pages only, and is
+  forgotten when the window closes or commits another page. It names the
+  instance the window shows (`runtimeKey`), and a notification is covered
+  only by a window that shows the instance it came from; a notification
+  without a runtime key counts as `local`. It applies to notifications from
+  the in-process server and to forwarded ones alike.
 - User-confirmed local folder selection. The shared UI supplies the requested directory as the picker `defaultPath`; confirmation is required before filesystem access is retried.
 - Theme-file selection uses the local `~/.vscode/extensions` directory when present.
   The local-page-gated `desktop_pick_theme_file` command returns only the selected

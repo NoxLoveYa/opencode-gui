@@ -1,22 +1,22 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test';
 import { createTrackedItemsInterest } from './interest';
-import type { TrackedItem, TrackedItemState } from './model';
+import { trackedItemKey, trackedItemRecordSchema, type TrackedItem, type TrackedItemState } from './model';
 
 type Request = { path: string; body: { connectionId: string; visible: boolean; items?: TrackedItem[] } };
 
 const pull = (number: number): TrackedItem => ({ provider: 'github', instance: 'github.com', kind: 'pull', owner: 'acme', repo: 'app', number });
 
 function setup() {
-  let listener: ((event: { type: 'event-stream-ready'; connectionId: string | null }) => void) | null = null;
+  let listener: Parameters<Parameters<typeof createTrackedItemsInterest>[0]['subscribe']>[0] | null = null;
   let visibilityListener: (() => void) | null = null;
   let visible = true;
   const posts: Request[] = [];
-  const applied: Array<Array<{ key: string; record: TrackedItemState }>> = [];
+  const applied: Array<{ records: Array<{ key: string; record: TrackedItemState; continuous?: true }>; source: string }> = [];
   let respond: (path: string) => Response = () => Response.json({ states: [] });
   const interest = createTrackedItemsInterest({
     subscribe: (next) => { listener = next; },
     post: async (request) => { posts.push({ path: request.path, body: { ...request.body } }); return respond(request.path); },
-    apply: (records: Array<{ key: string; record: TrackedItemState }>) => { applied.push(records); },
+    apply: (records, source) => { applied.push({ records, source }); },
     isVisible: () => visible,
     onVisibilityChange: (next) => { visibilityListener = next; },
   });
@@ -25,6 +25,7 @@ function setup() {
     posts,
     applied,
     ready: (connectionId: string) => listener?.({ type: 'event-stream-ready', connectionId }),
+    push: (records: Array<{ key: string; record: TrackedItemState; continuous?: true }>) => listener?.({ type: 'tracked-items-changed', records }),
     setVisible: (value: boolean) => { visible = value; visibilityListener?.(); },
     respondWith: (next: (path: string) => Response) => { respond = next; },
   };
@@ -71,6 +72,42 @@ describe('tracked items interest', () => {
     ready('c2');
     await settle(0);
     expect(posts.map((post) => post.body.connectionId)).toEqual(['c1', 'c2']);
+  });
+
+  test('hands over the answer to what is shown as an answer, also after a reconnect, and a pushed change as a push', async () => {
+    const { interest, ready, push, applied, respondWith } = setup();
+    const item = pull(7);
+    const record = trackedItemRecordSchema.parse({ key: trackedItemKey(item), item, state: null, fetchedAt: 1 });
+    if (!record) throw new Error('fixture must parse');
+    respondWith(() => Response.json({ states: [{ key: record.key, item, state: null, fetchedAt: 1 }] }));
+    interest.declare(Symbol('row'), [item]);
+    ready('c1');
+    await settle(0);
+    expect(applied.map((entry) => entry.source)).toEqual(['answer']);
+
+    push([record]);
+    expect(applied.map((entry) => entry.source)).toEqual(['answer', 'push']);
+
+    // The new connection knows nothing: the set is sent again and the answer is an answer, not news.
+    ready('c2');
+    await settle(0);
+    expect(applied.map((entry) => entry.source)).toEqual(['answer', 'push', 'answer']);
+  });
+
+  test('keeps the server\'s continuous mark on a pushed record and never invents one on an answer', async () => {
+    const { interest, ready, push, applied, respondWith } = setup();
+    const item = pull(7);
+    const record = trackedItemRecordSchema.parse({ key: trackedItemKey(item), item, state: null, fetchedAt: 1 });
+    if (!record) throw new Error('fixture must parse');
+    respondWith(() => Response.json({ states: [{ key: record.key, item, state: null, fetchedAt: 1, continuous: true }] }));
+    interest.declare(Symbol('row'), [item]);
+    ready('c1');
+    await settle(0);
+    // Whatever the answer carries, an answer is the state of the moment: the source says so.
+    expect(applied[0].source).toBe('answer');
+
+    push([{ ...record, continuous: true }]);
+    expect(applied[1]).toMatchObject({ source: 'push', records: [{ continuous: true }] });
   });
 
   test('tells the server when nothing is shown any more and when the window flips', async () => {

@@ -52,7 +52,7 @@ HTTP remains the authenticated command plane for create, resize, appearance upda
 
 The runtime broadcasts `openchamber:terminal-sessions-changed` after creation,
 exit, restart and removal, including idle cleanup, replacement and shutdown.
-The event carries no terminal data or command text. The existing OpenChamber
+The event carries no terminal data or command text. When a process ends on its own it also names `exited: { sessionId, sequence }`, the session and the sequence of its `exit` event, the same one the session's stream sends; a restart, a close, a force-kill and an idle sweep end the old process silently and name nothing. Clients use it to announce a terminal's end for a session they do not stream. The existing OpenChamber
 control broadcaster reaches global WebSocket and control SSE clients, including
 relay and mobile clients. Consumers coalesce invalidations into authoritative
 list reads and read again on connection and visibility recovery. The old

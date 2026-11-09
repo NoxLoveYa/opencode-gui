@@ -290,13 +290,15 @@ const notificationPropertiesSchema = z.object({
   tag: z.string().optional(),
   kind: z.string().optional(),
   sessionId: z.string().optional(),
+const terminalExitedSchema = z.object({ sessionId: z.string().min(1), sequence: z.number().int().nonnegative() });
   directory: z.string().optional(),
   requireHidden: z.boolean().optional(),
   showWhenFocused: z.boolean().optional(),
 });
 
 type OpenChamberEvent =
-  | { type: 'terminal-sessions-changed' }
+  /** `exited` names the terminal session whose process ended on its own and the sequence of its exit event. */
+  | { type: 'terminal-sessions-changed'; exited?: { sessionId: string; sequence: number } }
   | { type: 'notification'; payload: z.infer<typeof notificationPropertiesSchema> }
   /** `connectionId` names this connection on the server; absent from servers before tracked items. */
   | { type: 'event-stream-ready'; connectionId: string | null }
@@ -503,7 +505,8 @@ const getEventProperties = (properties: unknown): Record<string, unknown> | null
 
 const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) => {
   if (envelope.type === 'openchamber:terminal-sessions-changed') {
-    for (const listener of listeners) listener({ type: 'terminal-sessions-changed' });
+    const exited = terminalExitedSchema.safeParse(getEventProperties(envelope.properties)?.exited);
+    for (const listener of listeners) listener(exited.success ? { type: 'terminal-sessions-changed', exited: exited.data } : { type: 'terminal-sessions-changed' });
     return;
   }
   if (envelope.type === 'openchamber:notification') {

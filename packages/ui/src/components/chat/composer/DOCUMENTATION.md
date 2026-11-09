@@ -1508,3 +1508,16 @@ setting controls plain Enter there: "Send with Enter" sends on Enter, "Send with
 Ctrl/Cmd+Enter" inserts a newline. Shift+Enter and Alt/Option+Enter always insert
 a newline, and Ctrl/Cmd+Enter always sends. Ctrl/Cmd+Alt/Option+Enter keeps
 the Ctrl/Cmd+Enter send behavior.
+
+
+## Sound feedback
+
+`editor/soundFeedback.ts` reports key presses to `lib/sounds` (typing, including IME composition and the newline of Shift+Enter, and erasing). `ComposerEditor` adds it only when its `soundFeedback` prop is set, read once when the view is built; `ChatInput` is the only editor that sets it, so the comment fields that reuse the editor stay silent. Sending is reported by `ChatInput` itself: `handleSubmit` calls `soundSignals.sent()` right after the empty-message check, which covers composer sends, `/btw`, prompt commands and a queue row's own Send, and `handleQueueMessage` calls it once the composer is cleared.
+
+### Why the extension adds no render
+
+The extension is a CodeMirror update listener. It reads each update's transactions, calls the `soundSignals` facade and returns; it writes no React state and no store, so a keystroke renders what it rendered before (`ChatInput.keystroke.test.tsx` counts it). While no keystroke sound is on, `typingActive()` makes it return after one settings read.
+
+### Why programmatic edits are marked silent
+
+`insertText` and `replaceRange` (mention completion, snippets) carry the `input.type` user event, so they read as typing. They and the write of a changed `value` prop (draft restore, clearing after a send) carry the `silentEdit` annotation, which the extension skips. A newline typed with Enter or Shift+Enter carries the plain `input` user event and counts as typing; paste, drop, cut, undo, redo and `input.complete` are other events or `input` subtypes (`input.paste`), and never reach it.

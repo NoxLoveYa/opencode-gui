@@ -145,30 +145,35 @@ export type TrackedItemState =
   | { type: 'discussion'; item: TrackedThread<'discussion'>; state: DiscussionLiveSummary | null; fetchedAt: number }
   | { type: 'work-item'; item: TrackedWorkItem; state: TrackerLiveSummary | null; fetchedAt: number };
 
-const recordSchema = z.object({ key: z.string(), item: trackedItemSchema, state: z.unknown(), fetchedAt: z.number() });
+// `continuous` is the server's word that a pushed change followed its previous
+// read closely, so it happened while the server was watching and is news.
+// Absent from an answer, a restored record and an older server.
+const recordSchema = z.object({ key: z.string(), item: trackedItemSchema, state: z.unknown(), fetchedAt: z.number(), continuous: z.boolean().optional() });
 
-type ParsedRecord = { key: string; record: TrackedItemState };
+/** One record as the server sent it: the state, and `continuous` when it is a live change. */
+export type ParsedRecord = { key: string; record: TrackedItemState; continuous?: true };
 
-const toRecord = ({ key, item, state, fetchedAt }: z.infer<typeof recordSchema>): ParsedRecord | null => {
+const toRecord = ({ key, item, state, fetchedAt, continuous }: z.infer<typeof recordSchema>): ParsedRecord | null => {
+  const live = continuous ? { continuous: true as const } : {};
   if (key !== trackedItemKey(item)) return null;
   if (isTrackedWorkItem(item)) {
     const summary = state === null ? null : workItemSummarySchema.safeParse(state);
     if (summary && !summary.success) return null;
-    return { key, record: { type: 'work-item', item, state: summary ? summary.data : null, fetchedAt } };
+    return { key, record: { type: 'work-item', item, state: summary ? summary.data : null, fetchedAt }, ...live };
   }
   if (item.kind === 'pull') {
     const summary = state === null ? null : pullSummarySchema.safeParse(state);
     if (summary && !summary.success) return null;
-    return { key, record: { type: 'pull', item: { ...item, kind: 'pull' as const }, state: summary ? summary.data : null, fetchedAt } };
+    return { key, record: { type: 'pull', item: { ...item, kind: 'pull' as const }, state: summary ? summary.data : null, fetchedAt }, ...live };
   }
   if (item.kind === 'discussion') {
     const summary = state === null ? null : discussionSummarySchema.safeParse(state);
     if (summary && !summary.success) return null;
-    return { key, record: { type: 'discussion', item: { ...item, kind: 'discussion' as const }, state: summary ? summary.data : null, fetchedAt } };
+    return { key, record: { type: 'discussion', item: { ...item, kind: 'discussion' as const }, state: summary ? summary.data : null, fetchedAt }, ...live };
   }
   const summary = state === null ? null : issueSummarySchema.safeParse(state);
   if (summary && !summary.success) return null;
-  return { key, record: { type: 'issue', item: { ...item, kind: 'issue' as const }, state: summary ? summary.data : null, fetchedAt } };
+  return { key, record: { type: 'issue', item: { ...item, kind: 'issue' as const }, state: summary ? summary.data : null, fetchedAt }, ...live };
 };
 
 /**

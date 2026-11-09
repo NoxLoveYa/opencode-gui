@@ -21,6 +21,11 @@ export const isCurrentReading = (token: symbol): boolean => (
     useActiveReadingStore.getState().active?.token === token
 );
 
+/** Whether any message is being read aloud right now, whichever control started it. */
+export const isAnyReadingActive = (): boolean => (
+    useActiveReadingStore.getState().active !== null
+);
+
 export const stopActiveReading = (): void => {
     const { active } = useActiveReadingStore.getState();
     if (!active) return;

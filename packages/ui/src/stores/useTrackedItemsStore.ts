@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { DiscussionLiveSummary, IssueLiveSummary, TrackerLiveSummary } from '@/lib/api/types';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { z } from 'zod';
-import { trackedItemKey, trackedItemRecordSchema, type TrackedItem, type TrackedItemState, type TrackedThread, type TrackedWorkItem } from '@/lib/trackedItems/model';
+import { trackedItemKey, trackedItemRecordSchema, type ParsedRecord, type TrackedItem, type TrackedItemState, type TrackedThread, type TrackedWorkItem } from '@/lib/trackedItems/model';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import { getLinkedChangeRequestVisualSummary, type PrVisualSummary } from './useGitHubPrStatusStore';
 
@@ -18,14 +18,44 @@ const storeKey = (runtimeKey: string, key: string) => `${runtimeKey}|${key}`;
 
 const persistedSchema = z.object({ records: z.record(z.string(), z.object({ item: z.unknown(), state: z.unknown(), fetchedAt: z.unknown() })) });
 
+/**
+ * How the server's records arrived: the answer to what this client follows
+ * (on subscribing and after every reconnect) or a change it pushed live.
+ */
+export type TrackedRecordsSource = 'answer' | 'push';
+
+/**
+ * One received record next to what the store held for the item before and
+ * after it. `continuous` is the server's word that a pushed change followed
+ * its previous read closely; a listener that plays a sound for news needs it.
+ */
+type ReceivedRecord = { id: string; key: string; before: TrackedItemState | undefined; after: TrackedItemState | undefined; continuous: boolean };
+
+type ReceivedListener = (received: { runtimeKey: string; source: TrackedRecordsSource; records: readonly ReceivedRecord[] }) => void;
+
+const receivedListeners = new Set<ReceivedListener>();
+
+/**
+ * Hears every batch of records the server sent, also the ones the store skips
+ * as unchanged, so a listener sees the same answer the store was given. Hydrating
+ * the store from storage is no batch.
+ */
+export const subscribeTrackedRecordsReceived = (listener: ReceivedListener): (() => void) => {
+  receivedListeners.add(listener);
+  return () => {
+    receivedListeners.delete(listener);
+  };
+};
+
 type TrackedItemsStore = {
   /** What the server last said about each followed item, by runtime and item key. */
   records: Record<string, TrackedItemState>;
   /**
    * Applies records the server sent. A record older than the one held (an
-   * interest answer racing a pushed change) is ignored.
+   * interest answer racing a pushed change) is ignored. Without a `source`
+   * the records count as an answer, which no listener treats as news.
    */
-  apply: (runtimeKey: string, records: ReadonlyArray<{ key: string; record: TrackedItemState }>) => void;
+  apply: (runtimeKey: string, records: ReadonlyArray<ParsedRecord>, source?: TrackedRecordsSource) => void;
 };
 
 const freshRecords = (records: Record<string, TrackedItemState>): Array<[string, TrackedItemState]> => {
@@ -37,10 +67,11 @@ const freshRecords = (records: Record<string, TrackedItemState>): Array<[string,
 };
 
 export const useTrackedItemsStore = create<TrackedItemsStore>()(persist(
-  (set) => ({
+  (set, get) => ({
     records: {},
-    apply: (runtimeKey, incoming) => {
+    apply: (runtimeKey, incoming, source = 'answer') => {
       if (incoming.length === 0) return;
+      const previous = get().records;
       set((state) => {
         let next: Record<string, TrackedItemState> | null = null;
         for (const { key, record } of incoming) {
@@ -53,6 +84,20 @@ export const useTrackedItemsStore = create<TrackedItemsStore>()(persist(
         }
         return next ? { records: next } : state;
       });
+      if (receivedListeners.size === 0) return;
+      const current = get().records;
+      const records = incoming.map(({ key, continuous }) => {
+        const id = storeKey(runtimeKey, key);
+        return { id, key, before: previous[id], after: current[id], continuous: continuous === true };
+      });
+      // A listener that throws must not stop the others or the caller's own follow-up work.
+      for (const listener of receivedListeners) {
+        try {
+          listener({ runtimeKey, source, records });
+        } catch (error) {
+          console.error('[tracked-items] a records listener failed', error);
+        }
+      }
     },
   }),
   {

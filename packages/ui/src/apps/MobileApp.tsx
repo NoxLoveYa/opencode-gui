@@ -103,6 +103,7 @@ const MOBILE_SETTINGS_PAGES = [
   'appearance',
   'chat',
   'notifications',
+  'sounds',
   'sessions',
   'routing',
   'git',

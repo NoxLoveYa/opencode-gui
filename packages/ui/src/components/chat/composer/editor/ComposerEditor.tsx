@@ -45,6 +45,8 @@ import { composerEditorTheme, composerSelectionExtension, isCodeMirrorIOSNavigat
 import { handleComposerHostMouseDown } from './hostMouseDown';
 import { getComposerHeightLimit, isComposerContentCapped } from './heightLimit';
 import { imeNewlineCleanup } from './imeNewline';
+import { composerSoundFeedback, silentEdit } from './soundFeedback';
+import { soundSignals } from '@/lib/sounds/signals';
 import { restoreDeferredEnterModifiers } from '../keyboardPolicy';
 import { timerCaretBlink } from '@/lib/codemirror/caretBlink';
 
@@ -118,6 +120,12 @@ export interface ComposerEditorProps {
      */
     autoCorrect?: ComposerAutoCorrect;
     autoCapitalize?: 'none' | 'sentences';
+    /**
+     * Play the typing and erasing sounds for this editor's key presses. Read
+     * once when the view is built; only the chat composer turns it on, so the
+     * comment fields that reuse the editor stay silent.
+     */
+    soundFeedback?: boolean;
     /**
      * Restore the real Shift onto the deferred Enter. Callers gate it on
      * whether Shift can be trusted: iOS autocapitalization reports a
@@ -364,6 +372,7 @@ export const ComposerEditor = React.memo(React.forwardRef<ComposerEditorHandle, 
                             placeholderContentAttributes(handlersRef.current.placeholder ?? ''),
                         ),
                         composerEditorTheme,
+                        handlersRef.current.soundFeedback ? composerSoundFeedback(soundSignals) : [],
                         EditorView.updateListener.of((update) => {
                             const handlers = handlersRef.current;
                             const selection = readSelection(update.state);
@@ -473,7 +482,7 @@ export const ComposerEditor = React.memo(React.forwardRef<ComposerEditorHandle, 
             // the previous one.
             view.dispatch({
                 ...replaceWithCaret(view.state, 0, current.length, value),
-                annotations: valuePropWrite.of(true),
+                annotations: [valuePropWrite.of(true), silentEdit.of(true)],
             });
             // A large insert can push the caret below the fold, and a
             // transaction-time `scrollIntoView` cannot reach it: wrapped-line
@@ -655,6 +664,7 @@ export const ComposerEditor = React.memo(React.forwardRef<ComposerEditorHandle, 
                 view.dispatch({
                     ...replaceWithCaret(view.state, from, to, text),
                     userEvent: 'input.type',
+                    annotations: silentEdit.of(true),
                 });
             },
             replaceRange(from, to, text, selectionStart, selectionEnd = selectionStart) {
@@ -666,6 +676,7 @@ export const ComposerEditor = React.memo(React.forwardRef<ComposerEditorHandle, 
                 view.dispatch({
                     ...replaceWithCaret(view.state, from, to, text, caret),
                     userEvent: 'input.type',
+                    annotations: silentEdit.of(true),
                 });
             },
             caretCoords(position) {

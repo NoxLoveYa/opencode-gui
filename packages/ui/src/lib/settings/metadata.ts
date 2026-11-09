@@ -26,6 +26,7 @@ export type SettingsPageSlug =
   | 'magic-prompts'
   | 'snippets'
   | 'notifications'
+  | 'sounds'
   | 'voice'
   | 'tunnel'
   | 'isolated-spaces'
@@ -226,6 +227,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
   },
 
   { slug: 'notifications', title: 'Notifications', group: 'general', kind: 'single', keywords: ['alerts', 'native', 'summary', 'summarization'], },
+  { slug: 'sounds', title: 'Sounds', group: 'general', kind: 'single', keywords: ['sound', 'audio', 'chime', 'beep', 'mute', 'quiet hours', 'typing', 'volume'] },
   { slug: 'voice', title: 'Voice', group: 'general', kind: 'single', keywords: ['tts', 'speech', 'voice'], isAvailable: (ctx) => !ctx.isVSCode },
   { slug: 'tunnel', title: 'External Tunnel', group: 'projects', kind: 'single', keywords: ['tunnel', 'external', 'cloudflare', 'tailscale', 'qr', 'remote', 'mobile', 'share'], isAvailable: (ctx) => !ctx.isVSCode && !ctx.enterpriseMode },
   {
@@ -306,6 +308,8 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): IconName | null {
       return 'chat-thread';
     case 'notifications':
       return 'notification-3';
+    case 'sounds':
+      return 'volume-up';
     case 'shortcuts':
       return 'command';
     case 'sessions':

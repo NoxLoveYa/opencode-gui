@@ -156,6 +156,12 @@ import {
 } from "./session-message-loader"
 import { openCodeStartupSignal } from "./opencode-startup-gate"
 import { claimFirstServerConnect, notifyFirstServerConnect } from "./first-server-connect"
+import { agentActivity, toolSoundOf } from "@/lib/sounds/agentActivity"
+import { pendingInDirectoryStore, soundReminders, setReminderPendingChecker, setReminderViewChecker } from "@/lib/sounds/reminders"
+import { soundSignals } from "@/lib/sounds/signals"
+import { setSubagentChecker, turnEndTracker } from "@/lib/sounds/turnEnd"
+import { isBtwSession } from "@/lib/sessionBtwMetadata"
+import { isStoppedTurnError } from "@/lib/messages/assistantError"
 
 // Session rows read which sessions run a workflow from a small store of their
 // own (`workflow-activity.ts`), kept here from the runs the server reports.
@@ -210,6 +216,20 @@ type SyncSystem = SyncRuntime & {
 // Subagent sessions keep their parent's turn open in the status index; the
 // global sessions list knows every session's parent, children included.
 setSessionParentResolver((sessionId) => useGlobalSessionsStore.getState().entityById.get(sessionId)?.parentID)
+
+// A reminder for a request that waits for the user ends once the user sees its session.
+setReminderViewChecker((directory, sessionId) => isViewedInCurrentSession(directory, sessionId))
+
+// A complete directory store is authoritative for its permissions and forms: its reply
+// and reconnect paths clear the ones the cross-directory index keeps after a lost event.
+// Pages live only in the index, and a store still loading knows live requests only.
+setReminderPendingChecker((request) => pendingInDirectoryStore(getDirectoryState(request.directory), request))
+
+// A subagent's end sounds differently from a session's. A `/btw` side conversation is a fork the user talks to, so it ends like a main session.
+setSubagentChecker((sessionId) => {
+  const session = useGlobalSessionsStore.getState().entityById.get(sessionId)
+  return Boolean(session?.parentID) && !isBtwSession(session)
+})
 
 // A turn this page did not see begin counts from the host's record of its
 // start, read from the host's status map.
@@ -340,6 +360,30 @@ const publishDirectoryEventBatch = (batch: DirectoryEventBatch): void => {
     store.setState(state)
   }
   for (const move of batch.sessionMoves) adoptSessionMove(move.sessionID, move.from, move.to)
+}
+
+/** One flush of the event stream for a directory, the way the pipeline hands it over. */
+export function handleDirectoryEvents(
+  directory: string,
+  payloads: readonly SyncEvent[],
+  childStores: ChildStoreManager,
+  routingIndex: EventRoutingIndex,
+  expectedRuntimeKey: string,
+  streamingDirectory: string | undefined,
+): void {
+  const batch = createDirectoryEventBatch()
+  try {
+    for (const payload of payloads) {
+      dispatchVSCodeRuntimeNotificationEvent(directory, payload)
+      if (payload.type === "installation.update-available") {
+        const { version } = payload.properties
+        if (version) dispatchOpenCodeUpdateAvailable({ version })
+      }
+      handleEvent(directory, payload, childStores, routingIndex, expectedRuntimeKey, false, streamingDirectory, batch)
+    }
+  } finally {
+    publishDirectoryEventBatch(batch)
+  }
 }
 
 /** Read status for a session across all directories */
@@ -746,6 +790,7 @@ export function setActiveSession(directory: string, sessionId: string) {
   _activeSession = sessionId
   getImperativeSessionMessageLoader()?.scheduleCacheRetention(previousDirectory)
   getImperativeSessionMessageLoader()?.touchSessionCache({ directory, sessionID: sessionId })
+  soundReminders.recheck(sessionId)
 }
 
 export function setExternallyViewedSession(directory: string, sessionId: string, viewed: boolean) {
@@ -1883,21 +1928,51 @@ export function wakeDormantLocations(childStores: ChildStoreManager, currentDire
   dormantLocations.clear()
 }
 
-// Only top-level sessions raise notifications. The directory store knows the
-// parent when the directory is open; the global cache covers the rest.
+// A session created earlier in the same flush is in no directory store without one,
+// and the global list gets it only when the batch publishes.
+const createdInBatch = (sessionID: string, batch?: DirectoryEventBatch): Session | undefined => {
+  const events = batch?.globalSessionEvents ?? []
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type === "session.created" && event.properties.info.id === sessionID) return event.properties.info
+  }
+  return undefined
+}
+
+// The directory store knows the session's record when the directory is open;
+// the batch and the global cache cover the rest.
+const findSessionRecord = (
+  sessionID: string,
+  directory: string,
+  childStores: ChildStoreManager,
+  batch?: DirectoryEventBatch,
+): Session | undefined => {
+  const store = childStores.getChild(directory)
+  const stored = store ? getDirectoryEventState(store, batch).session.find((s) => s.id === sessionID) : undefined
+  return stored ?? createdInBatch(sessionID, batch) ?? useGlobalSessionsStore.getState().entityById.get(sessionID)
+}
+
+// Only top-level sessions raise notifications.
 const isSubtaskSession = (
   sessionID: string,
   directory: string,
   childStores: ChildStoreManager,
   batch?: DirectoryEventBatch,
+): boolean => Boolean(findSessionRecord(sessionID, directory, childStores, batch)?.parentID)
+
+// A btw side conversation is a fork the user talks to, so it ends like a main session.
+const isSubagentSession = (
+  sessionID: string,
+  directory: string,
+  childStores: ChildStoreManager,
+  batch?: DirectoryEventBatch,
 ): boolean => {
-  const store = childStores.getChild(directory)
-  const stored = store ? getDirectoryEventState(store, batch).session.find((s) => s.id === sessionID) : undefined
-  const session = stored ?? useGlobalSessionsStore.getState().entityById.get(sessionID)
-  return Boolean(session?.parentID)
+  const session = findSessionRecord(sessionID, directory, childStores, batch)
+  return Boolean(session?.parentID) && !isBtwSession(session)
 }
 
 const notifyPermissionAsked = (permission: PermissionRequest, directory: string): void => {
+  soundReminders.announce({ kind: "permission", requestId: permission.id, sessionId: permission.sessionID, directory })
   showPermissionNeededToast({
     permission,
     directory,
@@ -1982,6 +2057,8 @@ const forgetAutoAnswerWait = (sessionID: string, permissionID: string): void => 
 
 const notifyFormCreated = (form: FormRequest, directory: string): void => {
   const sessionID = form.sessionID
+  // The sound has its own "play when" setting, so it does not follow the toast's viewed check below.
+  soundReminders.announce({ kind: "form", requestId: form.id, sessionId: sessionID, directory })
   const toastKey = getFormToastKey(sessionID, form.id)
   if (isViewedInCurrentSession(directory, sessionID) || !toastKey || pendingFormToastIds.has(toastKey)) return
   pendingFormToastIds.add(toastKey)
@@ -2000,7 +2077,9 @@ const notifyFormCreated = (form: FormRequest, directory: string): void => {
 const notifyWaitingPage = (event: Extract<SyncEvent, { type: "openchamber.page-waiting" }>): void => {
   const { sessionID, page } = event.properties
   const directory = event.properties.directory ?? resolveCachedSessionDirectory(sessionID)
-  if (!directory || isViewedInCurrentSession(directory, sessionID)) return
+  if (!directory) return
+  soundReminders.announce({ kind: "page", requestId: page.id, sessionId: sessionID, directory })
+  if (isViewedInCurrentSession(directory, sessionID)) return
   toast.info(page.title, {
     id: `page-${sessionID}:${page.id}`,
     description: FORM_TOAST_DESCRIPTION,
@@ -2011,9 +2090,22 @@ const notifyWaitingPage = (event: Extract<SyncEvent, { type: "openchamber.page-w
 // Blocking requests in a directory without a store still deserve the in-app
 // toast: the sidebar row and tray approvals need the directory store, but the
 // toast only needs the request and where to open it. VS Code keeps its
-// extension-host auto-accept path, which runs on the store branch only.
+// extension-host auto-accept path, which runs on the store branch only, and
+// shows no toast here; the sound still says that a request waits, unless the
+// session's mode would have the host answer it.
 const notifyBlockingRequestWithoutStore = (payload: SyncEvent, directory: string, replayAsAsk: (() => void) | null): void => {
-  if (isVSCodeRuntime()) return
+  if (isVSCodeRuntime()) {
+    if (payload.type === "permission.asked") {
+      const { id, sessionID } = payload.properties
+      if (usePermissionStore.getState().getSessionMode(sessionID) === "ask") {
+        soundReminders.announce({ kind: "permission", requestId: id, sessionId: sessionID, directory })
+      }
+    } else if (payload.type === "form.created") {
+      const { id, sessionID } = payload.properties.form
+      soundReminders.announce({ kind: "form", requestId: id, sessionId: sessionID, directory })
+    }
+    return
+  }
   if (payload.type === "permission.asked") {
     const permission = payload.properties
     if (replayAsAsk && holdBackUntilAutoAnswered(permission, replayAsAsk)) return
@@ -2025,6 +2117,15 @@ const notifyBlockingRequestWithoutStore = (payload: SyncEvent, directory: string
   }
 }
 
+const turnOutcomeOf = (
+  payload: Extract<SyncEvent, { type: "session.idle" | "session.error" }>,
+): "completed" | "interrupted" | "failed" => {
+  if (payload.type === "session.idle") return payload.properties.outcome === "interrupted" ? "interrupted" : "completed"
+  // Pressing Stop can be recorded as an error; that is a stop, not a failure.
+  const { type, message } = payload.properties.error
+  return isStoppedTurnError(type, message) ? "interrupted" : "failed"
+}
+
 const recordTurnOutcomeNotification = (
   payload: Extract<SyncEvent, { type: "session.idle" | "session.error" }>,
   directory: string,
@@ -2033,6 +2134,11 @@ const recordTurnOutcomeNotification = (
 ): void => {
   const { sessionID } = payload.properties
   if (!sessionID) return
+  // Whether this turn's end plays a sound is decided from the status edge; this says how the turn ended.
+  turnEndTracker.noteOutcome(sessionID, turnOutcomeOf(payload), {
+    isSubagent: () => isSubagentSession(sessionID, directory, childStores, batch),
+  })
+  agentActivity.turnEnded(sessionID)
   const errorSummary = payload.type === "session.error" ? summarizeOpenCodeError(payload.properties.error) : null
   const responseBody = payload.type === "session.error" ? responseBodyOf(payload.properties.error) : null
   if (errorSummary) {
@@ -2047,6 +2153,45 @@ const recordTurnOutcomeNotification = (
     time: Date.now(),
     error: { ...errorSummary, responseBody },
   })
+}
+
+/**
+ * The "agent starts working" sounds. A turn begins at the status event OpenCode
+ * stamps `live`; a main session then announces itself with its first output,
+ * a subagent at once. Runs next to the streaming path, so a delta costs one
+ * `Set` size read while no turn waits for its first output.
+ */
+const noteAgentActivity = (
+  payload: SyncEvent,
+  directory: string,
+  childStores: ChildStoreManager,
+  batch?: DirectoryEventBatch,
+): void => {
+  switch (payload.type) {
+    case "message.part.delta":
+    case "message.tool.transition":
+      agentActivity.outputSeen(payload.properties.sessionID, payload.properties.messageID)
+      return
+    case "session.status": {
+      const { sessionID, turnStart } = payload.properties
+      if (turnStart?.source !== "live") return
+      agentActivity.turnStarted(sessionID, { isSubagent: () => isSubagentSession(sessionID, directory, childStores, batch) })
+      return
+    }
+  }
+}
+
+/**
+ * Tool ticks and file edit sounds belong to the session the user is looking at;
+ * background sessions would make constant noise. Only live tool transitions
+ * count, never a snapshot of a part.
+ */
+const noteToolSound = (directory: string, previous: Part | undefined, next: Part): void => {
+  if (!soundSignals.toolSoundsWanted()) return
+  const sound = toolSoundOf(previous, next)
+  if (!sound || !isViewedInCurrentSession(directory, next.sessionID)) return
+  if (sound === "toolTick") soundSignals.toolStarted()
+  else soundSignals.fileEdited()
 }
 
 type ControlStreamOnlyEvent = Exclude<ControlStreamSyncEvent, { type: "session.patched" }>
@@ -2065,7 +2210,7 @@ const isControlStreamOnlyEvent = (payload: SyncEvent): payload is ControlStreamO
  * replaces a run summary without a revision, so a second copy from the
  * WebSocket, arriving in a different order, could undo a newer change.
  */
-const applyControlStreamOnlyEvent = (payload: ControlStreamOnlyEvent): void => {
+export const applyControlStreamOnlyEvent = (payload: ControlStreamOnlyEvent): void => {
   switch (payload.type) {
     // A page that waits for the user's answer lives only in the cross-directory
     // index: no directory store holds it, since OpenCode never hears of the wait.
@@ -2163,6 +2308,9 @@ export function handleEvent(
 
   if (payload.type === "session.patched") {
     noteForkedSessionPatched(payload.properties.sessionID)
+    // The server's stamp for a turn's end, the same in every window; the `session.idle` or `session.error` that follows resolves it.
+    const turnEnd = payload.properties.patch.time?.idle
+    if (turnEnd !== undefined) turnEndTracker.noteTurnEnd(payload.properties.sessionID, turnEnd)
   }
 
   if (payload.type === "session.forked") {
@@ -2220,6 +2368,7 @@ export function handleEvent(
       if (!heldForAutoAnswer) applyGlobalBlockingRequestEvents(directory, [payload])
       applyRecoverableQuestionEvents(directory, [payload])
     }
+    noteAgentActivity(payload, directory, childStores, batch)
   }
 
   // Turn-complete and error notifications are recorded before the directory
@@ -2499,6 +2648,7 @@ export function handleEvent(
   if (updatedPart) {
     sessionEvents.requestGitRefreshForToolTransition(resolvedDirectory, previousPart, updatedPart)
     fileTreeChanges.toolTransition(resolvedDirectory, previousPart, updatedPart)
+    if (payload.type === "message.tool.transition") noteToolSound(resolvedDirectory, previousPart, updatedPart)
   }
   if (payload.type === "message.patched" && payload.properties.patch.time?.completed !== undefined) {
     const { sessionID, patch } = payload.properties
@@ -3285,19 +3435,7 @@ export function SyncProvider(props: {
         lastStreamActivityAtRef.current = Date.now()
       },
       onEvents: (directory, payloads) => {
-        const batch = createDirectoryEventBatch()
-        try {
-          for (const payload of payloads) {
-            dispatchVSCodeRuntimeNotificationEvent(directory, payload)
-            if (payload.type === "installation.update-available") {
-              const { version } = payload.properties
-              if (version) dispatchOpenCodeUpdateAvailable({ version })
-            }
-            handleEvent(directory, payload, childStores, routingIndex, runtimeKey, false, currentDirectoryRef.current, batch)
-          }
-        } finally {
-          publishDirectoryEventBatch(batch)
-        }
+        handleDirectoryEvents(directory, payloads, childStores, routingIndex, runtimeKey, currentDirectoryRef.current)
       },
       onSpaceStream: ({ spaceId, status }) => {
         // A space's stream went: its sessions may be old until it answers again. Back: re-read
@@ -3362,6 +3500,8 @@ export function SyncProvider(props: {
         })
         const isFirstConnect = !pipelineHasConnectedRef.current
         pipelineHasConnectedRef.current = true
+        // The server replays what this window missed; the sounds for it play once, not once per replayed event.
+        if (!isFirstConnect) soundSignals.beginReplayGrace()
         if (!replayReset && isFirstConnect && !pipelineDisconnectedBeforeFirstConnectRef.current) {
           return
         }
@@ -3390,6 +3530,7 @@ export function SyncProvider(props: {
           hasEverConnected: true,
           connectionPhase: "connected",
         })
+        soundSignals.beginReplayGrace()
         resyncAfterStreamGap("transport-switch")
       },
     })

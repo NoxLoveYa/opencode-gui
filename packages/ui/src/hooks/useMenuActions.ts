@@ -16,6 +16,7 @@ import { showOpenCodeStatus } from '@/lib/openCodeStatus';
 import { useI18n } from '@/lib/i18n';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
 import { navigateSessionHistory } from '@/lib/sessionNavigationHistory';
+import { soundSignals } from '@/lib/sounds/signals';
 
 const getActiveElementSelectedText = (): string => {
   if (typeof document === 'undefined') {
@@ -250,7 +251,9 @@ export const useMenuActions = (
           const copyEvent = new Event('openchamber:copy', { cancelable: true });
           const wasHandled = !window.dispatchEvent(copyEvent);
           if (!wasHandled) {
-            void copyCurrentSelectionFallback();
+            void copyCurrentSelectionFallback().then((copied) => {
+              if (copied) soundSignals.copied();
+            });
           }
           break;
         }

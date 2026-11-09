@@ -38,6 +38,7 @@ import {
 } from '@/lib/projectActionTerminal';
 import { getSelectedProjectActionId, setSelectedProjectActionId } from '@/lib/projectActionSelection';
 import { observeTerminalSessions } from '@/lib/terminalSessionObserver';
+import { soundSignals } from '@/lib/sounds/signals';
 import type { TerminalTab } from '@/stores/useTerminalStore';
 
 type UrlWatchEntry = {
@@ -662,7 +663,8 @@ export const useProjectActionsRunner = ({
         const currentExecutionId = tab.purpose.executionId;
         const streamKey = executionKey(tabDirectory, actionId, currentExecutionId);
         if (streamCleanupByRunKeyRef.current[streamKey]) continue;
-        const subscription = terminal.connect(tab.terminalSessionId, {
+        const tabSessionId = tab.terminalSessionId;
+        const subscription = terminal.connect(tabSessionId, {
           onEvent: (event) => {
             if (!matchesActionExecution(tabDirectory, tab.id, currentExecutionId)) return;
             if (event.type === 'snapshot') {
@@ -681,6 +683,8 @@ export const useProjectActionsRunner = ({
               useTerminalStore.getState().appendToBuffer(tabDirectory, tab.id, output, event.sequence, event.replayData);
             }
             if (event.type === 'exit') {
+              // The live end of the process; a stop the user made has claimed it silently.
+              if (event.sequence !== undefined) soundSignals.terminalFinished(tabSessionId, event.sequence);
               useTerminalStore.getState().setTabLifecycle(tabDirectory, tab.id, 'exited', { expectedExecutionId: currentExecutionId });
               useTerminalStore.getState().setTabPurpose(tabDirectory, tab.id, { type: 'project-action', actionId, executionId: null });
               clearExecutionUi(tabDirectory, actionId, currentExecutionId);
@@ -915,6 +919,7 @@ export const useProjectActionsRunner = ({
               useTerminalStore.getState().appendToBuffer(executionDirectory, tabId, output, event.sequence, event.replayData);
             }
             if (event.type === 'exit') {
+              if (event.sequence !== undefined) soundSignals.terminalFinished(activeSessionId, event.sequence);
               useTerminalStore.getState().setTabLifecycle(executionDirectory, tabId, 'exited', { expectedExecutionId: adoptedExecutionId });
               useTerminalStore.getState().setConnecting(executionDirectory, tabId, false, { expectedExecutionId: adoptedExecutionId });
               useTerminalStore.getState().setTabPurpose(executionDirectory, tabId, { type: 'project-action', actionId: discovered.id, executionId: null });
@@ -1047,6 +1052,8 @@ export const useProjectActionsRunner = ({
       return;
     }
 
+    // The exit this stop causes is the user's own: no window plays it.
+    soundSignals.terminalStopped(activeRun.sessionId);
     await stopProjectActionTerminalSession({
       terminal,
       sessionId: activeRun.sessionId,
@@ -1056,6 +1063,8 @@ export const useProjectActionsRunner = ({
       },
       restoreRunning: () => {
         setTabLifecycle(activeRun.directory, activeRun.tabId, 'running', { expectedExecutionId: activeRun.executionId });
+        // The process survived the stop: its real end is the end of a process on its own.
+        soundSignals.terminalStopFailed(activeRun.sessionId);
       },
       clearSession: () => {
         setTabSessionId(activeRun.directory, activeRun.tabId, null, { expectedExecutionId: activeRun.executionId });

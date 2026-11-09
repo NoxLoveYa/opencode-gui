@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
 
 import type { TerminalHandlers } from '@/lib/api/types';
 import { useTerminalStore } from '@/stores/useTerminalStore';
+import { soundSignals } from '@/lib/sounds/signals';
 import { noteSpaceCreationRequest, resetSpaceCreationRequests } from '@/lib/spaces/space-creation-requests';
 import type { SpaceEntry } from '@/lib/spaces/spaces-api';
 import { useSpacesStore } from '@/lib/spaces/spaces-store';
@@ -28,6 +29,7 @@ const terminalRuntime = {
   sendInput: async () => undefined,
   resize: async () => undefined,
   close: async (sessionId: string) => { closeCalls.push(sessionId); },
+  restartSession: async (sessionId: string) => ({ sessionId, cols: 80, rows: 24, status: 'running' as const }),
   updateAppearance: async () => undefined,
   connect: (sessionId: string, handlers: TerminalHandlers) => {
     connectCalls.push(sessionId);
@@ -150,7 +152,10 @@ mock.module('@/components/ui/sortable-tabs-strip', () => ({
     )),
   ),
 }));
-mock.module('@/lib/i18n', () => ({ useI18n: () => i18n, isRightToLeft: () => false }));
+// The whole module with only the hook replaced: a partial mock would leave `I18nProvider` and the rest
+// missing for every file that runs after this one in the same process.
+const realI18n = await import('@/lib/i18n');
+mock.module('@/lib/i18n', () => ({ ...realI18n, useI18n: () => i18n, isRightToLeft: () => false }));
 
 const { TerminalView } = await import('./TerminalView');
 
@@ -328,7 +333,7 @@ describe('TerminalView project action tab indicator', () => {
     store.setTabSessionId('/repo', tab.id, `srv-${label}`);
     store.setActiveTab('/repo', tab.id);
     connectBehavior = (_sessionId, handlers) => {
-      void Promise.resolve().then(() => handlers.onEvent({ type: 'exit', exitCode: 0 }));
+      void Promise.resolve().then(() => handlers.onEvent({ type: 'exit', sequence: 7, exitCode: 0 }));
       return { close: () => undefined };
     };
     await act(async () => root.render(React.createElement(TerminalView, { visible: true })));
@@ -377,6 +382,115 @@ describe('TerminalView project action tab indicator', () => {
     expect(closeCalls).toEqual([]);
     expect(useTerminalStore.getState().getDirectoryState('/repo')!.tabs.some((entry) => entry.id === tab.id)).toBe(false);
     expect(host.textContent).not.toContain('terminalView.error.connectionFailed');
+  });
+
+  describe('terminal done sound', () => {
+    let finished: ReturnType<typeof spyOn>;
+    let stopped: ReturnType<typeof spyOn>;
+    const heard: string[] = [];
+
+    beforeEach(() => {
+      heard.length = 0;
+      finished = spyOn(soundSignals, 'terminalFinished').mockImplementation((id, sequence) => { heard.push(`done:${id}:${sequence}`); });
+      stopped = spyOn(soundSignals, 'terminalStopped').mockImplementation((id) => { heard.push(`stopped:${id}`); });
+    });
+
+    afterEach(() => {
+      finished.mockRestore();
+      stopped.mockRestore();
+    });
+
+    const showTab = async (label: string, session = `srv-${label}`) => {
+      const store = useTerminalStore.getState();
+      const tab = store.getDirectoryState('/repo')!.tabs.find((entry) => entry.label === label)!;
+      store.setTabSessionId('/repo', tab.id, session);
+      store.setActiveTab('/repo', tab.id);
+      return tab.id;
+    };
+
+    test('a process that exits is announced from the exit event even though its tab closes on exit', async () => {
+      const tabId = await exitActiveTab('Interactive');
+      expect(useTerminalStore.getState().getDirectoryState('/repo')!.tabs.some((tab) => tab.id === tabId)).toBe(false);
+      expect(heard).toEqual(['done:srv-Interactive:7']);
+    });
+
+    test('a process that exits is announced when its tab stays', async () => {
+      uiState.terminalCloseOnExit = false;
+      await exitActiveTab('Build');
+      // This stub repeats its exit on every subscription; the claim of the exit plays it once.
+      expect(new Set(heard)).toEqual(new Set(['done:srv-Build:7']));
+    });
+
+    test('an exit without a sequence is not announced, since it could not be told from another end of the session', async () => {
+      uiState.terminalCloseOnExit = false;
+      const tabId = await showTab('Build');
+      let handlers: TerminalHandlers | null = null;
+      connectBehavior = (_sessionId, next) => {
+        handlers = next;
+        return { close: () => undefined };
+      };
+      await act(async () => root.render(React.createElement(TerminalView, { visible: true })));
+      await flushEffects();
+      await act(async () => handlers!.onEvent({ type: 'exit', exitCode: 0 }));
+      expect(useTerminalStore.getState().getDirectoryState('/repo')!.tabs.find((tab) => tab.id === tabId)?.lifecycle).toBe('exited');
+      expect(heard).toEqual([]);
+    });
+
+    test('a late snapshot that says exited, a fatal stream error and a lost session announce nothing', async () => {
+      uiState.terminalCloseOnExit = false;
+      const tabId = await showTab('Build');
+      let handlers: TerminalHandlers | null = null;
+      connectBehavior = (_sessionId, next) => {
+        handlers = next;
+        return { close: () => undefined };
+      };
+      await act(async () => root.render(React.createElement(TerminalView, { visible: true })));
+      await flushEffects();
+      expect(handlers).not.toBeNull();
+
+      await act(async () => handlers!.onEvent({ type: 'snapshot', sequence: 1, data: '', status: 'exited' }));
+      expect(useTerminalStore.getState().getDirectoryState('/repo')!.tabs.find((tab) => tab.id === tabId)?.lifecycle).toBe('exited');
+      expect(heard).toEqual([]);
+
+      useTerminalStore.getState().setTabLifecycle('/repo', tabId, 'running');
+      await act(async () => handlers!.onError?.(Object.assign(new Error('socket closed'), { code: 'CONNECTION_FAILED' }), true));
+      expect(useTerminalStore.getState().getDirectoryState('/repo')!.tabs.find((tab) => tab.id === tabId)?.lifecycle).toBe('exited');
+      expect(heard).toEqual([]);
+    });
+
+    // Closing retires the server session and a restart drops the old process's events, so neither sends an
+    // exit and neither needs a claim; a claim by session id would silence the real end of the next process.
+    test('closing a tab whose process still runs claims nothing', async () => {
+      const interactive = useTerminalStore.getState().getDirectoryState('/repo')!.tabs.find((entry) => entry.label === 'Interactive')!;
+      useTerminalStore.getState().setTabSessionId('/repo', interactive.id, 'srv-Interactive');
+      await act(async () => root.render(React.createElement(TerminalView, { visible: false })));
+      await act(async () => {
+        host.querySelector<HTMLElement>(`[data-tab-close="${interactive.id}"]`)?.click();
+      });
+      await flushEffects();
+      expect(heard).toEqual([]);
+    });
+
+    test('restarting a shell claims nothing, and the restarted shell\'s own end is announced', async () => {
+      uiState.terminalCloseOnExit = false;
+      await showTab('Interactive', 'srv-Interactive');
+      const handlersOf: TerminalHandlers[] = [];
+      connectBehavior = (_sessionId, next) => {
+        handlersOf.push(next);
+        return { close: () => undefined };
+      };
+      await act(async () => root.render(React.createElement(TerminalView, { visible: true })));
+      await flushEffects();
+      await act(async () => {
+        host.querySelector<HTMLElement>('[aria-label="terminalView.actions.restart"]')?.click();
+      });
+      await flushEffects();
+      expect(heard).toEqual([]);
+      expect(handlersOf.length).toBeGreaterThan(1);
+
+      await act(async () => handlersOf.at(-1)!.onEvent({ type: 'exit', sequence: 12, exitCode: 0 }));
+      expect(heard).toEqual(['done:srv-Interactive:12']);
+    });
   });
 
   test('a project action that exits keeps its output when closing on exit is off', async () => {

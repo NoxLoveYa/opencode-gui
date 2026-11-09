@@ -207,6 +207,11 @@ export const HelpDialog: React.FC = () => {
           keys: '',
         },
         {
+          id: 'toggle_sounds_mute',
+          icon: "volume-up",
+          keys: '',
+        },
+        {
           id: 'toggle_services_menu',
           descriptionKey: 'helpDialog.item.toggleServicesMenu',
           icon: "stack",

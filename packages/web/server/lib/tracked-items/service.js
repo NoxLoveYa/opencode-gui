@@ -33,6 +33,10 @@ const BACKOFF_BASE_MS = 30 * SECOND;
 const BACKOFF_MAX_MS = 15 * MINUTE;
 // No account on that host: nothing will answer until one is connected.
 const DISCONNECTED_RETRY_MS = 2 * MINUTE;
+// A change is live news (a client may play a sound for it) only when the read
+// before it was recent: within the item's cadence plus this slack for a slow
+// provider or a late timer.
+const CONTINUITY_SLACK_MS = 30 * SECOND;
 
 const PERSIST_DEBOUNCE_MS = 2 * SECOND;
 const RETENTION_MS = 12 * 60 * MINUTE;
@@ -216,7 +220,9 @@ export function createTrackedItemsService({
     for (const [id, connection] of connections) {
       const states = [];
       for (const key of changedKeys) {
-        if (connection.keys.has(key)) states.push(publicState(key, entries.get(key)));
+        if (!connection.keys.has(key)) continue;
+        const entry = entries.get(key);
+        states.push(entry.continuous ? { ...publicState(key, entry), continuous: true } : publicState(key, entry));
       }
       if (states.length === 0) continue;
       if (!send(id, { type: 'openchamber:tracked-items.changed', properties: { states } })) connections.delete(id);
@@ -229,18 +235,31 @@ export function createTrackedItemsService({
     backoff.set(group, { failures, until: now() + delay });
   };
 
+  // Whether a read at `at` follows the previous one closely enough that a
+  // change between them happened while the server was watching: the previous
+  // read succeeded, knew the item, and is within the cadence of that state.
+  // A restored entry, a read after a failure or after the window was hidden
+  // for a while reports a catch-up, not news.
+  const followsClosely = (entry, at) => Boolean(entry.state)
+    && entry.checkedAt > 0
+    && !entry.missed
+    && at - entry.checkedAt <= refreshIntervalMs(entry) + CONTINUITY_SLACK_MS;
+
   // Applies one answered batch. An item the provider did not answer is
   // unknown, not closed: its state is cleared, never invented.
   const applyAnswers = (batch, answers, changed, requestedAt) => {
     const checkedAt = now();
     for (const [key, entry] of batch) {
       forced.delete(key);
+      const continuous = followsClosely(entry, checkedAt);
       entry.checkedAt = checkedAt;
       entry.requestedAt = requestedAt;
+      entry.missed = false;
       const answer = answers.get(key) ?? null;
       if (answer) entry.fetchedAt = checkedAt;
       if (JSON.stringify(answer) === JSON.stringify(entry.state)) continue;
       entry.state = answer;
+      entry.continuous = continuous;
       changed.add(key);
     }
   };
@@ -301,6 +320,8 @@ export function createTrackedItemsService({
       }
       // The last known state stays; the items wait for the provider.
       for (const [key] of batch) forced.delete(key);
+      // Nothing from here on was read this tick; the next answer is a catch-up.
+      for (const [, entry] of groupEntries.slice(start)) entry.missed = true;
       if (result?.status === 'disconnected') backoff.set(group, { failures: 0, until: now() + DISCONNECTED_RETRY_MS });
       else noteFailure(group, Number.isFinite(result?.retryAfterMs) ? result.retryAfterMs : undefined);
       return;

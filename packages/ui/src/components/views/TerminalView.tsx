@@ -39,6 +39,7 @@ import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore'
 import { applyTerminalModifier, terminalControlCharacter, terminalSequenceForKey, type TerminalModifier as Modifier, type TerminalQuickKey as MobileKey } from '@/lib/terminalInput';
 import { formatShortcutForDisplay } from '@/lib/shortcuts';
 import { observeTerminalSessions } from '@/lib/terminalSessionObserver';
+import { soundSignals } from '@/lib/sounds/signals';
 import { ContextPanelHeaderToolbar } from '@/components/layout/contextPanelHeaderSlot';
 import { useInContextPanelHeader } from '@/components/layout/contextPanelHeaderSlotContext';
 import { useZoneSurfaceDragOut } from '@/components/layout/zoneSurfaceDragContext';
@@ -503,6 +504,9 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
                                 break;
                             }
                             case 'exit': {
+                                // The live end of the process, announced before a close-on-exit removes the tab.
+                                // A stop the user made has claimed it silently.
+                                if (event.sequence !== undefined) soundSignals.terminalFinished(terminalId, event.sequence);
                                 if (closesOnExit()) {
                                     closeTerminalTab(directory, tabId, { processExited: true });
                                     break;

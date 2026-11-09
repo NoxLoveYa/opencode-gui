@@ -766,6 +766,9 @@ describe('terminal runtime', () => {
       expect(broadcastUiEvent).toHaveBeenCalledTimes(1);
       harness.processes[0].emitExit(7, 0);
       expect(broadcastUiEvent).toHaveBeenCalledTimes(2);
+      // The exit names its session and the sequence of its `exit` event, so a client that does not stream it can announce the end.
+      const exited = broadcastUiEvent.mock.calls[1][0].properties.exited;
+      expect(exited).toEqual({ sessionId: 'term-1', sequence: expect.any(Number) });
       const resize = createResponse();
       harness.routes.post.get('/api/terminal/:sessionId/resize')({ params: { sessionId: 'term-1' }, body: { cols: 80, rows: 24 } }, resize);
       expect(resize.statusCode).toBe(200);
@@ -773,6 +776,27 @@ describe('terminal runtime', () => {
       await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' } }, closed);
       expect(closed.body).toEqual({ success: true });
       expect(broadcastUiEvent).toHaveBeenCalledTimes(3);
+    } finally { await harness.runtime.shutdown(); }
+  });
+
+  it('names no exit for a process whose session was restarted or closed', async () => {
+    const broadcastUiEvent = vi.fn();
+    const harness = createHarness({ broadcastUiEvent });
+    try {
+      await harness.routes.post.get('/api/terminal/create')({ body: { sessionId: 'term-1', cwd: '/repo' } }, createResponse());
+      await harness.routes.post.get('/api/terminal/:sessionId/restart')({ params: { sessionId: 'term-1' }, body: {} }, createResponse());
+      const exitsNamed = () => broadcastUiEvent.mock.calls.filter(([event]) => event.properties.exited).length;
+
+      // The replaced process dying is the restart, not the end of the shell.
+      harness.processes[0].emitExit(0, 0);
+      expect(exitsNamed()).toBe(0);
+
+      harness.processes[1].emitExit(0, 0);
+      expect(exitsNamed()).toBe(1);
+
+      await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' } }, createResponse());
+      harness.processes[1].emitExit(0, 0);
+      expect(exitsNamed()).toBe(1);
     } finally { await harness.runtime.shutdown(); }
   });
 

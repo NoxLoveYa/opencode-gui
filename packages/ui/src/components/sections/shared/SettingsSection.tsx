@@ -4,6 +4,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Radio } from '@/components/ui/radio';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
+import { getCurrentIntlLocale } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { SettingsInfoHint } from './SettingsInfoHint';
 
@@ -407,6 +408,13 @@ interface SettingsCheckboxRowProps {
    * and lines up with the label.
    */
   footer?: React.ReactNode;
+  /**
+   * Controls at the trailing edge of the row's first line (a picker, a
+   * preview button). They sit outside the clickable label, so pressing one
+   * never toggles the checkbox. On a narrow pane they wrap to a line of
+   * their own.
+   */
+  control?: React.ReactNode;
 }
 
 /** Shared checkbox setting row with keyboard support. */
@@ -422,6 +430,7 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
   labelAccessory,
   info,
   footer,
+  control,
 }) => {
   const toggle = () => {
     if (!disabled) onChange(!checked);
@@ -429,9 +438,12 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
 
   const hasDescription = description != null;
 
+  // A footer or a trailing control wraps the row, so the anchor moves out to the wrapper.
+  const wrapped = footer != null || control != null;
+
   const row = (
     <div
-      data-settings-item={footer != null ? undefined : settingsItem}
+      data-settings-item={wrapped ? undefined : settingsItem}
       className={cn(
         'group flex cursor-pointer gap-2 py-0.5',
         hasDescription ? 'items-start' : 'items-center',
@@ -474,12 +486,100 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
     </div>
   );
 
-  if (footer == null) return row;
+  if (!wrapped) return row;
   return (
     <div data-settings-item={settingsItem}>
-      {row}
+      {control != null ? (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <div className="min-w-0">{row}</div>
+          <div className="flex max-w-full shrink-0 items-center gap-1">{control}</div>
+        </div>
+      ) : row}
       {/* Checkbox (16px) plus the row's gap (8px): the footer starts under the label. */}
-      <div className="ps-6">{footer}</div>
+      {footer != null ? <div className="ps-6">{footer}</div> : null}
+    </div>
+  );
+};
+
+interface SettingsRangeSliderProps {
+  value: number;
+  /** Called once the user lets go, not on every step of a drag. */
+  onCommit: (value: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+  ariaLabel: string;
+  disabled?: boolean;
+  className?: string;
+}
+
+/**
+ * A range input with its value as a percentage beside it. While dragging, the value lives in
+ * the slider; the setting is written once on release. In VS Code every write
+ * to localStorage raises an event in every webview, so a drag must not write
+ * per step.
+ */
+export const SettingsRangeSlider: React.FC<SettingsRangeSliderProps> = ({
+  value,
+  onCommit,
+  min,
+  max,
+  step = 1,
+  ariaLabel,
+  disabled = false,
+  className,
+}) => {
+  const [draft, setDraft] = React.useState<number | null>(null);
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const onCommitRef = React.useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const valueRef = React.useRef(value);
+  valueRef.current = value;
+
+  React.useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    // React's onChange follows the `input` event, which fires on every step.
+    // The native `change` event fires once, when the user lets go or a key
+    // press ends.
+    const commit = () => {
+      setDraft(null);
+      if (Number(input.value) !== valueRef.current) onCommitRef.current(Number(input.value));
+    };
+    // A drag that ends on the value it started from raises no `change`, which
+    // would leave the draft hiding the setting. Letting go or leaving the
+    // slider on the stored value drops it; a different value waits for `change`.
+    const dropDraftOnStoredValue = () => {
+      if (Number(input.value) === valueRef.current) setDraft(null);
+    };
+    input.addEventListener('change', commit);
+    input.addEventListener('pointerup', dropDraftOnStoredValue);
+    input.addEventListener('blur', dropDraftOnStoredValue);
+    return () => {
+      input.removeEventListener('change', commit);
+      input.removeEventListener('pointerup', dropDraftOnStoredValue);
+      input.removeEventListener('blur', dropDraftOnStoredValue);
+    };
+  }, []);
+
+  const shown = draft ?? value;
+  return (
+    <div className={cn('flex min-w-0 items-center gap-3', className)}>
+      <input
+        ref={inputRef}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={shown}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onChange={(event) => setDraft(Number(event.target.value))}
+        className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--interactive-border)] disabled:cursor-not-allowed disabled:opacity-50 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-[var(--primary-base)] [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--primary-base)]"
+      />
+      <span className="typography-meta w-11 shrink-0 text-end tabular-nums text-muted-foreground" aria-hidden>
+        {new Intl.NumberFormat(getCurrentIntlLocale(), { style: 'percent', maximumFractionDigits: 0 }).format(shown / 100)}
+      </span>
     </div>
   );
 };

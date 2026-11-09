@@ -310,6 +310,12 @@ const SHORTCUT_GROUPS = {
       customizable: true,
       settingsLabelKey: 'settings.openchamber.keyboardShortcuts.action.cycle_theme.label',
     },
+    {
+      id: 'toggle_sounds_mute',
+      defaultBinding: 'mod+k m',
+      customizable: true,
+      settingsLabelKey: 'settings.openchamber.keyboardShortcuts.action.toggle_sounds_mute.label',
+    },
   ],
   // Desktop-shell capabilities: registered as OS-level global shortcuts rather
   // than in-app keybindings, so they carry no in-app default binding. The

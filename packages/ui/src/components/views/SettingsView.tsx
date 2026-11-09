@@ -16,6 +16,7 @@ import { useMcpConfigStore } from '@/stores/useMcpConfigStore';
 import { useSnippetsStore } from '@/stores/useSnippetsStore';
 import { projectSettingsTabForSearchTarget, useProjectSettingsTabStore } from '@/components/sections/projects/projectSettingsTabs';
 import { chatSettingsTabForSearchTarget, useChatSettingsTabStore } from '@/components/sections/openchamber/chatSettingsTabs';
+import { soundSettingsTabForSearchTarget, useSoundSettingsTabStore } from '@/components/sections/openchamber/sounds/soundSettingsTabs';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useSkillsCatalogStore } from '@/stores/useSkillsCatalogStore';
 import { Tooltip, TooltipTrigger } from '@/components/ui/tooltip';
@@ -80,10 +81,12 @@ const SETTINGS_SPLIT_SIDEBAR_WIDTH = 280;
 // The desktop close button: top-1 offset plus its h-7 height.
 const SETTINGS_CLOSE_BUTTON_CLEARANCE = 32;
 const SETTINGS_DETAIL_HISTORY_KEY = '__openchamberSettingsDetail';
-/** The Chat page shows one tab at a time: open the one that holds the item. */
+/** The Chat and Sounds pages show one tab at a time: open the one that holds the item. */
 const openChatSettingsTabFor = (itemId: string): void => {
   const chatTab = chatSettingsTabForSearchTarget(itemId);
   if (chatTab) useChatSettingsTabStore.getState().setTab(chatTab);
+  const soundsTab = soundSettingsTabForSearchTarget(itemId);
+  if (soundsTab) useSoundSettingsTabStore.getState().setTab(soundsTab);
 };
 
 /** How long (in frames, ~0.5 s) a search result or a link waits for its item to render. */
@@ -124,6 +127,7 @@ const pageOrder: SettingsPageSlug[] = [
   'appearance',
   'chat',
   'notifications',
+  'sounds',
   'sessions',
   'routing',
   'shortcuts',
@@ -359,6 +363,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     shortcuts: 'shortcuts',
     sessions: 'sessions',
     notifications: 'notifications',
+    sounds: 'sounds',
     voice: 'voice',
     tunnel: 'tunnel',
     'isolated-spaces': 'spaces',
@@ -700,6 +705,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       case 'shortcuts':
       case 'sessions':
       case 'notifications':
+      case 'sounds':
       case 'voice':
       case 'tunnel':
       case 'isolated-spaces': {

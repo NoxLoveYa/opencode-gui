@@ -214,6 +214,23 @@ export const clearDesktopSessionNotifications = (sessionId: string): void => {
 };
 
 /**
+ * Tells the desktop shell which notification kinds this window plays an
+ * OpenChamber sound for, so their native notifications are shown without the
+ * OS sound. The report names the instance the window shows, because a
+ * notification is covered only by a window that shows the instance it came
+ * from. The shell forgets the report when the window closes or navigates.
+ *
+ * Only the desktop's own instance reports kinds, like the other local-only
+ * capabilities here; a window on another instance reports none, which also
+ * clears what it reported before a runtime switch.
+ */
+export const reportDesktopNotificationSoundCoverage = (kinds: readonly string[]): void => {
+  if (!canUseElectronDesktopIPC()) return;
+  const covered = isDesktopLocalOriginActive() ? kinds : [];
+  void invokeDesktop('desktop_set_notification_sound_coverage', { kinds: covered, runtimeKey: getRuntimeKey() }).catch(() => {});
+};
+
+/**
  * The runtime a Mini Chat window must continue on: the instance its parent
  * window is showing, not the default host. `runtimeKey` names the parent's
  * instance (`local` or `host:<id>`); main turns a relay-capable host into the

@@ -20,8 +20,21 @@ export interface DictationAudioSourceConfig {
 
 export type DictationLevelListener = (level: number) => void;
 
+export interface DictationCaptureOptions {
+    /**
+     * Resolves to the epoch milliseconds before which captured audio is thrown
+     * away (0 for none). The dictation start sound plays until then, and the
+     * microphone would hear it. Until it resolves, audio is thrown away too,
+     * for at most one second.
+     */
+    discardUntil?: Promise<number>;
+}
+
+/** How long audio is thrown away while the start sound has not yet said how long it lasts. */
+const PENDING_DISCARD_MS = 1000;
+
 export interface DictationAudioSource {
-    start: () => Promise<void>;
+    start: (options?: DictationCaptureOptions) => Promise<void>;
     stop: () => Promise<void>;
     /** Subscribe to the normalized (0..1) mic level. Returns an unsubscribe. */
     subscribeLevel: (listener: DictationLevelListener) => () => void;
@@ -41,6 +54,34 @@ const getAudioContextCtor = (): typeof AudioContext | null => {
 const floatToInt16 = (sample: number): number => {
     const clamped = Math.max(-1, Math.min(1, sample));
     return clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff);
+};
+
+/**
+ * Whether an audio block that arrived at `arrivedAt` and holds the last
+ * `blockSeconds` of microphone audio reaches back before `discardUntil`.
+ * Such a block may hold the tail of the start sound, so it is dropped whole.
+ */
+export const isBeforeCaptureStart = (discardUntil: number, arrivedAt: number, blockSeconds: number): boolean => (
+    discardUntil > 0 && arrivedAt - blockSeconds * 1000 < discardUntil
+);
+
+/**
+ * The stretch of microphone audio to throw away while the start sound plays.
+ * Its end arrives as `soundEnd`; until then the window runs for at most
+ * `PENDING_DISCARD_MS` from `now`, so a sound that never answers cannot eat
+ * the recording. No `soundEnd` means no sound and nothing is thrown away.
+ */
+export const createDiscardWindow = (soundEnd: Promise<number> | undefined, now: number) => {
+    let discardUntil = soundEnd ? now + PENDING_DISCARD_MS : 0;
+    void soundEnd?.then((until) => {
+        discardUntil = until;
+    }, () => {
+        discardUntil = 0;
+    });
+    return {
+        /** Whether a block that arrived at `arrivedAt` and holds the last `blockSeconds` of audio is thrown away. */
+        discards: (arrivedAt: number, blockSeconds: number): boolean => isBeforeCaptureStart(discardUntil, arrivedAt, blockSeconds),
+    };
 };
 
 const resampleToPcm16 = (input: Float32Array, inputRate: number, outputRate: number): Int16Array => {
@@ -154,10 +195,12 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
 
     const graphRef = useRef<CaptureGraph>(emptyGraph());
 
-    const start = useCallback(async () => {
+    const start = useCallback(async (discardUntilResult: Promise<number> | undefined) => {
         if (graphRef.current.started) {
             return;
         }
+
+        const discardWindow = createDiscardWindow(discardUntilResult, Date.now());
 
         if (
             typeof navigator === 'undefined' ||
@@ -208,6 +251,12 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
                     return;
                 }
                 const input = event.inputBuffer.getChannelData(0);
+
+                // A block holds the audio of the stretch just before it arrived.
+                if (discardWindow.discards(Date.now(), input.length / context.sampleRate)) {
+                    emitLevel(0);
+                    return;
+                }
 
                 let sumSquares = 0;
                 for (let i = 0; i < input.length; i++) {
@@ -302,9 +351,9 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
 
     return useMemo(
         () => ({
-            start: async () => {
+            start: async (options?: DictationCaptureOptions) => {
                 try {
-                    await start();
+                    await start(options?.discardUntil);
                 } catch (err) {
                     const normalized = err instanceof Error ? err : new Error(String(err));
                     onErrorRef.current?.(normalized);

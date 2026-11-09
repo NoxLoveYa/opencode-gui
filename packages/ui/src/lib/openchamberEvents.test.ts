@@ -479,6 +479,24 @@ describe('openchamber events', () => {
     }
   });
 
+  test('a terminal session list change names the process that ended only with a session id and exit sequence', async () => {
+    const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
+    const heard: unknown[] = [];
+    const unsubscribe = subscribeOpenchamberEvents((event) => {
+      if (event.type === 'terminal-sessions-changed') heard.push(event.exited ?? null);
+    });
+    try {
+      for (const properties of [{ exited: { sessionId: 'srv_1', sequence: 8 } }, {}, { exited: { sessionId: '', sequence: 8 } }, { exited: { sessionId: 'srv_1' } }, { exited: { sessionId: 'srv_1', sequence: -1 } }]) {
+        MockEventSource.instances[0].onmessage?.({
+          data: JSON.stringify({ type: 'openchamber:terminal-sessions-changed', properties }),
+        });
+      }
+      expect(heard).toEqual([{ sessionId: 'srv_1', sequence: 8 }, null, null, null, null]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test('dispatches a chat-folder change only with its stored revision', async () => {
     const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
     const revisions: number[] = [];

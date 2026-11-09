@@ -39,6 +39,7 @@ import { getInlineCommentDraftKey, useInlineCommentDraftStore, type InlineCommen
 import { useSnippetsStore } from '@/stores/useSnippetsStore';
 import { loadMagicPrompts } from '@/lib/magicPrompts';
 import { getRuntimeKey, subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
+import { soundSignals } from '@/lib/sounds/signals';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import {
     createChatDraftIdentity,
@@ -1731,6 +1732,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         // Clear the composer. The mentions it had confirmed were resolved
         // above, so nothing later needs them.
         setMessage('');
+        soundSignals.sent();
         confirmedMentionsRef.current.clear();
         if (composerAttachments.length > 0) {
             clearAttachedFiles(chatDraftIdentity);
@@ -2387,6 +2389,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         const { primaryAttachments, additionalParts, agentMentionName, skillNames } = outgoing;
 
         if (outgoing.isEmpty) return;
+        soundSignals.sent();
 
         // Skills named inline are attached to the prompt so OpenCode loads
         // them with the message, rather than hoping the model follows a hint.
@@ -5102,6 +5105,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                                 ref={composerRef}
                                 viewStore={composerViewStore}
                                 data-testid="chat-input"
+                                soundFeedback
                                 value={message}
                                 languageContext={languageContext}
                                 onChange={handleEditorChange}

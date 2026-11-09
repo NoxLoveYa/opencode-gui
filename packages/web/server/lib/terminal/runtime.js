@@ -200,8 +200,11 @@ export function createTerminalRuntime({
   logger = console,
 }) {
   const sessions = new Map();
-  // Invalidation only: clients read the authoritative list without command text.
-  const announceSessionsChanged = () => broadcastUiEvent({ type: 'openchamber:terminal-sessions-changed', properties: {} });
+  // Invalidation: clients read the authoritative list without command text.
+  // A process that ended on its own also names itself (`exited`: session id and
+  // the sequence of its `exit` event), so a client that does not stream that
+  // session can still announce the end.
+  const announceSessionsChanged = (exited) => broadcastUiEvent({ type: 'openchamber:terminal-sessions-changed', properties: exited ? { exited } : {} });
   const pendingSessionCreates = new Map();
   const pendingSessionRestarts = new Map();
   const connections = new Set();
@@ -391,7 +394,7 @@ export function createTerminalRuntime({
           session.signal = Number.isInteger(event.signal) ? event.signal : null;
           session.process = null;
           publish(session, { t: 'exit', exitCode: session.exitCode, signal: session.signal });
-          if (sessions.get(session.id) === session) announceSessionsChanged();
+          if (sessions.get(session.id) === session) announceSessionsChanged({ sessionId: session.id, sequence: session.sequence });
         }
       }
     } finally { session.draining = false; }

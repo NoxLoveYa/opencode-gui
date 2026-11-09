@@ -6,6 +6,7 @@ import { useSessionAutoCleanup } from '@/hooks/useSessionAutoCleanup';
 import { useMergedWorktreeCleanup } from '@/hooks/useMergedWorktreeCleanup';
 import { useWindowControlsOverlayLayout } from '@/hooks/useWindowControlsOverlayLayout';
 import { useWindowMaterialEffect } from '@/lib/windowMaterial';
+import { useSoundSystem } from '@/lib/sounds/useSoundSystem';
 import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
@@ -72,6 +73,7 @@ export function SyncRuntimeEffects({ backgroundWorkEnabled }: {
   // Web, desktop, and mobile hand the queue to the OpenChamber server, which
   // delivers it with or without a UI; only VS Code still sends from the UI.
   useQueuedMessageAutoSend(backgroundWorkEnabled && !isServerOwnedMessageQueue());
+  useSoundSystem();
 
   return <SyncOptimisticBridge />;
 }

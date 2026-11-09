@@ -8,6 +8,7 @@ import { AppLinkSecuritySettings } from './AppLinkSecuritySettings';
 import { DefaultsSettings } from './DefaultsSettings';
 import { GitSettings } from './GitSettings';
 import { NotificationSettings } from './NotificationSettings';
+import { SoundSettings } from './sounds/SoundSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { TunnelSettings } from './TunnelSettings';
 import { OpenCodeCliSettings } from './OpenCodeCliSettings';
@@ -62,6 +63,8 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
                 return <GitSectionContent />;
             case 'notifications':
                 return <NotificationSectionContent />;
+            case 'sounds':
+                return <SoundSettings />;
             case 'voice':
                 return <VoiceSectionContent />;
             case 'tunnel':
@@ -82,6 +85,7 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
         git: t('settings.page.git.title'),
         github: t('settings.page.git.title'),
         notifications: t('settings.page.notifications.title'),
+        sounds: t('settings.page.sounds.title'),
         voice: t('settings.page.voice.title'),
         tunnel: t('settings.page.tunnel.title'),
         spaces: t('settings.openchamber.spaces.title'),
@@ -96,6 +100,7 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
         git: undefined,
         github: undefined,
         notifications: t('settings.page.notifications.description'),
+        sounds: t('settings.page.sounds.description'),
         voice: t('settings.page.voice.description'),
         tunnel: t('settings.page.tunnel.description'),
         spaces: undefined,

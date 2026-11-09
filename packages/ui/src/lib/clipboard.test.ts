@@ -1,13 +1,15 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 
-import { copyMarkdownToClipboard, readClipboardText } from './clipboard';
+import { copyMarkdownToClipboard, copyTextToClipboard, readClipboardText } from './clipboard';
 import { flattenAssistantTextParts } from './messages/messageText';
+import { soundSignals } from './sounds/signals';
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 const originalClipboardItem = Object.getOwnPropertyDescriptor(globalThis, 'ClipboardItem');
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
 
-const restoreGlobal = (name: 'navigator' | 'ClipboardItem' | 'window', descriptor?: PropertyDescriptor): void => {
+const restoreGlobal = (name: 'navigator' | 'ClipboardItem' | 'window' | 'document', descriptor?: PropertyDescriptor): void => {
   if (descriptor) {
     Object.defineProperty(globalThis, name, descriptor);
   } else {
@@ -19,6 +21,7 @@ afterEach(() => {
   restoreGlobal('navigator', originalNavigator);
   restoreGlobal('ClipboardItem', originalClipboardItem);
   restoreGlobal('window', originalWindow);
+  restoreGlobal('document', originalDocument);
 });
 
 describe('copyMarkdownToClipboard', () => {
@@ -168,6 +171,55 @@ describe('copyMarkdownToClipboard', () => {
     expect(htmlText).toContain('<p>第一段</p>');
     expect(htmlText).toContain('<p>第二段</p>');
     expect(htmlText).not.toContain('<p>第一段\n第二段</p>');
+  });
+});
+
+describe('the copy sound', () => {
+  let copied: ReturnType<typeof spyOn>;
+  beforeEach(() => { copied = spyOn(soundSignals, 'copied').mockImplementation(() => undefined); });
+  afterEach(() => { copied.mockRestore(); });
+
+  test('plays once for a confirmed copy, plain or rich', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { writeText: async () => undefined } },
+    });
+    expect((await copyTextToClipboard('hello')).ok).toBe(true);
+    expect(copied).toHaveBeenCalledTimes(1);
+
+    class FakeClipboardItem {
+      static supports(): boolean { return false; }
+    }
+    Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { write: async () => undefined } },
+    });
+    expect((await copyMarkdownToClipboard('# a', '<h1>a</h1>')).ok).toBe(true);
+    expect(copied).toHaveBeenCalledTimes(2);
+  });
+
+  test('plays once when the rich write fails and the plain fallback copies', async () => {
+    class FakeClipboardItem {
+      static supports(): boolean { return false; }
+    }
+    Object.defineProperty(globalThis, 'ClipboardItem', { configurable: true, value: FakeClipboardItem });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { write: async () => { throw new Error('unsupported'); }, writeText: async () => undefined } },
+    });
+    expect((await copyMarkdownToClipboard('# a', '<h1>a</h1>')).ok).toBe(true);
+    expect(copied).toHaveBeenCalledTimes(1);
+  });
+
+  test('stays silent when nothing was copied', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { writeText: async () => { throw new Error('denied'); } } },
+    });
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: undefined });
+    expect((await copyTextToClipboard('hello')).ok).toBe(false);
+    expect(copied).not.toHaveBeenCalled();
   });
 });
 

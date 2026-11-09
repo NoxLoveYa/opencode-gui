@@ -1,6 +1,14 @@
+import { soundSignals } from '@/lib/sounds/signals';
+
 export type ClipboardCopyResult =
   | { ok: true; method: 'clipboard' | 'execCommand' }
   | { ok: false; error: string };
+
+/** Every confirmed copy the app makes ends here, so the copy sound comes from one place. */
+const confirmCopy = (method: 'clipboard' | 'execCommand'): ClipboardCopyResult => {
+  soundSignals.copied();
+  return { ok: true, method };
+};
 
 export async function copyTextToClipboard(text: string): Promise<ClipboardCopyResult> {
   let clipboardError: string | null = null;
@@ -8,7 +16,7 @@ export async function copyTextToClipboard(text: string): Promise<ClipboardCopyRe
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
-      return { ok: true, method: 'clipboard' };
+      return confirmCopy('clipboard');
     } catch (error) {
       clipboardError = error instanceof Error ? error.message : String(error);
     }
@@ -28,7 +36,7 @@ export async function copyTextToClipboard(text: string): Promise<ClipboardCopyRe
     document.body.removeChild(textarea);
 
     if (copied) {
-      return { ok: true, method: 'execCommand' };
+      return confirmCopy('execCommand');
     }
   }
 
@@ -93,7 +101,7 @@ export async function copyMarkdownToClipboard(
         payload['text/markdown'] = new Blob([markdown], { type: 'text/markdown' });
       }
       await navigator.clipboard.write([new ClipboardItem(payload)]);
-      return { ok: true, method: 'clipboard' };
+      return confirmCopy('clipboard');
     } catch {
       // Fall back to text only when rich clipboard writes are unavailable.
     }

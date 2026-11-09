@@ -19,6 +19,16 @@ describe('tracked work items', () => {
     });
   });
 
+  test('the server\'s continuous mark rides next to the record, never inside it', () => {
+    const wire = { key: 'linear|ENG-12', item: { provider: 'linear', kind: 'work-item', identifier: 'ENG-12' }, state: null, fetchedAt: 5 };
+    const marked = trackedItemRecordSchema.parse({ ...wire, continuous: true });
+    expect(marked?.continuous).toBe(true);
+    expect(marked?.record).toEqual({ type: 'work-item', item: wire.item, state: null, fetchedAt: 5 });
+    expect(trackedItemRecordSchema.parse(wire)).not.toHaveProperty('continuous');
+    // Only a boolean true counts; anything else is read as not marked.
+    expect(trackedItemRecordSchema.parse({ ...wire, continuous: false })).not.toHaveProperty('continuous');
+  });
+
   test('a Linear record stored before work items had a kind parses, under the same key', () => {
     const record = trackedItemRecordSchema.parse({ key: 'linear|ENG-12', item: { provider: 'linear', identifier: 'ENG-12' }, state: null, fetchedAt: 1 });
     expect(record?.record).toEqual({ type: 'work-item', item: { provider: 'linear', kind: 'work-item', identifier: 'ENG-12' }, state: null, fetchedAt: 1 });
