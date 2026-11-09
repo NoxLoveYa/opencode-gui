@@ -15,6 +15,8 @@ import { htmlRenderI18n } from './html-render.i18n';
 import { documentToolbarI18n } from './document-toolbar.i18n';
 import { uiBlocksI18n } from './ui-blocks.i18n';
 import { updateDialogCanaryI18n } from './update-dialog-canary.i18n';
+import { aboutReleaseNotesI18n } from './about-release-notes.i18n';
+import { updateCheckErrorsI18n } from './update-check-errors.i18n';
 import { secretRequestI18n } from './secret-request.i18n';
 import { sessionNoticesI18n } from './session-notices.i18n';
 import { usageStatsI18n } from './usage-stats.i18n';
@@ -25,7 +27,12 @@ import { soundsI18n } from './sounds.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolsLayoutI18n } from './openchamber-tools-layout.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
+import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
 import { sidebarWorkI18n } from './sidebar-work.i18n';
 import { sidebarSectionsI18n } from './sidebar-sections.i18n';
@@ -49,6 +56,15 @@ import { autocompleteScopeI18n } from './autocomplete-scope.i18n';
 import { workflowsI18n } from './workflows.i18n';
 import { sessionReferencesI18n } from './session-references.i18n';
 import { guestStatusViewI18n } from './guest-status-view.i18n';
+import { tooltipsDiffI18n } from './tooltips-diff.i18n';
+import { tooltipsFilesI18n } from './tooltips-files.i18n';
+import { tooltipsGitI18n } from './tooltips-git.i18n';
+import { tooltipsTrackerI18n } from './tooltips-tracker.i18n';
+import { tooltipsWalkthroughI18n } from './tooltips-walkthrough.i18n';
+import { tooltipsTerminalBrowserI18n } from './tooltips-terminal-browser.i18n';
+import { tooltipsWorkspaceI18n } from './tooltips-workspace.i18n';
+import { tooltipsPanelI18n } from './tooltips-panel.i18n';
+import { tooltipsChatI18n } from './tooltips-chat.i18n';
 
 export const dict = {
   'quota.family.zen': 'نماذج Zen',
@@ -232,7 +248,6 @@ export const dict = {
   'layout.mainTab.terminal': 'الطرفية',
   'layout.mainTab.context': 'السياق',
   'mobile.nav.aria': 'التنقل في الجوال',
-  'mobile.connect.welcome.title': 'الاتصال بـ OpenChamber',
   'mobile.connect.welcome.description': 'أضف عنوان URL لخادم أو امسح رمز QR للإقران لبدء استخدام تطبيق الجوال.',
   'mobile.connect.url.label': 'عنوان URL للخادم',
   'mobile.connect.url.placeholder': 'http://192.168.1.74:2606',
@@ -257,8 +272,13 @@ export const dict = {
   'mobile.connect.scan.failed': 'تعذّر مسح رمز QR هذا. حاول مجددًا أو أدخل عنوان URL يدويًا.',
   'mobile.connect.scan.invalid': 'رمز QR هذا ليس رمز اتصال OpenChamber.',
   'mobile.connect.scan.unsupported': 'مسح رموز QR متاح فقط في تطبيق الجوال المثبّت.',
-  'mobile.connect.saved.title': 'الاتصالات المحفوظة',
-  'mobile.connect.saved.empty': 'لا توجد اتصالات محفوظة بعد.',
+  'mobile.connect.firstRun.title': 'وكلاؤك، أينما كنت.',
+  'mobile.connect.firstRun.description': 'اتصل بـ OpenChamber الذي يعمل على حاسوبك.',
+  'mobile.connect.firstRun.scanHint': 'من «إضافة جهاز»',
+  'mobile.connect.firstRun.addressHint': 'العنوان والرمز',
+  'mobile.connect.lastConnected': 'آخر اتصال',
+  'mobile.connect.saved.other': 'أخرى',
+  'mobile.instances.actionsAria': 'إجراءات {label}',
   'mobile.connect.relay.badge': 'عبر مرحّل OpenChamber',
   'mobile.connect.error.urlRequired': 'أدخل عنوان URL للخادم.',
   'mobile.connect.splash.connectingTo': 'جارٍ الاتصال بالجهاز:',
@@ -272,9 +292,7 @@ export const dict = {
   'mobile.instances.editTitle': 'تعديل النسخة',
   'mobile.instances.edit': 'تعديل',
   'mobile.instances.delete': 'حذف',
-  'mobile.instances.deleteAria': 'حذف {label}',
   'mobile.instances.confirmDeleteAria': 'تأكيد حذف {label}',
-  'mobile.instances.cancelDeleteAria': 'الإبقاء على {label}',
   'mobile.instances.cancelEdit': 'إلغاء',
   'mobile.instances.label.label': 'الاسم',
   'mobile.instances.label.placeholder': 'اسم عرض اختياري',
@@ -705,6 +723,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'إيقاف الكل',
   'chat.backgroundShells.stopAria': 'إيقاف {command}',
   'chat.backgroundShells.elapsed': 'قيد التشغيل منذ {duration}',
+  'chat.backgroundWork.aria': 'عمل في الخلفية',
+  'chat.backgroundWork.count': 'في الخلفية: {count}',
+  'chat.backgroundImages.generating': 'جارٍ إنشاء صورة',
   'sessions.sidebar.session.menu.share': 'مشاركة',
   'sessions.sidebar.session.menu.copied': 'تم النسخ',
   'sessions.sidebar.session.menu.copyLink': 'نسخ الرابط',
@@ -744,7 +765,8 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'تحديثات غير مقروءة',
   'sessions.sidebar.session.status.backgroundSubagent': 'وكيل فرعي يعمل في الخلفية',
   'sessions.sidebar.session.status.backgroundCommand': 'أمر يعمل في الخلفية',
-  'sessions.sidebar.session.status.waitingOnPullRequest': 'بانتظار طلب سحب',
+  'sessions.sidebar.session.status.backgroundImage': 'صورة قيد الإنشاء في الخلفية',
+  'sessions.sidebar.session.status.waitingOnPullRequest': 'بانتظار الفحوصات أو مراجعة',
   'sessions.sidebar.session.status.pinned': 'جلسة مثبّتة',
   'sessions.sidebar.session.status.movingToWorktree': 'جارٍ نقل الجلسة إلى شجرة عمل جديدة',
   'sessions.sidebar.session.status.permissionRequired': 'مطلوب إذن',
@@ -863,6 +885,7 @@ export const dict = {
   'sessions.sidebar.sessionDialogs.directory.errorAddProjectTitle': 'تعذّرت إضافة المشروع',
   'sessions.sidebar.sessionDialogs.directory.errorAddProjectDescription': 'يُرجى اختيار مسار مجلد صالح.',
   'sessions.sidebar.sessionDialogs.worktree.errorRemoveTitle': 'تعذّرت إزالة شجرة العمل',
+  'sessions.sidebar.sessionDialogs.worktree.deleteWithoutTeardown': 'حذف دون تنظيف',
   'sessions.sidebar.sessionDialogs.worktree.removingTitle': 'جارٍ إزالة شجرة العمل «{name}»…',
   'sessions.sidebar.sessionDialogs.worktree.removed': 'تمت إزالة شجرة العمل',
   'sessions.sidebar.sessionDialogs.worktree.removedWithRemote': 'تمت إزالة شجرة العمل والفرع البعيد',
@@ -1180,6 +1203,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'تعذّر تحميل الموجّهات السحرية. لم يُرسَل شيء.',
   'gitView.empty.notGitRepository': 'هذا المجلد ليس مستودع Git',
   'gitView.empty.notGitRepositoryDescription': 'هيّئ Git في هذا المجلد أو افتح مستودعًا.',
+  'gitView.empty.repositoryUnreadable': 'تعذّر على Git قراءة هذا المجلد',
+  'gitView.empty.repositoryUnreadableDescription': 'هذا ما قاله Git. أصلح المشكلة ثم أعد المحاولة.',
+  'gitView.empty.repositoryUnreadableRetry': 'إعادة المحاولة',
   'gitView.empty.selectSessionOrDirectory': 'حدّد جلسة أو مجلدًا لعرض حالة Git',
   'gitView.empty.worktreeFeaturesUnavailable': 'ميزات شجرة العمل (worktree) غير متاحة في وضع مساحة العمل هذا.',
   'gitView.empty.worktreeSetupDescription': 'جارٍ إنهاء إعداد شجرة العمل (worktree) وتجهيز حالة المستودع.',
@@ -1279,6 +1305,7 @@ export const dict = {
   'gitView.toast.enterCommitMessage': 'أدخل رسالة الإيداع',
   'gitView.toast.fetchedFromRemote': 'تم الجلب من {name}',
   'gitView.toast.pulledFromRemote': 'تم السحب من {name}',
+  'gitView.toast.remoteUrlUserinfo': 'احذف الاسم قبل @ من عنوان URL البعيد',
   'gitView.toast.generateCommitMessageFailed': 'تعذّر إنشاء رسالة الإيداع',
   'gitView.toast.mergeAborted': 'أُلغي الدمج',
   'gitView.toast.mergeCompleted': 'اكتمل الدمج',
@@ -1616,6 +1643,13 @@ export const dict = {
   'sidebarFilesTree.toast.uploaded': 'تم رفع الملفات',
   'sidebarFilesTree.toast.uploadedWithoutConflicts': 'تم رفع الملفات التي لا تعارض فيها',
   'sidebarFilesTree.toast.uploadFailed': 'تعذّر رفع بعض الملفات',
+  'sidebarFilesTree.toast.uploadFailedTooLarge': '{name} أكبر من حد الرفع {limit}',
+  'sidebarFilesTree.toast.uploadFailedPermission': 'تعذّر حفظ {name} لأن المجلد لا يسمح بالكتابة',
+  'sidebarFilesTree.toast.uploadFailedOutsideWorkspace': 'تعذّر حفظ {name} لأن المجلد خارج المشروع المفتوح',
+  'sidebarFilesTree.toast.uploadFailedFolderMissing': 'تعذّر حفظ {name} لأن المجلد لم يعد موجودًا',
+  'sidebarFilesTree.toast.uploadFailedUnknown': 'تعذّر رفع {name}',
+  'sidebarFilesTree.toast.uploadFailedAndMoreSingle': 'وفشل رفع {count} ملف آخر',
+  'sidebarFilesTree.toast.uploadFailedAndMorePlural': 'وفشل رفع ملفات أخرى: {count}',
   'sidebarFilesTree.drop.target': 'رفع إلى {path}',
   'sidebarFilesTree.drop.uploading': 'جارٍ رفع الملفات إلى {path}',
   'sidebarFilesTree.dialog.uploadConflicts.title': 'استبدال الملفات الموجودة؟',
@@ -1633,7 +1667,6 @@ export const dict = {
   'sidebarFilesTree.actions.uploadFilesTitle': 'رفع ملفات',
   'sidebarFilesTree.actions.refreshTitle': 'تحديث',
   'sidebarFilesTree.actions.collapseAllTitle': 'طي كل المجلدات',
-  'sidebarFilesTree.actions.fileMenuTitle': 'قائمة الملف',
   'sidebarFilesTree.state.searching': 'جارٍ البحث…',
   'sidebarFilesTree.state.loading': 'جارٍ التحميل…',
   'sidebarFilesTree.dialog.createFile.title': 'إنشاء ملف',
@@ -1749,6 +1782,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'افتح جلسة لفحص السياق.',
   'contextSidebar.section.context': 'السياق',
   'contextSidebar.section.lastAssistantMessage': 'آخر رسالة من المساعد',
+  'contextSidebar.section.sessionTotals': 'إجماليات الجلسة',
   'contextSidebar.section.rawMessages': 'الرسائل الخام',
   'contextSidebar.context.percentUsed': '{percent}% مستخدم',
   'contextSidebar.breakdown.user': 'المستخدم',
@@ -1854,7 +1888,6 @@ export const dict = {
   'diffView.actions.hideWhitespace': 'إخفاء تغييرات المسافات البيضاء',
   'diffView.actions.openFileInEditorAtChange': 'فتح هذا الملف في المحرر عند التغيير',
   'diffView.actions.openFileAtFirstChangedLine': 'فتح هذا الملف عند أول سطر متغير',
-  'diffView.actions.review': 'مراجعة',
   'diffView.actions.reviewAria': 'مراجعة التغييرات',
   'diffView.reviewDialog.title': 'مراجعة التغييرات',
   'diffView.reviewDialog.description': 'ابدأ جلسة مراجعة منفصلة للتغييرات الحالية.',
@@ -1887,12 +1920,14 @@ export const dict = {
   'chat.autoReview.actions.dismiss': 'إغلاق',
   'chat.autoReview.toast.removeFailed': 'تعذر الوصول إلى الخادم لتغيير مراجعة الكود. حاول مرة أخرى.',
   'chat.prWatch.title': 'بانتظار طلب السحب #{number}',
+  'chat.prWatch.mr.title': 'بانتظار طلب الدمج !{number}',
+  'chat.prWatch.change.title': 'بانتظار التغيير #{number}',
   'chat.prWatch.status.pending': 'الفحوصات قيد التشغيل',
   'chat.prWatch.status.passed': 'نجحت الفحوصات',
   'chat.prWatch.status.failed': 'فشل أحد الفحوصات',
   'chat.prWatch.status.waking': 'يوقظ الوكيل',
   'chat.prWatch.actions.stop': 'إيقاف المتابعة',
-  'chat.prWatch.toast.stopFailed': 'تعذر الوصول إلى الخادم لإيقاف متابعة طلب السحب. حاول مرة أخرى.',
+  'chat.prWatch.toast.stopFailed': 'تعذّر الوصول إلى الخادم لإيقاف المتابعة. حاول مرة أخرى.',
   'chat.draftDirtyNotice.tooltip': "لديك تغييرات غير مودعة في هذا الفرع.\nقد تتعارض جلسة جديدة معها. قد ترغب في إيداعها أولًا أو استخدام شجرة عمل (worktree) أخرى.",
   'chat.draftDirtyNotice.indicatorAria': 'تغييرات غير مودعة في هذا المجلد',
   'diffView.hunk.label': 'المقاطع',
@@ -1992,6 +2027,7 @@ export const dict = {
   'inlineComment.actions.editComment': 'تعديل التعليق',
   'inlineComment.actions.deleteComment': 'حذف التعليق',
   'inlineComment.toast.selectSessionToSave': 'اختر جلسة لحفظ التعليق',
+  'inlineComment.toast.noRoom': 'تعذّر حفظ التعليق: استهلكت التعليقات غير المرسلة المساحة المتاحة. أرسل بعضها أو احذفه، في هذه الجلسة أو في جلسة أخرى، ثم حاول مرة أخرى.',
   'header.services.openWithCurrent': 'فتح النسخة والاستخدام وMCP (الحالية: {current})',
   'header.services.open': 'فتح الخدمات والاستخدام وMCP',
   'header.services.title': 'الخدمات',
@@ -2142,6 +2178,7 @@ export const dict = {
   'directoryExplorerDialog.browse.retry': 'إعادة المحاولة',
   'directoryExplorerDialog.browse.parentDirectory': 'المجلد الأصل',
   'directoryExplorerDialog.browse.addedBadge': 'مضاف',
+  'directoryExplorerDialog.browse.linkTarget': 'رابط إلى {path}',
   'directoryExplorerDialog.browse.quickAdd': 'إضافة',
   'directoryExplorerDialog.browse.selectForAdd': 'تحديد للإضافة',
   'directoryExplorerDialog.footer.navigate': 'تنقّل',
@@ -2610,6 +2647,7 @@ export const dict = {
   'chat.chatInput.largeTextPaste.inline': 'لصق مباشرة',
   'chat.chatInput.toast.addedFileMentions': 'تمت إضافة إشارات إلى {count} ملف',
   'chat.chatInput.toast.attachFileFailed': 'تعذّر إرفاق الملف',
+  'chat.chatInput.mentionChip.editHint': 'انقر نقرًا مزدوجًا للتعديل كنص',
   'chat.chatInput.toast.attachNamedFailed': 'تعذّر إرفاق {name}',
   'chat.chatInput.toast.unsupportedAttachmentModalities': 'لا يدعم {model} إدخال {modalities} المطلوب لـ {files}. لا يزال بإمكانك إرسال الرسالة، لكن قد يتم تجاهل هذه المرفقات.',
   'chat.chatInput.toast.imagesSaving': 'جارٍ حفظ {files}…',
@@ -2966,6 +3004,7 @@ export const dict = {
   'projects.sharedTrust.title': 'هل تريد تشغيل الأوامر المخزنة في هذا المستودع؟',
   'projects.sharedTrust.description': 'يحدد {path} في هذا المستودع أوامر تعمل على هذا الجهاز. ثق بها مرة واحدة، ولن يسألك OpenChamber مجددًا إلا عند تغييرها.',
   'projects.sharedTrust.setupCommands': 'أوامر إعداد شجرة العمل',
+  'projects.sharedTrust.teardownCommands': 'أوامر تنظيف شجرة العمل',
   'projects.sharedTrust.actions': 'الإجراءات',
   'projects.sharedTrust.skip': 'ليس هذه المرة',
   'projects.sharedTrust.trust': 'الثقة والتشغيل',
@@ -3334,6 +3373,7 @@ export const dict = {
   'updateDialog.status.autoReloadHint': 'ستُعاد تحميل الصفحة تلقائيًا عند اكتمال التحديث.',
   'updateDialog.fallback.updateViaTerminal': 'أو حدّث عبر الطرفية:',
   'updateDialog.desktopHostInstall': 'يتوفر OpenChamber {version}. حدّثه على الكمبيوتر الذي يعمل عليه.',
+  'updateDialog.openCodeTooOld': 'يتطلب OpenChamber {version} الإصدار OpenCode {required}. يعمل هذا الخادم بالإصدار {current}. حدّث OpenCode أولًا.',
   'updateDialog.actions.copyCommand': 'نسخ الأمر',
   'updateDialog.actions.copied': 'تم النسخ!',
   'updateDialog.status.downloadingPayload': 'جارٍ تنزيل حزمة التحديث…',
@@ -3431,6 +3471,13 @@ export const dict = {
   'markdownRenderer.code.proposal': 'اقتراح',
   'markdownRenderer.code.actions.copyTitle': 'نسخ الشيفرة',
   'markdownRenderer.code.actions.copiedTitle': 'تم النسخ',
+  'markdownRenderer.code.actions.runTitle': 'تشغيل الأمر. سيتابع الوكيل من مخرجاته',
+  'markdownRenderer.code.actions.stopTitle': 'إيقاف الأمر',
+  'markdownRenderer.code.run.startFailed': 'تعذر بدء الأمر',
+  'markdownRenderer.code.run.running': 'قيد التشغيل',
+  'markdownRenderer.code.run.finished': 'اكتمل',
+  'markdownRenderer.code.run.failed': 'رمز الخروج {code}',
+  'markdownRenderer.code.run.stopped': 'تم الإيقاف',
   'markdownRenderer.table.actions.copyTitle': 'نسخ الجدول',
   'markdownRenderer.code.actions.enableWrapTitle': 'تفعيل التفاف الأسطر',
   'markdownRenderer.code.actions.disableWrapTitle': 'تعطيل التفاف الأسطر',
@@ -3588,6 +3635,9 @@ export const dict = {
   'chat.workStatus.breakdown.skillCountPlural': '{count} مهارات',
   'chat.workStatus.breakdown.mcpCountSingle': '{count} MCP',
   'chat.workStatus.breakdown.mcpCountPlural': '{count} MCP',
+  'chat.workStatus.breakdown.planCountSingle': '{count} خطة',
+  'chat.workStatus.breakdown.planCountPlural': '{count} خطط',
+  'chat.workStatus.linkedPlans.open': 'فتح الخطة {title}',
   'chat.workStatus.sections.open': 'اختيار الأقسام',
   'chat.workStatus.sections.dialogTitle': 'أقسام اللوحة',
   'chat.workStatus.sections.reorder': 'اسحب {label} لإعادة الترتيب',
@@ -3659,6 +3709,9 @@ export const dict = {
   'chat.dispatchedSession.showAnswer': 'إظهار الإجابة',
   'chat.dispatchedSession.hideAnswer': 'إخفاء الإجابة',
   'chat.dispatchedSession.open': 'فتح الجلسة',
+  'chat.fileOpenRequest.toast.description': 'معروض في {session}',
+  'chat.fileOpenRequest.toast.descriptionUntitled': 'معروض في جلسة أخرى',
+  'chat.fileOpenRequest.toast.openSession': 'فتح الجلسة',
   'chat.revertPopover.staged': 'تم التراجع: {count}',
   'chat.workStatus.mcp.needsAuthHint': 'سجّل الدخول إلى خادم MCP هذا من الإعدادات → MCP.',
   'mcpDropdown.toast.authorizeOpenFailed': 'تعذّر فتح صفحة التفويض',
@@ -3858,6 +3911,7 @@ export const dict = {
   'sessions.scheduledTasks.dialog.toast.alreadyQueued': 'هذه المهمة في قائمة الانتظار بالفعل وستعمل عند توفر مكان',
   'chat.modelControls.agentFavoriteAdd': 'إضافة إلى المفضلة. عند وجود مفضلة، يتنقل Tab بينها فقط',
   ...settingsDict,
+  ...selectionApprovalI18n.ar,
   ...linearIssuePickerI18n.ar,
   ...referencePickerI18n.ar,
   ...repositoryDiscussionsI18n.ar,
@@ -3874,6 +3928,8 @@ export const dict = {
   ...documentToolbarI18n.ar,
   ...uiBlocksI18n.ar,
   ...updateDialogCanaryI18n.ar,
+  ...aboutReleaseNotesI18n.ar,
+  ...updateCheckErrorsI18n.ar,
   ...secretRequestI18n.ar,
   ...sessionNoticesI18n.ar,
   ...usageStatsI18n.ar,
@@ -3884,6 +3940,10 @@ export const dict = {
   ...heapSnapshotI18n.ar,
   ...consoleBudgetsI18n.ar,
   ...imageToolI18n.ar,
+  ...usageToolI18n.ar,
+  ...openchamberToolsLayoutI18n.ar,
+  ...openchamberToolOutputI18n.ar,
+  ...opencodeToolOutputI18n.ar,
   ...agentStatusI18n.ar,
   ...snippetsI18n.ar,
   ...sidebarWorkI18n.ar,
@@ -3908,6 +3968,15 @@ export const dict = {
   ...workflowsI18n['ar'],
   ...sessionReferencesI18n['ar'],
   ...guestStatusViewI18n['ar'],
+  ...tooltipsDiffI18n['ar'],
+  ...tooltipsFilesI18n['ar'],
+  ...tooltipsGitI18n['ar'],
+  ...tooltipsTrackerI18n['ar'],
+  ...tooltipsWalkthroughI18n['ar'],
+  ...tooltipsTerminalBrowserI18n['ar'],
+  ...tooltipsWorkspaceI18n['ar'],
+  ...tooltipsPanelI18n['ar'],
+  ...tooltipsChatI18n['ar'],
   'settings.usage.page.state.claudeSignedOutTitle': 'لم يتم تسجيل الدخول إلى Claude Code',
   'settings.usage.page.state.claudeSignInCommand': 'شغّل هذا الأمر في الطرفية:',
   'settings.openchamber.visual.field.confirmFileTreeMove': 'التأكيد قبل نقل الملفات',
@@ -3954,11 +4023,9 @@ export const dict = {
   'sidebarFilesTree.dialog.move.confirm': 'نقل',
   'sidebarFilesTree.dialog.move.neverAsk': 'عدم السؤال مرة أخرى',
   'filesView.editor.toast.contentsCopied': 'تم نسخ محتوى الملف',
-  'diffView.whitespace.hidden': 'تغييرات المسافات مخفية',
   'diffView.layout.sideBySide': 'العرض جنبًا إلى جنب',
   'diffView.actions.wrapLines': 'التفاف الأسطر',
   'diffView.actions.moreActions': 'إجراءات أخرى',
-  'diffView.whitespace.shown': 'تغييرات المسافات ظاهرة',
   'session.newWorktree.trust.skip': 'تخطٍّ',
   'chat.revertPopover.toast.restoreFailed': 'تعذّرت استعادة الرسائل المتراجع عنها',
   'notifications.error.bodyFallback': 'حدث خطأ',

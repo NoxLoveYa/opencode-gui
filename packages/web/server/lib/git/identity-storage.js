@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { withSourceControlFileLockSync } from '../source-control/file-lock.js';
-import { isProviderId } from '../source-control/provider-id.js';
+import { isExtensionProviderId, isProviderId } from '../source-control/provider-id.js';
 
 const FILE_NAME = 'git-identities.json';
 const legacyDataDir = () => path.join(os.homedir(), '.config', 'openchamber');
@@ -35,7 +35,8 @@ const parseIdentityAccount = (value) => {
     || !isProviderId(value.provider)) {
     throw new TypeError('Invalid Git identity account');
   }
-  return { provider: value.provider, instance: value.instance.trim(), accountId: value.accountId.trim() };
+  return { provider: value.provider, instance: value.instance.trim(),
+    accountId: isExtensionProviderId(value.provider) ? value.accountId : value.accountId.trim() };
 };
 
 /**

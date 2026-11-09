@@ -2,7 +2,6 @@
 export const soundsI18n = {
   en: {
     'settings.page.sounds.title': 'Sounds',
-    'settings.page.sounds.description': 'Short sounds for typing, sending and events from your agents. They play only on this device.',
     'settings.sounds.tab.general': 'General',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': 'Needs you',
@@ -112,7 +111,6 @@ export const soundsI18n = {
   },
   de: {
     'settings.page.sounds.title': 'Töne',
-    'settings.page.sounds.description': 'Kurze Töne beim Tippen, beim Senden und bei Ereignissen deiner Agenten. Sie spielen nur auf diesem Gerät.',
     'settings.sounds.tab.general': 'Allgemein',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': 'Braucht dich',
@@ -222,7 +220,6 @@ export const soundsI18n = {
   },
   fr: {
     'settings.page.sounds.title': 'Sons',
-    'settings.page.sounds.description': "Des sons courts pour la saisie, l'envoi et les événements des agents. Ils ne jouent que sur cet appareil.",
     'settings.sounds.tab.general': 'Général',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': 'Action requise',
@@ -332,7 +329,6 @@ export const soundsI18n = {
   },
   nl: {
     'settings.page.sounds.title': 'Geluiden',
-    'settings.page.sounds.description': 'Korte geluiden voor typen, verzenden en gebeurtenissen van je agents. Ze spelen alleen op dit apparaat.',
     'settings.sounds.tab.general': 'Algemeen',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': 'Jij bent aan zet',
@@ -442,7 +438,6 @@ export const soundsI18n = {
   },
   es: {
     'settings.page.sounds.title': 'Sonidos',
-    'settings.page.sounds.description': 'Sonidos breves al escribir, al enviar y en los eventos de los agentes. Solo suenan en este dispositivo.',
     'settings.sounds.tab.general': 'General',
     'settings.sounds.tab.agent': 'Agente',
     'settings.sounds.tab.attention': 'Te necesita',
@@ -552,7 +547,6 @@ export const soundsI18n = {
   },
   ja: {
     'settings.page.sounds.title': 'サウンド',
-    'settings.page.sounds.description': '入力、送信、エージェントのイベントで鳴る短い音です。このデバイスでのみ再生されます。',
     'settings.sounds.tab.general': '一般',
     'settings.sounds.tab.agent': 'エージェント',
     'settings.sounds.tab.attention': '対応が必要',
@@ -662,7 +656,6 @@ export const soundsI18n = {
   },
   'pt-BR': {
     'settings.page.sounds.title': 'Sons',
-    'settings.page.sounds.description': 'Sons curtos ao digitar, ao enviar e em eventos dos agentes. Tocam apenas neste dispositivo.',
     'settings.sounds.tab.general': 'Geral',
     'settings.sounds.tab.agent': 'Agente',
     'settings.sounds.tab.attention': 'Precisa de você',
@@ -772,7 +765,6 @@ export const soundsI18n = {
   },
   uk: {
     'settings.page.sounds.title': 'Звуки',
-    'settings.page.sounds.description': 'Короткі звуки під час введення, надсилання та подій від агентів. Вони відтворюються лише на цьому пристрої.',
     'settings.sounds.tab.general': 'Загальні',
     'settings.sounds.tab.agent': 'Агент',
     'settings.sounds.tab.attention': 'Потрібна дія',
@@ -882,7 +874,6 @@ export const soundsI18n = {
   },
   ko: {
     'settings.page.sounds.title': '소리',
-    'settings.page.sounds.description': '입력, 전송, 에이전트 이벤트 때 나는 짧은 소리입니다. 이 기기에서만 재생됩니다.',
     'settings.sounds.tab.general': '일반',
     'settings.sounds.tab.agent': '에이전트',
     'settings.sounds.tab.attention': '확인 필요',
@@ -992,7 +983,6 @@ export const soundsI18n = {
   },
   pl: {
     'settings.page.sounds.title': 'Dźwięki',
-    'settings.page.sounds.description': 'Krótkie dźwięki przy pisaniu, wysyłaniu i zdarzeniach agentów. Odtwarzają się tylko na tym urządzeniu.',
     'settings.sounds.tab.general': 'Ogólne',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': 'Wymaga reakcji',
@@ -1102,7 +1092,6 @@ export const soundsI18n = {
   },
   'zh-CN': {
     'settings.page.sounds.title': '声音',
-    'settings.page.sounds.description': '输入、发送和智能体事件时播放的简短提示音，仅在此设备上播放。',
     'settings.sounds.tab.general': '常规',
     'settings.sounds.tab.agent': '智能体',
     'settings.sounds.tab.attention': '需要你处理',
@@ -1212,7 +1201,6 @@ export const soundsI18n = {
   },
   'zh-TW': {
     'settings.page.sounds.title': '音效',
-    'settings.page.sounds.description': '輸入、傳送與 Agent 事件時播放的簡短提示音，只會在這台裝置上播放。',
     'settings.sounds.tab.general': '一般',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': '需要你處理',
@@ -1322,7 +1310,6 @@ export const soundsI18n = {
   },
   tr: {
     'settings.page.sounds.title': 'Sesler',
-    'settings.page.sounds.description': "Yazarken, gönderirken ve agent olaylarında çalan kısa sesler. Yalnızca bu cihazda çalar.",
     'settings.sounds.tab.general': 'Genel',
     'settings.sounds.tab.agent': 'Agent',
     'settings.sounds.tab.attention': 'İlgi bekliyor',
@@ -1432,7 +1419,6 @@ export const soundsI18n = {
   },
   ar: {
     'settings.page.sounds.title': 'الأصوات',
-    'settings.page.sounds.description': 'أصوات قصيرة عند الكتابة والإرسال وأحداث الوكلاء. تُشغَّل على هذا الجهاز فقط.',
     'settings.sounds.tab.general': 'عام',
     'settings.sounds.tab.agent': 'الوكيل',
     'settings.sounds.tab.attention': 'يحتاج إليك',
@@ -1542,7 +1528,6 @@ export const soundsI18n = {
   },
   he: {
     'settings.page.sounds.title': 'צלילים',
-    'settings.page.sounds.description': 'צלילים קצרים בהקלדה, בשליחה ובאירועים של הסוכנים. הם מושמעים רק במכשיר הזה.',
     'settings.sounds.tab.general': 'כללי',
     'settings.sounds.tab.agent': 'סוכן',
     'settings.sounds.tab.attention': 'דורש את תשומת לבך',

@@ -15,6 +15,8 @@ import { htmlRenderI18n } from './html-render.i18n';
 import { documentToolbarI18n } from './document-toolbar.i18n';
 import { uiBlocksI18n } from './ui-blocks.i18n';
 import { updateDialogCanaryI18n } from './update-dialog-canary.i18n';
+import { aboutReleaseNotesI18n } from './about-release-notes.i18n';
+import { updateCheckErrorsI18n } from './update-check-errors.i18n';
 import { secretRequestI18n } from './secret-request.i18n';
 import { sessionNoticesI18n } from './session-notices.i18n';
 import { usageStatsI18n } from './usage-stats.i18n';
@@ -25,7 +27,12 @@ import { soundsI18n } from './sounds.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolsLayoutI18n } from './openchamber-tools-layout.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
+import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
 import { sidebarWorkI18n } from './sidebar-work.i18n';
 import { sidebarSectionsI18n } from './sidebar-sections.i18n';
@@ -49,6 +56,15 @@ import { autocompleteScopeI18n } from './autocomplete-scope.i18n';
 import { workflowsI18n } from './workflows.i18n';
 import { sessionReferencesI18n } from './session-references.i18n';
 import { guestStatusViewI18n } from './guest-status-view.i18n';
+import { tooltipsDiffI18n } from './tooltips-diff.i18n';
+import { tooltipsFilesI18n } from './tooltips-files.i18n';
+import { tooltipsGitI18n } from './tooltips-git.i18n';
+import { tooltipsTrackerI18n } from './tooltips-tracker.i18n';
+import { tooltipsWalkthroughI18n } from './tooltips-walkthrough.i18n';
+import { tooltipsTerminalBrowserI18n } from './tooltips-terminal-browser.i18n';
+import { tooltipsWorkspaceI18n } from './tooltips-workspace.i18n';
+import { tooltipsPanelI18n } from './tooltips-panel.i18n';
+import { tooltipsChatI18n } from './tooltips-chat.i18n';
 
 export const dict = {
   'quota.family.zen': 'Zen Models',
@@ -103,6 +119,7 @@ export const dict = {
   'chat.liveActivity.usedSubagents': 'Used {count} subagents',
   'sessions.sidebar.projectAction.active': 'Project action active',
   ...settingsDict,
+  ...selectionApprovalI18n.en,
   'gitView.operation.title': 'Git operation',
   'gitView.operation.recovery.storage': 'OpenChamber can\'t save the state of Git transfers here. Allow site storage and reload; pushing and pulling are paused until then.',
   'gitView.operation.recovery.capacity': 'Too many unfinished Git transfers are saved. Check the ones below before starting another.',
@@ -180,6 +197,8 @@ export const dict = {
   ...documentToolbarI18n.en,
   ...uiBlocksI18n.en,
   ...updateDialogCanaryI18n.en,
+  ...aboutReleaseNotesI18n.en,
+  ...updateCheckErrorsI18n.en,
   ...secretRequestI18n.en,
   ...sessionNoticesI18n.en,
   ...usageStatsI18n.en,
@@ -190,6 +209,10 @@ export const dict = {
   ...heapSnapshotI18n.en,
   ...consoleBudgetsI18n.en,
   ...imageToolI18n.en,
+  ...usageToolI18n.en,
+  ...openchamberToolsLayoutI18n.en,
+  ...openchamberToolOutputI18n.en,
+  ...opencodeToolOutputI18n.en,
   ...agentStatusI18n.en,
   ...snippetsI18n.en,
   ...sidebarWorkI18n.en,
@@ -214,6 +237,15 @@ export const dict = {
   ...workflowsI18n['en'],
   ...sessionReferencesI18n['en'],
   ...guestStatusViewI18n['en'],
+  ...tooltipsDiffI18n['en'],
+  ...tooltipsFilesI18n['en'],
+  ...tooltipsGitI18n['en'],
+  ...tooltipsTrackerI18n['en'],
+  ...tooltipsWalkthroughI18n['en'],
+  ...tooltipsTerminalBrowserI18n['en'],
+  ...tooltipsWorkspaceI18n['en'],
+  ...tooltipsPanelI18n['en'],
+  ...tooltipsChatI18n['en'],
   'terminalView.actions.attachSelection': 'Attach selected output',
   'terminalView.actions.copySelection': 'Copy selected output',
   'terminalView.toast.selectionCopied': 'Output copied',
@@ -287,7 +319,6 @@ export const dict = {
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Context',
   'mobile.nav.aria': 'Mobile navigation',
-  'mobile.connect.welcome.title': 'Connect to OpenChamber',
   'mobile.connect.welcome.description': 'Add a server URL or scan a pairing QR code to start using the mobile app.',
   'mobile.connect.url.label': 'Server URL',
   'mobile.connect.url.placeholder': 'http://192.168.1.74:2606',
@@ -312,8 +343,13 @@ export const dict = {
   'mobile.connect.scan.failed': 'Could not scan that QR code. Try again or enter the URL manually.',
   'mobile.connect.scan.invalid': 'That QR code is not an OpenChamber connection code.',
   'mobile.connect.scan.unsupported': 'QR scanning is only available in the installed mobile app.',
-  'mobile.connect.saved.title': 'Saved connections',
-  'mobile.connect.saved.empty': 'No saved connections yet.',
+  'mobile.connect.firstRun.title': 'Your agents, wherever you are.',
+  'mobile.connect.firstRun.description': 'Connect to OpenChamber running on your computer.',
+  'mobile.connect.firstRun.scanHint': 'From «Add a device»',
+  'mobile.connect.firstRun.addressHint': 'URL and token',
+  'mobile.connect.lastConnected': 'Last connected',
+  'mobile.connect.saved.other': 'Other',
+  'mobile.instances.actionsAria': 'Actions for {label}',
   'mobile.connect.relay.badge': 'via OpenChamber Relay',
   'mobile.connect.error.urlRequired': 'Enter a server URL.',
   'mobile.connect.splash.connectingTo': 'Connecting to device:',
@@ -327,9 +363,7 @@ export const dict = {
   'mobile.instances.editTitle': 'Edit instance',
   'mobile.instances.edit': 'Edit',
   'mobile.instances.delete': 'Delete',
-  'mobile.instances.deleteAria': 'Delete {label}',
   'mobile.instances.confirmDeleteAria': 'Confirm deleting {label}',
-  'mobile.instances.cancelDeleteAria': 'Keep {label}',
   'mobile.instances.cancelEdit': 'Cancel',
   'mobile.instances.label.label': 'Name',
   'mobile.instances.label.placeholder': 'Optional display name',
@@ -761,6 +795,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'Stop all',
   'chat.backgroundShells.stopAria': 'Stop {command}',
   'chat.backgroundShells.elapsed': 'Running for {duration}',
+  'chat.backgroundWork.aria': 'Background work',
+  'chat.backgroundWork.count': 'In the background: {count}',
+  'chat.backgroundImages.generating': 'Generating an image',
   'sessions.sidebar.session.menu.share': 'Share',
   'sessions.sidebar.session.menu.copied': 'Copied',
   'sessions.sidebar.session.menu.copyLink': 'Copy link',
@@ -800,7 +837,8 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'Unread updates',
   'sessions.sidebar.session.status.backgroundSubagent': 'Subagent running in the background',
   'sessions.sidebar.session.status.backgroundCommand': 'Command running in the background',
-  'sessions.sidebar.session.status.waitingOnPullRequest': 'Waiting on a pull request',
+  'sessions.sidebar.session.status.backgroundImage': 'Image generating in the background',
+  'sessions.sidebar.session.status.waitingOnPullRequest': 'Waiting on checks or a review',
   'sessions.sidebar.session.status.pinned': 'Pinned session',
   'sessions.sidebar.session.status.movingToWorktree': 'Moving session to a new worktree',
   'sessions.sidebar.session.status.permissionRequired': 'Permission required',
@@ -919,6 +957,7 @@ export const dict = {
   'sessions.sidebar.sessionDialogs.directory.errorAddProjectTitle': 'Failed to add project',
   'sessions.sidebar.sessionDialogs.directory.errorAddProjectDescription': 'Please select a valid directory path.',
   'sessions.sidebar.sessionDialogs.worktree.errorRemoveTitle': 'Couldn\'t remove the worktree',
+  'sessions.sidebar.sessionDialogs.worktree.deleteWithoutTeardown': 'Delete without teardown',
   'sessions.sidebar.sessionDialogs.worktree.removingTitle': 'Removing worktree “{name}”…',
   'sessions.sidebar.sessionDialogs.worktree.removed': 'Worktree removed',
   'sessions.sidebar.sessionDialogs.worktree.removedWithRemote': 'Worktree and remote branch removed',
@@ -1011,11 +1050,11 @@ export const dict = {
   'gitView.changes.unstageDirectoryAria': 'Unstage all changes in {path}',
   'gitView.changes.unstageFileAria': 'Unstage {path}',
   'gitView.commit.addGitmoji': 'Add gitmoji',
-  'gitView.commit.aiHighlights.insertAria': 'Insert  aria label',
+  'gitView.commit.aiHighlights.insertAria': 'Insert into commit message',
   'gitView.commit.aiHighlights.insertTooltip': 'Insert  tooltip',
   'gitView.commit.aiHighlights.title': 'Highlights',
   'gitView.commit.commit': 'Commit',
-  'gitView.commit.commitAria': 'Commit  aria label',
+  'gitView.commit.commitAria': 'Commit',
   'gitView.commit.committing': 'Committing...',
   'gitView.commit.generate': 'Generate',
   'gitView.commit.generateAria': 'Generate commit message',
@@ -1237,6 +1276,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'Could not load magic prompts. Nothing was sent.',
   'gitView.empty.notGitRepository': 'This directory is not a Git repository',
   'gitView.empty.notGitRepositoryDescription': 'Initialize Git in this directory or open a repository.',
+  'gitView.empty.repositoryUnreadable': 'Git couldn\'t read this folder',
+  'gitView.empty.repositoryUnreadableDescription': 'Here is what Git said. Fix it, then try again.',
+  'gitView.empty.repositoryUnreadableRetry': 'Try again',
   'gitView.empty.selectSessionOrDirectory': 'Select a session or directory to view Git status',
   'gitView.empty.worktreeFeaturesUnavailable': 'Worktree features are unavailable in this workspace mode.',
   'gitView.empty.worktreeSetupDescription': 'Finishing worktree setup and preparing repository state.',
@@ -1336,6 +1378,7 @@ export const dict = {
   'gitView.toast.enterCommitMessage': 'Enter a commit message',
   'gitView.toast.fetchedFromRemote': 'Fetched from {name}',
   'gitView.toast.pulledFromRemote': 'Pulled from {name}',
+  'gitView.toast.remoteUrlUserinfo': 'Remove the name before @ from remote URL',
   'gitView.toast.generateCommitMessageFailed': 'Failed to generate commit message',
   'gitView.toast.mergeAborted': 'Merge aborted',
   'gitView.toast.mergeCompleted': 'Merge completed',
@@ -1680,6 +1723,13 @@ export const dict = {
   'sidebarFilesTree.toast.uploaded': 'Files uploaded',
   'sidebarFilesTree.toast.uploadedWithoutConflicts': 'Files without conflicts were uploaded',
   'sidebarFilesTree.toast.uploadFailed': 'Some files could not be uploaded',
+  'sidebarFilesTree.toast.uploadFailedTooLarge': '{name} is larger than the {limit} upload limit',
+  'sidebarFilesTree.toast.uploadFailedPermission': '{name} could not be saved because the folder is not writable',
+  'sidebarFilesTree.toast.uploadFailedOutsideWorkspace': '{name} could not be saved because the folder is outside the open project',
+  'sidebarFilesTree.toast.uploadFailedFolderMissing': '{name} could not be saved because the folder no longer exists',
+  'sidebarFilesTree.toast.uploadFailedUnknown': '{name} could not be uploaded',
+  'sidebarFilesTree.toast.uploadFailedAndMoreSingle': 'and {count} more file failed',
+  'sidebarFilesTree.toast.uploadFailedAndMorePlural': 'and {count} more files failed',
   'sidebarFilesTree.drop.target': 'Upload to {path}',
   'sidebarFilesTree.drop.uploading': 'Uploading files to {path}',
   'sidebarFilesTree.drop.moveTarget': 'Move to {path}',
@@ -1700,7 +1750,6 @@ export const dict = {
   'sidebarFilesTree.actions.addMenuTitle': 'New file, folder, or upload',
   'sidebarFilesTree.actions.refreshTitle': 'Refresh',
   'sidebarFilesTree.actions.collapseAllTitle': 'Collapse all folders',
-  'sidebarFilesTree.actions.fileMenuTitle': 'File menu',
   'sidebarFilesTree.state.searching': 'Searching...',
   'sidebarFilesTree.state.loading': 'Loading...',
   'sidebarFilesTree.dialog.createFile.title': 'Create File',
@@ -1821,6 +1870,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'Open a session to inspect context.',
   'contextSidebar.section.context': 'Context',
   'contextSidebar.section.lastAssistantMessage': 'Last Assistant Message',
+  'contextSidebar.section.sessionTotals': 'Session Totals',
   'contextSidebar.section.rawMessages': 'Raw Messages',
   'contextSidebar.context.percentUsed': '{percent}% used',
   'contextSidebar.breakdown.user': 'User',
@@ -1924,14 +1974,11 @@ export const dict = {
   'diffView.actions.expandAll': 'Expand all',
   'diffView.actions.collapseAll': 'Collapse all',
   'diffView.actions.hideWhitespace': 'Hide whitespace changes',
-  'diffView.whitespace.hidden': 'Whitespace changes hidden',
   'diffView.layout.sideBySide': 'Side-by-side view',
   'diffView.actions.wrapLines': 'Wrap lines',
   'diffView.actions.moreActions': 'More actions',
-  'diffView.whitespace.shown': 'Whitespace changes shown',
   'diffView.actions.openFileInEditorAtChange': 'Open this file in editor at change',
   'diffView.actions.openFileAtFirstChangedLine': 'Open this file at first changed line',
-  'diffView.actions.review': 'Review',
   'diffView.actions.reviewAria': 'Review changes',
   'diffView.reviewDialog.title': 'Review changes',
   'diffView.reviewDialog.description': 'Start a separate review session for the current changes.',
@@ -1964,12 +2011,14 @@ export const dict = {
   'chat.autoReview.actions.dismiss': 'Dismiss',
   'chat.autoReview.toast.removeFailed': 'Could not reach the server to change the code review. Try again.',
   'chat.prWatch.title': 'Waiting on pull request #{number}',
+  'chat.prWatch.mr.title': 'Waiting on merge request !{number}',
+  'chat.prWatch.change.title': 'Waiting on change #{number}',
   'chat.prWatch.status.pending': 'checks running',
   'chat.prWatch.status.passed': 'checks passed',
   'chat.prWatch.status.failed': 'a check failed',
   'chat.prWatch.status.waking': 'waking the agent',
   'chat.prWatch.actions.stop': 'Stop watching',
-  'chat.prWatch.toast.stopFailed': 'Could not reach the server to stop watching the pull request. Try again.',
+  'chat.prWatch.toast.stopFailed': 'Could not reach the server to stop watching. Try again.',
   'chat.draftDirtyNotice.tooltip': 'You have uncommitted changes on this branch.\nA new session could conflict with them. You may want to commit them first or use another worktree.',
   'chat.draftDirtyNotice.indicatorAria': 'Uncommitted changes in this directory',
   'diffView.hunk.label': 'Hunks',
@@ -2069,6 +2118,7 @@ export const dict = {
   'inlineComment.actions.editComment': 'Edit comment',
   'inlineComment.actions.deleteComment': 'Delete comment',
   'inlineComment.toast.selectSessionToSave': 'Select a session to save comment',
+  'inlineComment.toast.noRoom': 'Couldn\'t save the comment: unsent comments have used up the available space. Send or delete some, in this session or another, then try again.',
   'header.services.openWithCurrent': 'Open instance, usage and MCP (current: {current})',
   'header.services.open': 'Open services, usage and MCP',
   'header.services.title': 'Services',
@@ -2219,6 +2269,7 @@ export const dict = {
   'directoryExplorerDialog.browse.retry': 'Try again',
   'directoryExplorerDialog.browse.parentDirectory': 'Parent directory',
   'directoryExplorerDialog.browse.addedBadge': 'Added',
+  'directoryExplorerDialog.browse.linkTarget': 'Link to {path}',
   'directoryExplorerDialog.browse.quickAdd': 'Add',
   'directoryExplorerDialog.browse.selectForAdd': 'Select for add',
   'directoryExplorerDialog.footer.navigate': 'Navigate',
@@ -2687,6 +2738,7 @@ export const dict = {
   'chat.chatInput.largeTextPaste.inline': 'Paste inline',
   'chat.chatInput.toast.addedFileMentions': 'Added {count} file mention(s)',
   'chat.chatInput.toast.attachFileFailed': 'Failed to attach file',
+  'chat.chatInput.mentionChip.editHint': 'Double-click to edit as text',
   'chat.chatInput.toast.attachNamedFailed': 'Failed to attach {name}',
   'chat.chatInput.toast.unsupportedAttachmentModalities': '{model} does not support {modalities} input required by {files}. You can still send the message, but these attachments may be ignored.',
   'chat.chatInput.toast.imagesSaving': 'Saving {files}…',
@@ -3043,6 +3095,7 @@ export const dict = {
   'projects.sharedTrust.title': 'Run the commands stored in this repository?',
   'projects.sharedTrust.description': '{path} in this repository defines commands that run on this machine. Trust them once, and OpenChamber asks again only when they change.',
   'projects.sharedTrust.setupCommands': 'Worktree setup commands',
+  'projects.sharedTrust.teardownCommands': 'Worktree teardown commands',
   'projects.sharedTrust.actions': 'Actions',
   'projects.sharedTrust.skip': 'Not this time',
   'projects.sharedTrust.trust': 'Trust and run',
@@ -3408,6 +3461,7 @@ export const dict = {
   'updateDialog.status.autoReloadHint': 'The page will reload automatically when the update is complete.',
   'updateDialog.fallback.updateViaTerminal': 'Or update via terminal:',
   'updateDialog.desktopHostInstall': 'OpenChamber {version} is available. Update it on the computer it runs on.',
+  'updateDialog.openCodeTooOld': 'OpenChamber {version} needs OpenCode {required}. This server has {current}. Update OpenCode first.',
   'updateDialog.actions.copyCommand': 'Copy command',
   'updateDialog.actions.copied': 'Copied!',
   'updateDialog.status.downloadingPayload': 'Downloading update payload...',
@@ -3505,6 +3559,13 @@ export const dict = {
   'markdownRenderer.code.proposal': 'Proposal',
   'markdownRenderer.code.actions.copyTitle': 'Copy code',
   'markdownRenderer.code.actions.copiedTitle': 'Copied',
+  'markdownRenderer.code.actions.runTitle': 'Run command. The agent continues from its output',
+  'markdownRenderer.code.actions.stopTitle': 'Stop command',
+  'markdownRenderer.code.run.startFailed': 'Could not start the command',
+  'markdownRenderer.code.run.running': 'Running',
+  'markdownRenderer.code.run.finished': 'Finished',
+  'markdownRenderer.code.run.failed': 'Exit code {code}',
+  'markdownRenderer.code.run.stopped': 'Stopped',
   'markdownRenderer.table.actions.copyTitle': 'Copy table',
   'markdownRenderer.code.actions.enableWrapTitle': 'Enable line wrap',
   'markdownRenderer.code.actions.disableWrapTitle': 'Disable line wrap',
@@ -3662,6 +3723,9 @@ export const dict = {
   'chat.workStatus.breakdown.skillCountPlural': '{count} skills',
   'chat.workStatus.breakdown.mcpCountSingle': '{count} MCP',
   'chat.workStatus.breakdown.mcpCountPlural': '{count} MCP',
+  'chat.workStatus.breakdown.planCountSingle': '{count} plan',
+  'chat.workStatus.breakdown.planCountPlural': '{count} plans',
+  'chat.workStatus.linkedPlans.open': 'Open plan {title}',
   'chat.workStatus.sections.open': 'Choose sections',
   'chat.workStatus.sections.dialogTitle': 'Panel sections',
   'chat.workStatus.sections.reorder': 'Drag {label} to reorder',
@@ -3737,6 +3801,9 @@ export const dict = {
   'chat.dispatchedSession.showAnswer': 'Show answer',
   'chat.dispatchedSession.hideAnswer': 'Hide answer',
   'chat.dispatchedSession.open': 'Open session',
+  'chat.fileOpenRequest.toast.description': 'Shown in {session}',
+  'chat.fileOpenRequest.toast.descriptionUntitled': 'Shown in another session',
+  'chat.fileOpenRequest.toast.openSession': 'Open session',
   'chat.revertPopover.staged': 'Reverted: {count}',
   "chat.revertPopover.toast.restoreFailed": "Couldn't restore the reverted messages",
   'chat.workStatus.mcp.needsAuthHint': 'Sign in to this MCP server from Settings → MCP.',

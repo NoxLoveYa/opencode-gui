@@ -17,6 +17,8 @@ import { useI18n } from '@/lib/i18n';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
 import { navigateSessionHistory } from '@/lib/sessionNavigationHistory';
 import { soundSignals } from '@/lib/sounds/signals';
+import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
+import { getNativeMenuShortcutCombos } from '@/lib/shortcuts';
 
 const getActiveElementSelectedText = (): string => {
   if (typeof document === 'undefined') {
@@ -107,6 +109,14 @@ export const useMenuActions = (
   const checkForUpdates = useUpdateStore((state) => state.checkForUpdates);
   const { setThemeMode } = useThemeSystem();
   const checkUpdatesInFlightRef = React.useRef(false);
+  const shortcutOverrides = useUIStore((s) => s.shortcutOverrides);
+
+  React.useEffect(() => {
+    if (!canUseElectronDesktopIPC()) return;
+    invokeDesktop('desktop_set_menu_shortcuts', { shortcuts: getNativeMenuShortcutCombos(shortcutOverrides) }).catch((error) => {
+      console.warn('[menu-actions] failed to update menu shortcuts', error);
+    });
+  }, [shortcutOverrides]);
 
   const handleCheckForUpdates = React.useCallback(() => {
     if (checkUpdatesInFlightRef.current) {

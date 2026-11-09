@@ -16,6 +16,8 @@ import { htmlRenderI18n } from './html-render.i18n';
 import { documentToolbarI18n } from './document-toolbar.i18n';
 import { uiBlocksI18n } from './ui-blocks.i18n';
 import { updateDialogCanaryI18n } from './update-dialog-canary.i18n';
+import { aboutReleaseNotesI18n } from './about-release-notes.i18n';
+import { updateCheckErrorsI18n } from './update-check-errors.i18n';
 import { secretRequestI18n } from './secret-request.i18n';
 import { sessionNoticesI18n } from './session-notices.i18n';
 import { usageStatsI18n } from './usage-stats.i18n';
@@ -26,7 +28,12 @@ import { soundsI18n } from './sounds.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolsLayoutI18n } from './openchamber-tools-layout.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
+import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
 import { sidebarWorkI18n } from './sidebar-work.i18n';
 import { sidebarSectionsI18n } from './sidebar-sections.i18n';
@@ -50,6 +57,15 @@ import { autocompleteScopeI18n } from './autocomplete-scope.i18n';
 import { workflowsI18n } from './workflows.i18n';
 import { sessionReferencesI18n } from './session-references.i18n';
 import { guestStatusViewI18n } from './guest-status-view.i18n';
+import { tooltipsDiffI18n } from './tooltips-diff.i18n';
+import { tooltipsFilesI18n } from './tooltips-files.i18n';
+import { tooltipsGitI18n } from './tooltips-git.i18n';
+import { tooltipsTrackerI18n } from './tooltips-tracker.i18n';
+import { tooltipsWalkthroughI18n } from './tooltips-walkthrough.i18n';
+import { tooltipsTerminalBrowserI18n } from './tooltips-terminal-browser.i18n';
+import { tooltipsWorkspaceI18n } from './tooltips-workspace.i18n';
+import { tooltipsPanelI18n } from './tooltips-panel.i18n';
+import { tooltipsChatI18n } from './tooltips-chat.i18n';
 
 export const dict: Record<I18nKey, string> = {
   'quota.family.zen': 'Modelos Zen',
@@ -104,6 +120,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.liveActivity.usedSubagents': '{count} subagentes utilizados',
   'sessions.sidebar.projectAction.active': 'Ação do projeto em execução',
   ...settingsDict,
+  ...selectionApprovalI18n['pt-BR'],
   'gitView.context.configure': 'Configurar repositório',
   'gitView.context.description': 'Remotos que a identidade do repositório não alcança e acesso para submódulos e Git LFS. As identidades ficam nas configurações do Git.',
   'gitView.context.needsAttention': 'Requer atenção',
@@ -191,6 +208,8 @@ export const dict: Record<I18nKey, string> = {
   ...documentToolbarI18n['pt-BR'],
   ...uiBlocksI18n['pt-BR'],
   ...updateDialogCanaryI18n['pt-BR'],
+  ...aboutReleaseNotesI18n['pt-BR'],
+  ...updateCheckErrorsI18n['pt-BR'],
   ...secretRequestI18n['pt-BR'],
   ...sessionNoticesI18n['pt-BR'],
   ...usageStatsI18n['pt-BR'],
@@ -201,6 +220,10 @@ export const dict: Record<I18nKey, string> = {
   ...heapSnapshotI18n['pt-BR'],
   ...consoleBudgetsI18n['pt-BR'],
   ...imageToolI18n['pt-BR'],
+  ...usageToolI18n['pt-BR'],
+  ...openchamberToolsLayoutI18n['pt-BR'],
+  ...openchamberToolOutputI18n['pt-BR'],
+  ...opencodeToolOutputI18n['pt-BR'],
   ...agentStatusI18n['pt-BR'],
   ...snippetsI18n['pt-BR'],
   ...sidebarWorkI18n['pt-BR'],
@@ -225,6 +248,15 @@ export const dict: Record<I18nKey, string> = {
   ...workflowsI18n['pt-BR'],
   ...sessionReferencesI18n['pt-BR'],
   ...guestStatusViewI18n['pt-BR'],
+  ...tooltipsDiffI18n['pt-BR'],
+  ...tooltipsFilesI18n['pt-BR'],
+  ...tooltipsGitI18n['pt-BR'],
+  ...tooltipsTrackerI18n['pt-BR'],
+  ...tooltipsWalkthroughI18n['pt-BR'],
+  ...tooltipsTerminalBrowserI18n['pt-BR'],
+  ...tooltipsWorkspaceI18n['pt-BR'],
+  ...tooltipsPanelI18n['pt-BR'],
+  ...tooltipsChatI18n['pt-BR'],
   'terminalView.actions.attachSelection': 'Anexar saída selecionada',
   'terminalView.actions.copySelection': 'Copiar saída selecionada',
   'terminalView.toast.selectionCopied': 'Saída copiada',
@@ -298,7 +330,6 @@ export const dict: Record<I18nKey, string> = {
   "layout.mainTab.terminal": "Terminal",
   "layout.mainTab.context": "Contexto",
   "mobile.nav.aria": "Navegação móvel",
-  "mobile.connect.welcome.title": "Conectar ao OpenChamber",
   "mobile.connect.welcome.description": "Adicione a URL de um servidor ou leia um código QR de pareamento para começar a usar o app móvel.",
   "mobile.connect.url.label": "URL do servidor",
   "mobile.connect.url.placeholder": "http://192.168.1.74:2606",
@@ -323,8 +354,13 @@ export const dict: Record<I18nKey, string> = {
   "mobile.connect.scan.failed": "Não foi possível ler esse código QR. Tente novamente ou digite a URL manualmente.",
   "mobile.connect.scan.invalid": "Esse código QR não é um código de conexão do OpenChamber.",
   "mobile.connect.scan.unsupported": "A leitura de QR só está disponível no app móvel instalado.",
-  "mobile.connect.saved.title": "Conexões salvas",
-  "mobile.connect.saved.empty": "Nenhuma conexão salva ainda.",
+  "mobile.connect.firstRun.title": "Seus agentes, onde você estiver.",
+  "mobile.connect.firstRun.description": "Conecte-se ao OpenChamber no seu computador.",
+  "mobile.connect.firstRun.scanHint": "Em «Adicionar dispositivo»",
+  "mobile.connect.firstRun.addressHint": "URL e token",
+  "mobile.connect.lastConnected": "Última conexão",
+  "mobile.connect.saved.other": "Outros",
+  "mobile.instances.actionsAria": "Ações de {label}",
   "mobile.connect.relay.badge": "via OpenChamber Relay",
   "mobile.connect.error.urlRequired": "Informe a URL de um servidor.",
   "mobile.connect.splash.connectingTo": "Conectando ao dispositivo:",
@@ -338,9 +374,7 @@ export const dict: Record<I18nKey, string> = {
   "mobile.instances.editTitle": "Editar instância",
   "mobile.instances.edit": "Editar",
   "mobile.instances.delete": "Excluir",
-  "mobile.instances.deleteAria": "Excluir {label}",
   "mobile.instances.confirmDeleteAria": "Confirmar exclusão de {label}",
-  "mobile.instances.cancelDeleteAria": "Manter {label}",
   "mobile.instances.cancelEdit": "Cancelar",
   "mobile.instances.label.label": "Nome",
   "mobile.instances.label.placeholder": "Nome de exibição opcional",
@@ -766,6 +800,9 @@ export const dict: Record<I18nKey, string> = {
   "chat.backgroundShells.stopAll": "Parar todos",
   "chat.backgroundShells.stopAria": "Parar {command}",
   "chat.backgroundShells.elapsed": "Em execução há {duration}",
+  "chat.backgroundWork.aria": "Trabalho em segundo plano",
+  "chat.backgroundWork.count": "Em segundo plano: {count}",
+  "chat.backgroundImages.generating": "Gerando uma imagem",
   "sessions.sidebar.session.menu.share": "Compartilhar",
   "sessions.sidebar.session.menu.copied": "Copiado",
   "sessions.sidebar.session.menu.copyLink": "Copiar link",
@@ -805,7 +842,8 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.status.unread": "Atualizações não lidas",
   "sessions.sidebar.session.status.backgroundSubagent": "Subagente em execução em segundo plano",
   "sessions.sidebar.session.status.backgroundCommand": "Comando em execução em segundo plano",
-  "sessions.sidebar.session.status.waitingOnPullRequest": "Aguardando um pull request",
+  "sessions.sidebar.session.status.backgroundImage": "Imagem sendo gerada em segundo plano",
+  'sessions.sidebar.session.status.waitingOnPullRequest': 'Aguardando verificações ou uma revisão',
   "sessions.sidebar.session.status.pinned": "Sessão fixada",
   "sessions.sidebar.session.status.movingToWorktree": "Movendo a sessão para um novo worktree",
   "sessions.sidebar.session.status.permissionRequired": "Permissão obrigatória",
@@ -924,6 +962,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.sessionDialogs.directory.errorAddProjectTitle": "Não foi possível adicionar projeto",
   "sessions.sidebar.sessionDialogs.directory.errorAddProjectDescription": "Selecione uma caminho de diretório válida.",
   "sessions.sidebar.sessionDialogs.worktree.errorRemoveTitle": "Não foi possível excluir o worktree",
+  "sessions.sidebar.sessionDialogs.worktree.deleteWithoutTeardown": "Excluir sem limpeza",
   "sessions.sidebar.sessionDialogs.worktree.removingTitle": "Excluindo o worktree “{name}”…",
   "sessions.sidebar.sessionDialogs.worktree.removed": "Worktree excluído",
   "sessions.sidebar.sessionDialogs.worktree.removedWithRemote": "Worktree e branch remota excluídos",
@@ -1232,6 +1271,9 @@ export const dict: Record<I18nKey, string> = {
   "magicPrompts.toast.loadFailed": "Não foi possível carregar os prompts mágicos. Nada foi enviado.",
   "gitView.empty.notGitRepository": "Este diretório não é um repositório Git",
   "gitView.empty.notGitRepositoryDescription": "Inicialize Git neste diretório ou abra um repositório.",
+  "gitView.empty.repositoryUnreadable": "O Git não conseguiu ler esta pasta",
+  "gitView.empty.repositoryUnreadableDescription": "Isto é o que o Git informou. Corrija e tente novamente.",
+  "gitView.empty.repositoryUnreadableRetry": "Tentar novamente",
   "gitView.empty.selectSessionOrDirectory": "Selecione uma sessão ou diretório para ver o status do Git",
   "gitView.empty.worktreeFeaturesUnavailable": "Os recursos de worktree não estão disponíveis neste modo de workspace.",
   "gitView.empty.worktreeSetupDescription": "Finalizando a configuração de worktree e preparando o status do repositório.",
@@ -1637,6 +1679,13 @@ export const dict: Record<I18nKey, string> = {
   "sidebarFilesTree.toast.uploaded": "Arquivos enviados",
   "sidebarFilesTree.toast.uploadedWithoutConflicts": "Os arquivos sem conflitos foram enviados",
   "sidebarFilesTree.toast.uploadFailed": "Não foi possível enviar alguns arquivos",
+  "sidebarFilesTree.toast.uploadFailedTooLarge": "{name} é maior que o limite de upload de {limit}",
+  "sidebarFilesTree.toast.uploadFailedPermission": "Não foi possível salvar {name}, a pasta não permite gravação",
+  "sidebarFilesTree.toast.uploadFailedOutsideWorkspace": "Não foi possível salvar {name}, a pasta está fora do projeto aberto",
+  "sidebarFilesTree.toast.uploadFailedFolderMissing": "Não foi possível salvar {name}, a pasta não existe mais",
+  "sidebarFilesTree.toast.uploadFailedUnknown": "Não foi possível enviar {name}",
+  "sidebarFilesTree.toast.uploadFailedAndMoreSingle": "e mais {count} arquivo falhou",
+  "sidebarFilesTree.toast.uploadFailedAndMorePlural": "e mais {count} arquivos falharam",
   "sidebarFilesTree.drop.target": "Enviar para {path}",
   "sidebarFilesTree.drop.uploading": "Enviando arquivos para {path}",
   "sidebarFilesTree.drop.moveTarget": "Mover para {path}",
@@ -1657,7 +1706,6 @@ export const dict: Record<I18nKey, string> = {
   "sidebarFilesTree.actions.addMenuTitle": "Novo arquivo, pasta ou envio",
   "sidebarFilesTree.actions.refreshTitle": "Atualizar",
   "sidebarFilesTree.actions.collapseAllTitle": "Recolher todas as pastas",
-  "sidebarFilesTree.actions.fileMenuTitle": "Menu do arquivo",
   "sidebarFilesTree.state.searching": "Buscando...",
   "sidebarFilesTree.state.loading": "Carregando...",
   "sidebarFilesTree.dialog.createFile.title": "Criar arquivo",
@@ -1778,6 +1826,7 @@ export const dict: Record<I18nKey, string> = {
   "contextSidebar.empty.openSession": "Abrir uma sessão para inspecionar o contexto.",
   "contextSidebar.section.context": "Contexto",
   "contextSidebar.section.lastAssistantMessage": "Última mensagem do assistente",
+  "contextSidebar.section.sessionTotals": "Totais da sessão",
   "contextSidebar.section.rawMessages": "Mensagens brutas",
   "contextSidebar.context.percentUsed": "{percent}% usado",
   "contextSidebar.breakdown.user": "Usuário",
@@ -1881,14 +1930,11 @@ export const dict: Record<I18nKey, string> = {
   "diffView.actions.expandAll": "Expandir tudo",
   "diffView.actions.collapseAll": "Recolher tudo",
   "diffView.actions.hideWhitespace": "Ocultar alterações de espaços em branco",
-  "diffView.whitespace.hidden": "Alterações de espaços em branco ocultas",
   "diffView.layout.sideBySide": "Visualização lado a lado",
   "diffView.actions.wrapLines": "Quebra de linha",
   "diffView.actions.moreActions": "Mais ações",
-  "diffView.whitespace.shown": "Alterações de espaços em branco visíveis",
   "diffView.actions.openFileInEditorAtChange": "Abrir este arquivo no editor nesta alteração",
   "diffView.actions.openFileAtFirstChangedLine": "Abrir este arquivo na primeira linha alterada",
-  'diffView.actions.review': 'Revisar',
   'diffView.actions.reviewAria': 'Revisar alterações',
   'diffView.reviewDialog.title': 'Revisar alterações',
   'diffView.reviewDialog.description': 'Inicia uma sessão de revisão separada para as alterações atuais.',
@@ -1933,12 +1979,14 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoReview.actions.dismiss': 'Dispensar',
   'chat.autoReview.toast.removeFailed': 'Não foi possível contatar o servidor para alterar a revisão de código. Tente novamente.',
   'chat.prWatch.title': 'Aguardando o pull request #{number}',
+  'chat.prWatch.mr.title': 'Aguardando o merge request !{number}',
+  'chat.prWatch.change.title': 'Aguardando a alteração #{number}',
   'chat.prWatch.status.pending': 'verificações em andamento',
   'chat.prWatch.status.passed': 'verificações aprovadas',
   'chat.prWatch.status.failed': 'uma verificação falhou',
   'chat.prWatch.status.waking': 'acordando o agente',
   'chat.prWatch.actions.stop': 'Parar de acompanhar',
-  'chat.prWatch.toast.stopFailed': 'Não foi possível contatar o servidor para parar de acompanhar o pull request. Tente novamente.',
+  'chat.prWatch.toast.stopFailed': 'Não foi possível contatar o servidor para parar de acompanhar. Tente novamente.',
   'chat.draftDirtyNotice.tooltip': 'Você tem alterações sem commit nesta branch.\nUma nova sessão pode entrar em conflito com elas. Talvez seja melhor fazer commit delas primeiro ou usar outro worktree.',
   'chat.draftDirtyNotice.indicatorAria': 'Alterações sem commit neste diretório',
   "diffView.hunk.label": "Trechos",
@@ -2038,6 +2086,7 @@ export const dict: Record<I18nKey, string> = {
   "inlineComment.actions.editComment": "Editar comentário",
   "inlineComment.actions.deleteComment": "Excluir comentário",
   "inlineComment.toast.selectSessionToSave": "Selecione uma sessão para salvar o comentário",
+  "inlineComment.toast.noRoom": "Não foi possível salvar o comentário: os comentários não enviados ocuparam todo o espaço disponível. Envie ou exclua alguns, nesta sessão ou em outra, e tente novamente.",
   "header.services.openWithCurrent": "Abrir instância, uso e MCP (atual: {current})",
   "header.services.open": "Abrir serviços, uso e MCP",
   "header.services.title": "Serviços",
@@ -2188,6 +2237,7 @@ export const dict: Record<I18nKey, string> = {
   "directoryExplorerDialog.browse.retry": "Tentar novamente",
   "directoryExplorerDialog.browse.parentDirectory": "Diretório pai",
   "directoryExplorerDialog.browse.addedBadge": "Adicionado",
+  "directoryExplorerDialog.browse.linkTarget": "Link para {path}",
   "directoryExplorerDialog.browse.quickAdd": "Adicionar",
   "directoryExplorerDialog.browse.selectForAdd": "Selecionar para adicionar",
   "directoryExplorerDialog.footer.navigate": "Navegar",
@@ -2468,7 +2518,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.fileMentionAutocomplete.empty": "Nenhuma correspondência encontrada",
   "chat.queuedMessage.attachments": "+{count} arquivo(s)",
   "chat.queuedMessage.empty": "(vazio)",
-  "chat.queuedMessage.title": "Queued messages",
+  "chat.queuedMessage.title": "Mensagens na fila",
   "chat.queuedMessage.edit": "edit",
   "chat.queuedMessage.send": "send",
   "chat.queuedMessage.removeAria": "Excluir da fila",
@@ -2644,6 +2694,7 @@ export const dict: Record<I18nKey, string> = {
   "chat.chatInput.largeTextPaste.inline": "Colar no corpo",
   "chat.chatInput.toast.addedFileMentions": "Foram adicionadas {count} menção(es) de arquivo",
   "chat.chatInput.toast.attachFileFailed": "Não foi possível anexar o arquivo",
+  "chat.chatInput.mentionChip.editHint": "Clique duas vezes para editar como texto",
   "chat.chatInput.toast.attachNamedFailed": "Não foi possível anexar {name}",
   "chat.chatInput.toast.unsupportedAttachmentModalities": "{model} não oferece suporte à entrada de {modalities} exigida por {files}. Você ainda pode enviar a mensagem, mas esses anexos podem ser ignorados.",
   "chat.chatInput.toast.imagesSaving": "Salvando {files}…",
@@ -3000,6 +3051,7 @@ export const dict: Record<I18nKey, string> = {
   "projects.sharedTrust.title": "Executar os comandos guardados neste repositório?",
   "projects.sharedTrust.description": "{path} neste repositório define comandos que rodam nesta máquina. Confie uma vez e o OpenChamber só perguntará de novo quando eles mudarem.",
   "projects.sharedTrust.setupCommands": "Comandos de configuração do worktree",
+  "projects.sharedTrust.teardownCommands": "Comandos de limpeza do worktree",
   "projects.sharedTrust.actions": "Ações",
   "projects.sharedTrust.skip": "Agora não",
   "projects.sharedTrust.trust": "Confiar e executar",
@@ -3365,6 +3417,7 @@ export const dict: Record<I18nKey, string> = {
   "updateDialog.status.autoReloadHint": "A página será recarregada automaticamente quando a atualização terminar.",
   "updateDialog.fallback.updateViaTerminal": "Ou atualize pelo terminal:",
   "updateDialog.desktopHostInstall": "OpenChamber {version} está disponível. Atualize no computador em que ele roda.",
+  "updateDialog.openCodeTooOld": "O OpenChamber {version} precisa do OpenCode {required}. Este servidor tem a {current}. Atualize o OpenCode primeiro.",
   "updateDialog.actions.copyCommand": "Copiar comando",
   "updateDialog.actions.copied": "Copiado!",
   "updateDialog.status.downloadingPayload": "Baixando o payload de atualização...",
@@ -3462,6 +3515,13 @@ export const dict: Record<I18nKey, string> = {
   "markdownRenderer.code.proposal": "Proposta",
   "markdownRenderer.code.actions.copyTitle": "Copiar código",
   "markdownRenderer.code.actions.copiedTitle": "Copiado",
+  "markdownRenderer.code.actions.runTitle": "Executar comando. O agente continua a partir da saída",
+  "markdownRenderer.code.actions.stopTitle": "Parar comando",
+  "markdownRenderer.code.run.startFailed": "Não foi possível iniciar o comando",
+  "markdownRenderer.code.run.running": "Em execução",
+  "markdownRenderer.code.run.finished": "Concluído",
+  "markdownRenderer.code.run.failed": "Código de saída {code}",
+  "markdownRenderer.code.run.stopped": "Parado",
   "markdownRenderer.table.actions.copyTitle": "Copiar tabela",
   "markdownRenderer.code.actions.enableWrapTitle": "Ativar quebra de linha",
   "markdownRenderer.code.actions.disableWrapTitle": "Desativar quebra de linha",
@@ -3654,6 +3714,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.breakdown.skillCountPlural': '{count} habilidades',
   'chat.workStatus.breakdown.mcpCountSingle': '{count} MCP',
   'chat.workStatus.breakdown.mcpCountPlural': '{count} MCP',
+  'chat.workStatus.breakdown.planCountSingle': '{count} plano',
+  'chat.workStatus.breakdown.planCountPlural': '{count} planos',
+  'chat.workStatus.linkedPlans.open': 'Abrir o plano {title}',
   'chat.workStatus.sections.open': 'Escolher seções',
   'chat.workStatus.sections.dialogTitle': 'Seções do painel',
   'chat.workStatus.sections.reorder': 'Arraste {label} para reordenar',
@@ -3703,6 +3766,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.toast.branchCreatedLocally': 'Branch created locally, but failed to set upstream.',
   'gitView.toast.pushedToUpstream': 'Pushed to {name}',
   'gitView.toast.pulledFromRemote': 'Alterações trazidas de {name}',
+  'gitView.toast.remoteUrlUserinfo': 'Remova o nome antes de @ da URL remota',
   'chat.formCard.inputNeeded': 'Resposta necessária',
   'chat.formCard.fromSubagent': 'de um subagente',
   'chat.formCard.required': 'Obrigatório',
@@ -3759,6 +3823,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.dispatchedSession.showAnswer': 'Mostrar resposta',
   'chat.dispatchedSession.hideAnswer': 'Ocultar resposta',
   'chat.dispatchedSession.open': 'Abrir sessão',
+  'chat.fileOpenRequest.toast.description': 'Exibido em {session}',
+  'chat.fileOpenRequest.toast.descriptionUntitled': 'Exibido em outra sessão',
+  'chat.fileOpenRequest.toast.openSession': 'Abrir sessão',
   'chat.revertPopover.staged': 'Revertidas: {count}',
   "chat.revertPopover.toast.restoreFailed": "Não foi possível restaurar as mensagens revertidas",
   'chat.workStatus.mcp.needsAuthHint': 'Entre neste servidor MCP em Configurações → MCP.',

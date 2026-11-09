@@ -57,13 +57,11 @@ Git installs also accept SSH addresses such as `git@github.com:owner/extension.g
   "openchamber": {
     "apiVersion": 1,
     "engines": { "openchamber": ">=1.24.0" },
+    "id": "acme-hello",
+    "name": "Hello",
+    "icon": "window",
     "contributes": {
-      "panel": {
-        "id": "acme-hello",
-        "name": "Hello",
-        "icon": "window",
-        "entry": "panel/index.html"
-      },
+      "panel": { "entry": "panel/index.html" },
       "attach": "dialog",
       "capabilities": ["prompt", "sessions"],
       "actions": [
@@ -90,7 +88,7 @@ Git installs also accept SSH addresses such as `git@github.com:owner/extension.g
 - `version` is required semver. Settings → Extensions shows it on the card.
 - `apiVersion` is `1`. Anything else is refused.
 - `engines.openchamber` is optional (`1.24.0` or `>=1.24.0`). Older OpenChamber builds refuse the install.
-- `panel.id` is kebab-case and unique. `icon` is a Remixicon name (`RiWindowLine` becomes `window`) or an SVG inside the folder. `entry` is the visible panel's HTML file. Leave `entry` out to have no rail icon or panel. Add `background.entry` for executable actions and commands; with neither entry, the extension can only declare `tools`, as in `examples/tools-only`.
+- `panel.id` is kebab-case and unique. `icon` is a Remixicon name (`RiWindowLine` becomes `window`) or an SVG inside the folder. `entry` is the visible panel's HTML file. Leave `entry` out to have no rail icon or panel. Add `background.entry` for executable actions and commands; with neither entry, the extension can only declare `tools`, as in `examples/tools-only`, and `providerLogos`.
 - `background: { "entry": "background/index.html" }` supplies separate sandboxed HTML for background actions and slash commands. Its scripts must be built. It runs on demand, not continuously or at installation. A panel can coexist with it.
 - `attach` is optional. `"dialog"` opens the page in a window from the + menu next to the chat box; `true` or `"panel"` opens the rail panel instead. `ctx.surface` tells the page which one it is in. The object form `{ "mode": "dialog", "entry": "panel/attach.html" }` gives the window its own page. When the user clicks the attached chip, the page opens again with that item in `ctx.item` (`null` from the + menu), so it can show the item instead of the list.
 - `actions` is optional: menu entries on messages (`where: "message"`, optionally only `roles: ["assistant"]`) and on sessions (`where: "session"`). By default, picking one opens your page with that message or session in `ctx.item` (`kind: "message"` with the text, or `kind: "session"`; add `payload: ["messages"]` to get the conversation too). Set `mode: "background"` to call `onAction` without opening UI, as shown below. Up to 8.
@@ -129,19 +127,23 @@ Each click runs in a fresh hidden iframe. Await all work inside the handler, inc
 
 `ctx.surface` is `"background"`; skip drawing your UI in that case. `ctx.item` stays `null`, so the action runs only through `onAction`, without repeated `onItem` snapshots. The session and directory context stay with the clicked target even if the user changes chats. OpenChamber loads `background.entry` when declared and falls back to `panel.entry` for existing extensions. Omit `mode`, or use `"open"`, to open a visible panel or dialog. See `examples/hello-kit` for separate panel and background scripts.
 
-To remove the panel and its rail icon entirely, use this `contributes` block:
+To remove the panel and its rail icon entirely, leave `panel` out and name the extension beside `contributes`:
 
 ```json
 {
-  "panel": { "id": "message-tools", "name": "Message Tools", "icon": "apps" },
-  "background": { "entry": "background/index.html" },
-  "actions": [
-    { "id": "message-length", "label": "Show message length", "where": "message", "mode": "background" }
-  ]
+  "id": "message-tools",
+  "name": "Message Tools",
+  "icon": "apps",
+  "contributes": {
+    "background": { "entry": "background/index.html" },
+    "actions": [
+      { "id": "message-length", "label": "Show message length", "where": "message", "mode": "background" }
+    ]
+  }
 }
 ```
 
-The `panel` object retains the extension's identity for Settings and approval dialogs; only `panel.entry` creates a visible panel. Without it, every action must use `mode: "background"`, and `attach` and `page` cannot open a view. Slash commands call `onResolve` in the background entry, with `ctx.surface` also set to `"background"`. Capabilities, services, integrations, storage, and file access use the same approval checks. An attached chip can still be sent to the model or opened with its browser button; clicking to reopen the extension shows a no-panel notice.
+Only `panel.entry` creates a rail icon.
 
 This addition requires a matching OpenChamber build. For unreleased SDK preview builds, use the app built from the same revision.
 

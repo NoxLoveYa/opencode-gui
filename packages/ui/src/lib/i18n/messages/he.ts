@@ -15,6 +15,8 @@ import { htmlRenderI18n } from './html-render.i18n';
 import { documentToolbarI18n } from './document-toolbar.i18n';
 import { uiBlocksI18n } from './ui-blocks.i18n';
 import { updateDialogCanaryI18n } from './update-dialog-canary.i18n';
+import { aboutReleaseNotesI18n } from './about-release-notes.i18n';
+import { updateCheckErrorsI18n } from './update-check-errors.i18n';
 import { secretRequestI18n } from './secret-request.i18n';
 import { sessionNoticesI18n } from './session-notices.i18n';
 import { usageStatsI18n } from './usage-stats.i18n';
@@ -25,7 +27,12 @@ import { soundsI18n } from './sounds.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolsLayoutI18n } from './openchamber-tools-layout.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
+import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
 import { sidebarWorkI18n } from './sidebar-work.i18n';
 import { sidebarSectionsI18n } from './sidebar-sections.i18n';
@@ -49,6 +56,15 @@ import { autocompleteScopeI18n } from './autocomplete-scope.i18n';
 import { workflowsI18n } from './workflows.i18n';
 import { sessionReferencesI18n } from './session-references.i18n';
 import { guestStatusViewI18n } from './guest-status-view.i18n';
+import { tooltipsDiffI18n } from './tooltips-diff.i18n';
+import { tooltipsFilesI18n } from './tooltips-files.i18n';
+import { tooltipsGitI18n } from './tooltips-git.i18n';
+import { tooltipsTrackerI18n } from './tooltips-tracker.i18n';
+import { tooltipsWalkthroughI18n } from './tooltips-walkthrough.i18n';
+import { tooltipsTerminalBrowserI18n } from './tooltips-terminal-browser.i18n';
+import { tooltipsWorkspaceI18n } from './tooltips-workspace.i18n';
+import { tooltipsPanelI18n } from './tooltips-panel.i18n';
+import { tooltipsChatI18n } from './tooltips-chat.i18n';
 
 export const dict = {
   'quota.family.zen': 'מודלי Zen',
@@ -232,7 +248,6 @@ export const dict = {
   'layout.mainTab.terminal': 'מסוף',
   'layout.mainTab.context': 'הקשר',
   'mobile.nav.aria': 'ניווט בנייד',
-  'mobile.connect.welcome.title': 'התחברות ל-OpenChamber',
   'mobile.connect.welcome.description': 'כדי להתחיל להשתמש באפליקציה לנייד, יש להוסיף כתובת URL של שרת או לסרוק קוד QR לצימוד.',
   'mobile.connect.url.label': 'כתובת URL של השרת',
   'mobile.connect.url.placeholder': 'http://192.168.1.74:2606',
@@ -257,8 +272,13 @@ export const dict = {
   'mobile.connect.scan.failed': 'לא ניתן היה לסרוק את קוד ה-QR. אפשר לנסות שוב או להזין את כתובת ה-URL ידנית.',
   'mobile.connect.scan.invalid': 'קוד ה-QR הזה אינו קוד חיבור של OpenChamber.',
   'mobile.connect.scan.unsupported': 'סריקת QR זמינה רק באפליקציה המותקנת לנייד.',
-  'mobile.connect.saved.title': 'חיבורים שמורים',
-  'mobile.connect.saved.empty': 'עדיין אין חיבורים שמורים.',
+  'mobile.connect.firstRun.title': 'הסוכנים שלך, בכל מקום.',
+  'mobile.connect.firstRun.description': 'התחברו ל-OpenChamber שפועל במחשב שלכם.',
+  'mobile.connect.firstRun.scanHint': 'מתוך «הוספת מכשיר»',
+  'mobile.connect.firstRun.addressHint': 'כתובת ואסימון',
+  'mobile.connect.lastConnected': 'חיבור אחרון',
+  'mobile.connect.saved.other': 'אחרים',
+  'mobile.instances.actionsAria': 'פעולות עבור {label}',
   'mobile.connect.relay.badge': 'דרך הממסר של OpenChamber',
   'mobile.connect.error.urlRequired': 'יש להזין כתובת URL של שרת.',
   'mobile.connect.splash.connectingTo': 'מתחבר למכשיר:',
@@ -272,9 +292,7 @@ export const dict = {
   'mobile.instances.editTitle': 'ערוך מופע',
   'mobile.instances.edit': 'ערוך',
   'mobile.instances.delete': 'מחק',
-  'mobile.instances.deleteAria': 'מחק את {label}',
   'mobile.instances.confirmDeleteAria': 'אשר את מחיקת {label}',
-  'mobile.instances.cancelDeleteAria': 'השאר את {label}',
   'mobile.instances.cancelEdit': 'ביטול',
   'mobile.instances.label.label': 'שם',
   'mobile.instances.label.placeholder': 'שם תצוגה (לא חובה)',
@@ -705,6 +723,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'עצור הכול',
   'chat.backgroundShells.stopAria': 'עצור את {command}',
   'chat.backgroundShells.elapsed': 'פועלת כבר {duration}',
+  'chat.backgroundWork.aria': 'עבודה ברקע',
+  'chat.backgroundWork.count': 'ברקע: {count}',
+  'chat.backgroundImages.generating': 'יוצר תמונה',
   'sessions.sidebar.session.menu.share': 'שתף',
   'sessions.sidebar.session.menu.copied': 'הועתק',
   'sessions.sidebar.session.menu.copyLink': 'העתק קישור',
@@ -744,7 +765,8 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'עדכונים שלא נקראו',
   'sessions.sidebar.session.status.backgroundSubagent': 'סוכן משנה פועל ברקע',
   'sessions.sidebar.session.status.backgroundCommand': 'פקודה פועלת ברקע',
-  'sessions.sidebar.session.status.waitingOnPullRequest': 'ממתין לבקשת משיכה',
+  'sessions.sidebar.session.status.backgroundImage': 'תמונה נוצרת ברקע',
+  'sessions.sidebar.session.status.waitingOnPullRequest': 'ממתין לבדיקות או לסקירה',
   'sessions.sidebar.session.status.pinned': 'הפעלה מוצמדת',
   'sessions.sidebar.session.status.movingToWorktree': 'ההפעלה מועברת לעץ עבודה חדש',
   'sessions.sidebar.session.status.permissionRequired': 'נדרשת הרשאה',
@@ -863,6 +885,7 @@ export const dict = {
   'sessions.sidebar.sessionDialogs.directory.errorAddProjectTitle': 'לא ניתן היה להוסיף את הפרויקט',
   'sessions.sidebar.sessionDialogs.directory.errorAddProjectDescription': 'יש לבחור נתיב תיקייה תקין.',
   'sessions.sidebar.sessionDialogs.worktree.errorRemoveTitle': 'לא ניתן היה להסיר את עץ העבודה',
+  'sessions.sidebar.sessionDialogs.worktree.deleteWithoutTeardown': 'מחיקה ללא ניקוי',
   'sessions.sidebar.sessionDialogs.worktree.removingTitle': 'מסיר את עץ העבודה “{name}”…',
   'sessions.sidebar.sessionDialogs.worktree.removed': 'עץ העבודה הוסר',
   'sessions.sidebar.sessionDialogs.worktree.removedWithRemote': 'עץ העבודה והענף המרוחק הוסרו',
@@ -1180,6 +1203,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'לא ניתן לטעון את הנחיות הקסם. דבר לא נשלח.',
   'gitView.empty.notGitRepository': 'התיקייה הזו אינה מאגר Git',
   'gitView.empty.notGitRepositoryDescription': 'אפשר לאתחל Git בתיקייה הזו או לפתוח מאגר.',
+  'gitView.empty.repositoryUnreadable': 'Git לא הצליח לקרוא את התיקייה הזו',
+  'gitView.empty.repositoryUnreadableDescription': 'זה מה ש-Git אמר. אפשר לתקן ולנסות שוב.',
+  'gitView.empty.repositoryUnreadableRetry': 'לנסות שוב',
   'gitView.empty.selectSessionOrDirectory': 'יש לבחור הפעלה או תיקייה כדי לראות את מצב Git',
   'gitView.empty.worktreeFeaturesUnavailable': 'תכונות עץ העבודה לא זמינות במצב סביבת העבודה הזה.',
   'gitView.empty.worktreeSetupDescription': 'מסיים את הגדרת עץ העבודה ומכין את מצב המאגר.',
@@ -1279,6 +1305,7 @@ export const dict = {
   'gitView.toast.enterCommitMessage': 'יש להזין הודעת קומיט',
   'gitView.toast.fetchedFromRemote': 'בוצעה הבאה מ-{name}',
   'gitView.toast.pulledFromRemote': 'בוצעה משיכה מ-{name}',
+  'gitView.toast.remoteUrlUserinfo': 'הסירו את השם שלפני @ מכתובת ה-URL המרוחקת',
   'gitView.toast.generateCommitMessageFailed': 'יצירת הודעת הקומיט נכשלה',
   'gitView.toast.mergeAborted': 'המיזוג בוטל',
   'gitView.toast.mergeCompleted': 'המיזוג הושלם',
@@ -1616,6 +1643,13 @@ export const dict = {
   'sidebarFilesTree.toast.uploaded': 'הקבצים הועלו',
   'sidebarFilesTree.toast.uploadedWithoutConflicts': 'הקבצים ללא התנגשויות הועלו',
   'sidebarFilesTree.toast.uploadFailed': 'לא ניתן היה להעלות חלק מהקבצים',
+  'sidebarFilesTree.toast.uploadFailedTooLarge': '{name} גדול ממגבלת ההעלאה {limit}',
+  'sidebarFilesTree.toast.uploadFailedPermission': 'לא ניתן היה לשמור את {name} כי התיקייה אינה ניתנת לכתיבה',
+  'sidebarFilesTree.toast.uploadFailedOutsideWorkspace': 'לא ניתן היה לשמור את {name} כי התיקייה נמצאת מחוץ לפרויקט הפתוח',
+  'sidebarFilesTree.toast.uploadFailedFolderMissing': 'לא ניתן היה לשמור את {name} כי התיקייה כבר לא קיימת',
+  'sidebarFilesTree.toast.uploadFailedUnknown': 'לא ניתן היה להעלות את {name}',
+  'sidebarFilesTree.toast.uploadFailedAndMoreSingle': 'ועוד {count} קובץ נכשל',
+  'sidebarFilesTree.toast.uploadFailedAndMorePlural': 'ועוד {count} קבצים נכשלו',
   'sidebarFilesTree.drop.target': 'העלה אל {path}',
   'sidebarFilesTree.drop.uploading': 'מעלה קבצים אל {path}',
   'sidebarFilesTree.dialog.uploadConflicts.title': 'להחליף קבצים קיימים?',
@@ -1633,7 +1667,6 @@ export const dict = {
   'sidebarFilesTree.actions.uploadFilesTitle': 'העלה קבצים',
   'sidebarFilesTree.actions.refreshTitle': 'רענן',
   'sidebarFilesTree.actions.collapseAllTitle': 'כווץ את כל התיקיות',
-  'sidebarFilesTree.actions.fileMenuTitle': 'תפריט קובץ',
   'sidebarFilesTree.state.searching': 'מחפש…',
   'sidebarFilesTree.state.loading': 'טוען…',
   'sidebarFilesTree.dialog.createFile.title': 'יצירת קובץ',
@@ -1749,6 +1782,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'יש לפתוח הפעלה כדי לבדוק את ההקשר.',
   'contextSidebar.section.context': 'הקשר',
   'contextSidebar.section.lastAssistantMessage': 'ההודעה האחרונה של העוזר',
+  'contextSidebar.section.sessionTotals': 'סיכום ההפעלה',
   'contextSidebar.section.rawMessages': 'הודעות גולמיות',
   'contextSidebar.context.percentUsed': '{percent}% בשימוש',
   'contextSidebar.breakdown.user': 'משתמש',
@@ -1854,7 +1888,6 @@ export const dict = {
   'diffView.actions.hideWhitespace': 'הסתר שינויי רווחים',
   'diffView.actions.openFileInEditorAtChange': 'פתח את הקובץ בעורך במקום השינוי',
   'diffView.actions.openFileAtFirstChangedLine': 'פתח את הקובץ בשורה הראשונה שהשתנתה',
-  'diffView.actions.review': 'סקירה',
   'diffView.actions.reviewAria': 'סקור שינויים',
   'diffView.reviewDialog.title': 'סקירת שינויים',
   'diffView.reviewDialog.description': 'התחלת הפעלת סקירה נפרדת עבור השינויים הנוכחיים.',
@@ -1887,12 +1920,14 @@ export const dict = {
   'chat.autoReview.actions.dismiss': 'סגירה',
   'chat.autoReview.toast.removeFailed': 'לא ניתן היה להגיע לשרת כדי לשנות את סקירת הקוד. נסו שוב.',
   'chat.prWatch.title': 'ממתין לבקשת המשיכה #{number}',
+  'chat.prWatch.mr.title': 'ממתין לבקשת המיזוג !{number}',
+  'chat.prWatch.change.title': 'ממתין לשינוי #{number}',
   'chat.prWatch.status.pending': 'הבדיקות רצות',
   'chat.prWatch.status.passed': 'הבדיקות עברו',
   'chat.prWatch.status.failed': 'בדיקה נכשלה',
   'chat.prWatch.status.waking': 'מעיר את הסוכן',
   'chat.prWatch.actions.stop': 'הפסקת מעקב',
-  'chat.prWatch.toast.stopFailed': 'לא ניתן היה להגיע לשרת כדי להפסיק לעקוב אחרי בקשת המשיכה. נסו שוב.',
+  'chat.prWatch.toast.stopFailed': 'לא ניתן להגיע לשרת כדי להפסיק את המעקב. נסה שוב.',
   'chat.draftDirtyNotice.tooltip': "יש שינויים שלא בוצע להם קומיט בענף הזה.\nהפעלה חדשה עלולה להתנגש איתם. כדאי לבצע להם קומיט קודם או להשתמש בעץ עבודה (worktree) אחר.",
   'chat.draftDirtyNotice.indicatorAria': 'שינויים שלא בוצע להם קומיט בתיקייה הזו',
   'diffView.hunk.label': 'קטעים',
@@ -1992,6 +2027,7 @@ export const dict = {
   'inlineComment.actions.editComment': 'ערוך הערה',
   'inlineComment.actions.deleteComment': 'מחק הערה',
   'inlineComment.toast.selectSessionToSave': 'יש לבחור הפעלה כדי לשמור את ההערה',
+  'inlineComment.toast.noRoom': 'לא ניתן לשמור את ההערה: הערות שלא נשלחו תפסו את כל המקום הזמין. יש לשלוח או למחוק חלק מהן, בהפעלה הזו או באחרת, ולנסות שוב.',
   'header.services.openWithCurrent': 'פתח מופע, שימוש ו-MCP (נוכחי: {current})',
   'header.services.open': 'פתח שירותים, שימוש ו-MCP',
   'header.services.title': 'שירותים',
@@ -2142,6 +2178,7 @@ export const dict = {
   'directoryExplorerDialog.browse.retry': 'נסה שוב',
   'directoryExplorerDialog.browse.parentDirectory': 'תיקיית האב',
   'directoryExplorerDialog.browse.addedBadge': 'נוסף',
+  'directoryExplorerDialog.browse.linkTarget': 'קישור אל {path}',
   'directoryExplorerDialog.browse.quickAdd': 'הוסף',
   'directoryExplorerDialog.browse.selectForAdd': 'בחר להוספה',
   'directoryExplorerDialog.footer.navigate': 'ניווט',
@@ -2610,6 +2647,7 @@ export const dict = {
   'chat.chatInput.largeTextPaste.inline': 'הדבק בתוך ההודעה',
   'chat.chatInput.toast.addedFileMentions': 'נוספו {count} אזכורי קבצים',
   'chat.chatInput.toast.attachFileFailed': 'לא ניתן היה לצרף את הקובץ',
+  'chat.chatInput.mentionChip.editHint': 'לחיצה כפולה לעריכה כטקסט',
   'chat.chatInput.toast.attachNamedFailed': 'לא ניתן היה לצרף את {name}',
   'chat.chatInput.toast.unsupportedAttachmentModalities': '{model} לא תומך בקלט מסוג {modalities} שנדרש עבור {files}. עדיין אפשר לשלוח את ההודעה, אבל ייתכן שהקבצים המצורפים האלה יתעלמו.',
   'chat.chatInput.toast.imagesSaving': 'שומר את {files}…',
@@ -2966,6 +3004,7 @@ export const dict = {
   'projects.sharedTrust.title': 'להריץ את הפקודות השמורות במאגר זה?',
   'projects.sharedTrust.description': '{path} במאגר זה מגדיר פקודות שרצות במחשב זה. אחרי אישור אחד, OpenChamber ישאל שוב רק כשהן ישתנו.',
   'projects.sharedTrust.setupCommands': 'פקודות הגדרה של עץ העבודה',
+  'projects.sharedTrust.teardownCommands': 'פקודות ניקוי של עץ העבודה',
   'projects.sharedTrust.actions': 'פעולות',
   'projects.sharedTrust.skip': 'לא הפעם',
   'projects.sharedTrust.trust': 'אשר והרץ',
@@ -3334,6 +3373,7 @@ export const dict = {
   'updateDialog.status.autoReloadHint': 'הדף ייטען מחדש אוטומטית כשהעדכון יסתיים.',
   'updateDialog.fallback.updateViaTerminal': 'או לעדכן דרך המסוף:',
   'updateDialog.desktopHostInstall': 'OpenChamber {version} זמין. יש לעדכן אותו במחשב שבו הוא פועל.',
+  'updateDialog.openCodeTooOld': 'OpenChamber {version} דורש OpenCode {required}. בשרת הזה מותקנת גרסה {current}. יש לעדכן קודם את OpenCode.',
   'updateDialog.actions.copyCommand': 'העתק פקודה',
   'updateDialog.actions.copied': 'הועתק!',
   'updateDialog.status.downloadingPayload': 'מוריד את חבילת העדכון…',
@@ -3431,6 +3471,13 @@ export const dict = {
   'markdownRenderer.code.proposal': 'הצעה',
   'markdownRenderer.code.actions.copyTitle': 'העתק קוד',
   'markdownRenderer.code.actions.copiedTitle': 'הועתק',
+  'markdownRenderer.code.actions.runTitle': 'הרצת הפקודה. הסוכן ימשיך מהפלט שלה',
+  'markdownRenderer.code.actions.stopTitle': 'עצירת הפקודה',
+  'markdownRenderer.code.run.startFailed': 'לא ניתן היה להפעיל את הפקודה',
+  'markdownRenderer.code.run.running': 'פועלת',
+  'markdownRenderer.code.run.finished': 'הסתיימה',
+  'markdownRenderer.code.run.failed': 'קוד יציאה {code}',
+  'markdownRenderer.code.run.stopped': 'נעצרה',
   'markdownRenderer.table.actions.copyTitle': 'העתק טבלה',
   'markdownRenderer.code.actions.enableWrapTitle': 'הפעל גלישת שורות',
   'markdownRenderer.code.actions.disableWrapTitle': 'השבת גלישת שורות',
@@ -3588,6 +3635,9 @@ export const dict = {
   'chat.workStatus.breakdown.skillCountPlural': '{count} מיומנויות',
   'chat.workStatus.breakdown.mcpCountSingle': 'MCP {count}',
   'chat.workStatus.breakdown.mcpCountPlural': '{count} שרתי MCP',
+  'chat.workStatus.breakdown.planCountSingle': 'תוכנית {count}',
+  'chat.workStatus.breakdown.planCountPlural': '{count} תוכניות',
+  'chat.workStatus.linkedPlans.open': 'פתיחת התוכנית {title}',
   'chat.workStatus.sections.open': 'בחר מקטעים',
   'chat.workStatus.sections.dialogTitle': 'מקטעי החלונית',
   'chat.workStatus.sections.reorder': 'גרור את {label} כדי לשנות את הסדר',
@@ -3659,6 +3709,9 @@ export const dict = {
   'chat.dispatchedSession.showAnswer': 'הצג תשובה',
   'chat.dispatchedSession.hideAnswer': 'הסתר תשובה',
   'chat.dispatchedSession.open': 'פתח הפעלה',
+  'chat.fileOpenRequest.toast.description': 'מוצג בהפעלה {session}',
+  'chat.fileOpenRequest.toast.descriptionUntitled': 'מוצג בהפעלה אחרת',
+  'chat.fileOpenRequest.toast.openSession': 'פתח הפעלה',
   'chat.revertPopover.staged': 'בוטלו: {count}',
   'chat.workStatus.mcp.needsAuthHint': 'אפשר להתחבר לשרת ה-MCP הזה דרך הגדרות → MCP.',
   'mcpDropdown.toast.authorizeOpenFailed': 'לא ניתן היה לפתוח את דף ההרשאה',
@@ -3858,6 +3911,7 @@ export const dict = {
   'sessions.scheduledTasks.dialog.toast.alreadyQueued': 'המשימה הזו כבר ממתינה בתור ההמתנה ותרוץ כשיתפנה מקום',
   'chat.modelControls.agentFavoriteAdd': 'הוסף למועדפים. כשיש מועדפים, Tab עובר רק ביניהם',
   ...settingsDict,
+  ...selectionApprovalI18n.he,
   ...linearIssuePickerI18n.he,
   ...referencePickerI18n.he,
   ...repositoryDiscussionsI18n.he,
@@ -3874,6 +3928,8 @@ export const dict = {
   ...documentToolbarI18n.he,
   ...uiBlocksI18n.he,
   ...updateDialogCanaryI18n.he,
+  ...aboutReleaseNotesI18n.he,
+  ...updateCheckErrorsI18n.he,
   ...secretRequestI18n.he,
   ...sessionNoticesI18n.he,
   ...usageStatsI18n.he,
@@ -3884,6 +3940,10 @@ export const dict = {
   ...heapSnapshotI18n.he,
   ...consoleBudgetsI18n.he,
   ...imageToolI18n.he,
+  ...usageToolI18n.he,
+  ...openchamberToolsLayoutI18n.he,
+  ...openchamberToolOutputI18n.he,
+  ...opencodeToolOutputI18n.he,
   ...agentStatusI18n.he,
   ...snippetsI18n.he,
   ...sidebarWorkI18n.he,
@@ -3908,6 +3968,15 @@ export const dict = {
   ...workflowsI18n['he'],
   ...sessionReferencesI18n['he'],
   ...guestStatusViewI18n['he'],
+  ...tooltipsDiffI18n['he'],
+  ...tooltipsFilesI18n['he'],
+  ...tooltipsGitI18n['he'],
+  ...tooltipsTrackerI18n['he'],
+  ...tooltipsWalkthroughI18n['he'],
+  ...tooltipsTerminalBrowserI18n['he'],
+  ...tooltipsWorkspaceI18n['he'],
+  ...tooltipsPanelI18n['he'],
+  ...tooltipsChatI18n['he'],
   'settings.usage.page.state.claudeSignedOutTitle': 'לא מחובר ל-Claude Code',
   'settings.usage.page.state.claudeSignInCommand': 'יש להריץ את הפקודה הזו במסוף:',
   'settings.openchamber.visual.field.confirmFileTreeMove': 'אישור לפני העברת קבצים',
@@ -3954,11 +4023,9 @@ export const dict = {
   'sidebarFilesTree.dialog.move.confirm': 'העברה',
   'sidebarFilesTree.dialog.move.neverAsk': 'לא לשאול שוב',
   'filesView.editor.toast.contentsCopied': 'תוכן הקובץ הועתק',
-  'diffView.whitespace.hidden': 'שינויי רווחים מוסתרים',
   'diffView.layout.sideBySide': 'תצוגה זה לצד זה',
   'diffView.actions.wrapLines': 'גלישת שורות',
   'diffView.actions.moreActions': 'פעולות נוספות',
-  'diffView.whitespace.shown': 'שינויי רווחים מוצגים',
   'session.newWorktree.trust.skip': 'דילוג',
   'chat.revertPopover.toast.restoreFailed': 'לא ניתן היה לשחזר את ההודעות שבוטלו',
   'notifications.error.bodyFallback': 'אירעה שגיאה',

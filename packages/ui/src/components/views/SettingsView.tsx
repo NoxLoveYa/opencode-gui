@@ -17,6 +17,7 @@ import { useSnippetsStore } from '@/stores/useSnippetsStore';
 import { projectSettingsTabForSearchTarget, useProjectSettingsTabStore } from '@/components/sections/projects/projectSettingsTabs';
 import { chatSettingsTabForSearchTarget, useChatSettingsTabStore } from '@/components/sections/openchamber/chatSettingsTabs';
 import { soundSettingsTabForSearchTarget, useSoundSettingsTabStore } from '@/components/sections/openchamber/sounds/soundSettingsTabs';
+import { themeVariantForSearchTarget, useThemeVariantTabStore } from '@/components/sections/openchamber/themeVariantTab';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useSkillsCatalogStore } from '@/stores/useSkillsCatalogStore';
 import { Tooltip, TooltipTrigger } from '@/components/ui/tooltip';
@@ -75,18 +76,21 @@ import { buildSettingsSearchResults, type SettingsSearchResult } from '@/lib/set
 import { useTrackerDescriptors } from '@/lib/trackers/registry';
 import { useSourceControlProviders } from '@/lib/source-control/providers/registry';
 import { acknowledgeNewSettingPage, getNewSettingPages } from '@/lib/settings/newSettings';
+import { MOBILE_HEADER_BUTTON_CLASS, MOBILE_HEADER_CLASS, MOBILE_HEADER_TITLE_CLASS } from '@/components/ui/mobileHeader';
 
 // UI Kit: fixed split-page sidebar width
 const SETTINGS_SPLIT_SIDEBAR_WIDTH = 280;
 // The desktop close button: top-1 offset plus its h-7 height.
 const SETTINGS_CLOSE_BUTTON_CLEARANCE = 32;
 const SETTINGS_DETAIL_HISTORY_KEY = '__openchamberSettingsDetail';
-/** The Chat and Sounds pages show one tab at a time: open the one that holds the item. */
-const openChatSettingsTabFor = (itemId: string): void => {
+/** Pages that show one tab at a time (Chat, Sounds, the Appearance theme list): open the one that holds the item. */
+const openSettingsTabFor = (itemId: string): void => {
   const chatTab = chatSettingsTabForSearchTarget(itemId);
   if (chatTab) useChatSettingsTabStore.getState().setTab(chatTab);
   const soundsTab = soundSettingsTabForSearchTarget(itemId);
   if (soundsTab) useSoundSettingsTabStore.getState().setTab(soundsTab);
+  const themeVariant = themeVariantForSearchTarget(itemId);
+  if (themeVariant) useThemeVariantTabStore.getState().setVariant(themeVariant);
 };
 
 /** How long (in frames, ~0.5 s) a search result or a link waits for its item to render. */
@@ -115,8 +119,9 @@ interface SettingsViewProps {
   isWindowed?: boolean;
   /** Restrict top-level settings navigation to a specific product surface. */
   visiblePageSlugs?: SettingsPageSlug[];
-  /** Lets a native shell hand its hardware back button to the mobile stages:
-      the handler steps one level up and reports whether it consumed the press. */
+  /** Lets the mobile shell hand its back button to the mobile stages: the
+      handler steps one level up and reports whether it consumed the press. The
+      shell then owns Back, so the stages write no history of their own. */
   registerBackHandler?: (handler: (() => boolean) | null) => void;
   initialMobileStage?: MobileStage;
 }
@@ -211,11 +216,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
   const [, refreshNewSettings] = React.useReducer((revision: number) => revision + 1, 0);
   const [mobileStage, setMobileStage] = React.useState<MobileStage>(initialMobileStage);
-  // Seed with the mount-time slug when opening at the nav stage: the slug
-  // persists across opens, and the deep-link auto-jump below must react only
-  // to slug CHANGES after mount — not re-enter the previously visited page
-  // every time settings reopen.
-  const autoNavSlugRef = React.useRef<string | null>(initialMobileStage === 'nav' ? settingsSlug : null);
+  // Seed with the mount-time slug: the slug persists across opens, and the
+  // deep-link auto-jump below must react only to slug CHANGES after mount, not
+  // re-enter the previously visited page when settings reopen or when back
+  // reaches the nav stage from a page settings opened on.
+  const autoNavSlugRef = React.useRef<string>(settingsSlug);
 
   // No starter page on desktop: 'home' (fresh state) resolves to General.
   // settingsPage persists in the UI store, so subsequent opens restore the
@@ -469,7 +474,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       useProjectSettingsTabStore.getState().setTab(projectTab);
     }
 
-    openChatSettingsTabFor(result.id);
+    openSettingsTabFor(result.id);
 
     return result.id;
   }, []);
@@ -571,7 +576,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       return;
     }
     useUIStore.getState().clearSettingsJumpRequest();
-    if (settingsJumpRequest.itemId) openChatSettingsTabFor(settingsJumpRequest.itemId);
+    if (settingsJumpRequest.itemId) openSettingsTabFor(settingsJumpRequest.itemId);
     setPendingSearchItemId(settingsJumpRequest.itemId);
     openPage(resolveSettingsSlug(settingsJumpRequest.page));
     if (isMobile) {
@@ -683,7 +688,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <UsagePage />;
       case 'about':
         return (
-          <SettingsPageLayout title={t('settings.page.about.title')} showSaveStatus={false}>
+          <SettingsPageLayout title={t('settings.page.about.title')} showSaveStatus={false} namedBySidebar>
             <AboutSettings />
           </SettingsPageLayout>
         );
@@ -763,7 +768,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     : t('settings.view.actions.closeSettings');
 
   const pushMobileSplitDetailHistory = React.useCallback((slug: SettingsPageSlug) => {
-    if (runtimeCtx.isVSCode) {
+    if (runtimeCtx.isVSCode || registerBackHandler) {
       return;
     }
 
@@ -780,7 +785,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       '',
       window.location.href,
     );
-  }, [runtimeCtx.isVSCode]);
+  }, [registerBackHandler, runtimeCtx.isVSCode]);
 
   const handleMobilePageSidebarItemSelect = React.useCallback(() => {
     shouldFocusMobilePageContentRef.current = true;
@@ -837,7 +842,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   }, [handleBack, isMobile, mobileStage, registerBackHandler]);
 
   React.useEffect(() => {
-    if (!isMobile || runtimeCtx.isVSCode) {
+    if (!isMobile || runtimeCtx.isVSCode || registerBackHandler) {
       return;
     }
 
@@ -859,16 +864,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [isMobile, runtimeCtx.isVSCode, settingsSlug]);
+  }, [isMobile, registerBackHandler, runtimeCtx.isVSCode, settingsSlug]);
 
   const renderSettingsNav = () => {
     const hasSearchQuery = settingsSearchQuery.trim().length > 0;
 
     return (
       <div className="flex h-full flex-col overflow-hidden">
-        <div className="px-4 pt-3">
-          <div className="oc-surface-elevated oc-raised oc-field flex h-10 items-center gap-1.5 rounded-md bg-surface-elevated/70 px-2 text-muted-foreground sm:h-8">
-            <Icon name="search" className="h-4 w-4 shrink-0" />
+        <div className={isMobile ? 'px-2 pt-1' : 'px-4 pt-3'}>
+          <div className={isMobile
+            ? 'flex h-9 items-center gap-2 border-b border-edge-muted px-2.5 text-muted-foreground'
+            : 'oc-surface-elevated oc-raised oc-field flex h-8 items-center gap-1.5 rounded-md bg-surface-elevated/70 px-2 text-muted-foreground'}
+          >
+            <Icon name="search" className={isMobile ? 'size-3.5 shrink-0' : 'h-4 w-4 shrink-0'} />
             <input
               value={settingsSearchQuery}
               onChange={(event) => setSettingsSearchQuery(event.target.value)}
@@ -877,7 +885,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
               aria-label={t('settings.view.search.aria')}
               // The Settings window focuses this field when it opens.
               data-settings-search=""
-              className="typography-ui min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground"
+              className={cn(isMobile ? 'typography-meta' : 'typography-ui', 'min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground')}
             />
             {hasSearchQuery && (
               <button
@@ -1097,27 +1105,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       {isMobile ? (
         <div
           className={cn(
-            'flex h-[var(--oc-header-height,56px)] shrink-0 items-center gap-2 px-3',
+            MOBILE_HEADER_CLASS,
             // The root nav list reads as a single quiet page — no divider and
             // no back arrow (the X on the right is the only way out); subpages
             // keep both.
-            mobileStage !== 'nav' && 'border-b',
+            mobileStage !== 'nav' && 'border-b border-edge',
             'bg-background'
           )}
-          style={mobileStage !== 'nav' ? { borderColor: 'var(--interactive-border)' } : undefined}
         >
           {showBackButton ? (
             <button
               type="button"
               onClick={handleBack}
               aria-label={mobileBackButtonLabel}
-              className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg p-2 text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={MOBILE_HEADER_BUTTON_CLASS}
             >
-              <Icon name="arrow-left-s" className="h-5 w-5" />
+              <Icon name="arrow-left" className="h-5 w-5" />
             </button>
           ) : null}
 
-          <div className="min-w-0 flex-1 px-2 typography-ui-label font-medium text-foreground truncate flex items-center gap-2">
+          <div className={cn('flex min-w-0 flex-1 items-center gap-2 truncate px-1', MOBILE_HEADER_TITLE_CLASS)}>
             <span className="truncate">
               {mobileStage === 'nav'
                 ? t('settings.view.home.title')
@@ -1134,7 +1141,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
               onClick={onClose}
               aria-label={t('settings.view.actions.closeSettings')}
               title={closeSettingsTitle}
-              className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg p-2 text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className={MOBILE_HEADER_BUTTON_CLASS}
             >
               <Icon name="close" className="h-5 w-5" />
             </button>

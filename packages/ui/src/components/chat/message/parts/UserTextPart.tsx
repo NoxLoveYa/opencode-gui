@@ -35,12 +35,12 @@ import UserContextPart from './UserContextPart';
 import { SessionMentionChipsContext, withSessionMentionChips, type SessionMentionChips } from './sessionMentionChips';
 import { appOwnOrigins } from '@/lib/router/appOrigins';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
+import { useGuestLinkRules } from '@/lib/guests/links';
 
 type PartWithText = Part & { text?: string; content?: string; value?: string };
 
 type UserTextPartProps = {
     part: Part;
-    messageId: string;
     isMobile: boolean;
     agentMention?: AgentMentionInfo;
     /**
@@ -53,6 +53,8 @@ type UserTextPartProps = {
     onExpandMessage: () => void;
     partIndex: number;
     onTruncationChange: (partIndex: number, truncated: boolean) => void;
+    /** How many lines the collapsed text takes, 0 for a context card; context rows get what is left. */
+    onCollapsedLinesChange: (partIndex: number, lines: number) => void;
     /** Names of the files attached to this message; `[name]` in the text renders as a file chip. */
     attachmentFilenames: readonly string[];
     /** The message's file parts; a citation of one the app can show opens it on click. */
@@ -75,12 +77,12 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
 
 const UserTextPart: React.FC<UserTextPartProps> = ({
     part,
-    messageId,
     agentMention,
     messageExpanded,
     onExpandMessage,
     partIndex,
     onTruncationChange,
+    onCollapsedLinesChange,
     attachmentFilenames,
     attachmentFiles = EMPTY_ATTACHMENT_FILES,
     onShowPopup,
@@ -89,6 +91,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
     // Structured context (inline comments, terminal selections, annotations,
     // PR context) renders as a dedicated block instead of raw prompt text.
     const contextPayload = React.useMemo(() => readContextPart(part), [part]);
+    const guestLinks = useGuestLinkRules();
 
     const partWithText = part as PartWithText;
     const rawText = partWithText.text;
@@ -97,6 +100,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
     const textContent = terminalContextState.visibleText;
 
     const [isTruncated, setIsTruncated] = React.useState(false);
+    const [collapsedLines, setCollapsedLines] = React.useState(1);
     const userMessageRenderingMode = useUIStore((state) => state.userMessageRenderingMode);
     const collapsibleUserMessages = useUIStore((state) => state.collapsibleUserMessages);
     const skills = useSkillsStore((state) => state.skills);
@@ -150,6 +154,8 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
 
         const checkTruncation = () => {
             setIsTruncated(el.scrollHeight > el.clientHeight);
+            // The clamp leaves one or two lines, so half a line tells them apart.
+            setCollapsedLines(el.clientHeight > Number.parseFloat(getComputedStyle(el).lineHeight) * 1.5 ? 2 : 1);
         };
 
         checkTruncation();
@@ -199,6 +205,12 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
     }, [isTruncated, onTruncationChange, partIndex]);
 
     React.useEffect(() => () => onTruncationChange(partIndex, false), [onTruncationChange, partIndex]);
+
+    const textLines = contextPayload ? 0 : collapsedLines;
+    React.useLayoutEffect(() => {
+        onCollapsedLinesChange(partIndex, textLines);
+        return () => onCollapsedLinesChange(partIndex, 0);
+    }, [onCollapsedLinesChange, partIndex, textLines]);
 
     const handleExpand = React.useCallback(() => {
         setIsTruncated(true);
@@ -363,7 +375,7 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
     }
 
     return (
-        <div className="relative" key={part.id || `${messageId}-user-text`}>
+        <div className="relative">
             <div
                 className={cn(
                     "break-words font-sans typography-markdown-body",
@@ -385,6 +397,8 @@ const UserTextPart: React.FC<UserTextPartProps> = ({
                             className="[&_.markdown-content>*:first-child]:mt-0 [&_.markdown-content>*:last-child]:mb-0"
                             disableLinkSafety
                             enableFileReferences={false}
+                            literalText
+                            guestLinks={guestLinks}
                         />
                     </SessionMentionChipsContext.Provider>
                 ) : (

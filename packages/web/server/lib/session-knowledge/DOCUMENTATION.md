@@ -34,6 +34,7 @@ source:
 | `openchamber.guidance` | when to link, when to draw a page, where the tools are called |
 | `openchamber.checkout` | the directory and branch the session works on |
 | `openchamber.response-style` | the user's current response style |
+| `openchamber.extensions` | what active extensions add: their UI block components and their instructions (`../guests/agent-context.js`) |
 
 `sync` writes all of them right before a message goes out: the UI awaits it
 before the prompt request, the queue, scheduled tasks and dispatched sessions
@@ -72,7 +73,7 @@ some context; a failed send costs the user their message. `sync` never throws:
 it resolves `false` and the message goes out. One entry that fails to write does
 not hold back the others.
 
-While memory is on, every session is told when to save, even with an empty
+While memory is on, every session with the tool is told when to save, even with an empty
 store. The tool description alone is read only when the agent already means to
 call it, so agents told nothing here saved only when the user said "remember".
 The session hears "nothing is stored yet" only when both scopes loaded.
@@ -177,6 +178,17 @@ blocks because they look the same whatever model writes them, while a page's
 look depends on the model writing good HTML. It goes into `openchamber.guidance`, so a
 change to the text reaches running sessions on their next message.
 
+## Commands the user runs
+
+A session with `openchamber_render` is told to give a command the user should
+run themselves in a `bash` fence and end the turn (`REPLY_COMMAND_GUIDANCE`):
+that fence gets a Run button,
+and the agent continues from the output by itself
+(`packages/ui/src/components/chat/markdown/DOCUMENTATION.md`). The render tool
+is the sign of a session a person reads; the text has no tool of its own to
+hang on. Without it an agent used a plain fence, which has no button. The text
+rules out prompts because OpenCode runs the command with stdin closed.
+
 ## When to ask for a secret
 
 A session whose agent has the `openchamber_secret` tool (the setting is on and
@@ -197,14 +209,14 @@ it says so and offers one. Small tasks never get one.
 
 ## Where the tools are called
 
-While the managed tools are direct tools (the default; `agentToolsCodeMode`
-puts them in Code Mode's catalog), a session that has any of them is told
-they are called directly, never from inside a Code Mode `execute` script
-(`DIRECT_TOOLS_GUIDANCE`). OpenCode's Code Mode teaches the model that tools
-live in `execute`'s catalog: a model that called `tools.openchamber(...)` from
-a script was answered "Unknown tool", concluded the tool did not exist, and
-never named its task. With Code Mode on for our tools the sentence would be
-wrong, so it is left out.
+The tools whose call the chat draws (`openchamber_render`,
+`openchamber_secret`, `openchamber_workflow`) are direct tools; the rest sit
+behind Code Mode (`../agent-tool/DOCUMENTATION.md`). A session that has any of
+the direct ones is told, by name, that they are called directly and never from
+inside a Code Mode `execute` script (`directToolsGuidance`). OpenCode's Code
+Mode teaches the model that tools live in `execute`'s catalog: a model that
+called one of our direct tools from a script was answered "Unknown tool" and
+concluded the tool did not exist.
 
 ## Entries that read as instructions
 
@@ -228,6 +240,12 @@ cases only, which is the honest expectation.
 there is no tool, the routes answer "disabled", sessions get no index, and the
 panel has no tab. It defaults to off, so nobody gets a store written about them
 without turning it on.
+
+Sessions get the index only while their agent has the tool
+(`isMemoryToolAvailable`): the switch is on and OpenChamber launched OpenCode.
+An OpenCode selected with `OPENCODE_HOST` or skip-start never gets the plugin,
+so its sessions are told nothing about memory. The panel and the routes still
+follow the switch alone, since the store is there either way.
 
 Pinned notes and plans are unaffected by the memory switch and remain scoped to
 the session that pinned them.

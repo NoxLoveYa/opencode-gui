@@ -6,6 +6,7 @@ import { isPermissionMode } from '../permission-auto-accept/modes.js';
 import { asNonEmptyString } from '../shared/guards.js';
 import { idleStopSchema } from '../spaces/idle-stop.js';
 import { sshHostSchema } from '../spaces/places/ssh-host.js';
+import { PROVIDER_LOGO_MIMES } from './provider-logo-routes.js';
 
 // Generated from packages/ui/src/lib/settings/registry.ts by
 // `bun run settings-registry:generate`; `registry.test.ts` fails when stale.
@@ -48,6 +49,7 @@ const sidebarSectionSchema = z.union([
       kinds: sidebarChips(['session', 'worktree', 'space', 'run', 'scheduled']).catch([]),
       links: sidebarChips(['pr', 'issue', 'tracker', 'plan', 'goal']).catch([]),
       projectIds: sidebarProjectIds.catch([]),
+      folders: sidebarIds.catch([]),
       activity: z.enum(['any', 'today', 'two-days', 'week', 'stalled']).catch('any'),
       // A list of phrases; a build before lists kept one phrase as a string.
       text: z.union([z.string().transform((value) => [value]), z.array(z.unknown())]).transform((entries) => (
@@ -130,6 +132,27 @@ const sanitizeCustomProviderIcons = (value) => {
   const result = {};
   for (const [providerID, icon] of Object.entries(record.data).slice(0, CUSTOM_PROVIDER_ICONS_MAX)) {
     const entry = customProviderIconsSchema.safeParse({ [providerID]: icon });
+    if (entry.success) Object.assign(result, entry.data);
+  }
+  return result;
+};
+
+// What `provider-logo-routes.js` stores for an uploaded logo; the bytes stay in its folder.
+const customProviderLogosSchema = z.record(
+  z.string().trim().min(1).max(128),
+  z.object({
+    mime: z.enum(PROVIDER_LOGO_MIMES),
+    updatedAt: z.number().int().positive(),
+  }),
+);
+
+/** Provider id -> `{ mime, updatedAt }`; malformed entries are dropped one by one. */
+const sanitizeCustomProviderLogos = (value) => {
+  const record = z.record(z.string(), z.unknown()).safeParse(value);
+  if (!record.success) return undefined;
+  const result = {};
+  for (const [providerID, logo] of Object.entries(record.data).slice(0, CUSTOM_PROVIDER_ICONS_MAX)) {
+    const entry = customProviderLogosSchema.safeParse({ [providerID]: logo });
     if (entry.success) Object.assign(result, entry.data);
   }
   return result;
@@ -367,8 +390,8 @@ export const createSettingsHelpers = (dependencies) => {
         ...new Set(candidate.workStatusHiddenSections.filter((entry) => typeof entry === 'string' && entry.length > 0)),
       ];
     }
-    if (typeof candidate.workStatusHiddenSectionsExplicit === 'boolean') {
-      result.workStatusHiddenSectionsExplicit = candidate.workStatusHiddenSectionsExplicit;
+    for (const key of ['workStatusHiddenSectionsExplicit', 'workStatusSectionOrderExplicit']) {
+      if (typeof candidate[key] === 'boolean') result[key] = candidate[key];
     }
     if (Array.isArray(candidate.workStatusSectionOrder)) {
       result.workStatusSectionOrder = [
@@ -587,6 +610,10 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.tableCellWrap === 'boolean') {
       result.tableCellWrap = candidate.tableCellWrap;
     }
+    const selectionApprovalText = z.string().transform((value) => value.slice(0, 1000)).safeParse(candidate.selectionApprovalText);
+    if (selectionApprovalText.success) {
+      result.selectionApprovalText = selectionApprovalText.data;
+    }
     if (typeof candidate.copyMessagesAsPlainText === 'boolean') {
       result.copyMessagesAsPlainText = candidate.copyMessagesAsPlainText;
     }
@@ -749,6 +776,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.sessionRetentionOnlyArchived === 'boolean') {
       result.sessionRetentionOnlyArchived = candidate.sessionRetentionOnlyArchived;
+    }
+    if (candidate.sessionRetentionIncludeInWork === true || candidate.sessionRetentionIncludeInWork === false) {
+      result.sessionRetentionIncludeInWork = candidate.sessionRetentionIncludeInWork;
     }
     if (typeof candidate.mergedWorktreeCleanupEnabled === 'boolean') {
       result.mergedWorktreeCleanupEnabled = candidate.mergedWorktreeCleanupEnabled;
@@ -937,8 +967,8 @@ export const createSettingsHelpers = (dependencies) => {
     if (candidate.agentSecretToolEnabled === true || candidate.agentSecretToolEnabled === false) {
       result.agentSecretToolEnabled = candidate.agentSecretToolEnabled;
     }
-    if (typeof candidate.agentToolsCodeMode === 'boolean') {
-      result.agentToolsCodeMode = candidate.agentToolsCodeMode;
+    if (candidate.agentUsageToolEnabled === true || candidate.agentUsageToolEnabled === false) {
+      result.agentUsageToolEnabled = candidate.agentUsageToolEnabled;
     }
     if (typeof candidate.isolatedSpacesEnabled === 'boolean') {
       result.isolatedSpacesEnabled = candidate.isolatedSpacesEnabled;
@@ -1019,6 +1049,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.fontSize === 'number' && Number.isFinite(candidate.fontSize)) {
       result.fontSize = Math.max(50, Math.min(200, Math.round(candidate.fontSize)));
     }
+    if (Number.isFinite(candidate.chatFontSize)) {
+      result.chatFontSize = Math.max(50, Math.min(200, Math.round(candidate.chatFontSize)));
+    }
     if (typeof candidate.terminalFontSize === 'number' && Number.isFinite(candidate.terminalFontSize)) {
       result.terminalFontSize = Math.max(9, Math.min(52, Math.round(candidate.terminalFontSize)));
     }
@@ -1079,6 +1112,11 @@ export const createSettingsHelpers = (dependencies) => {
     const customProviderIcons = sanitizeCustomProviderIcons(candidate.customProviderIcons);
     if (customProviderIcons) {
       result.customProviderIcons = customProviderIcons;
+    }
+
+    const customProviderLogos = sanitizeCustomProviderLogos(candidate.customProviderLogos);
+    if (customProviderLogos) {
+      result.customProviderLogos = customProviderLogos;
     }
 
     if (Array.isArray(candidate.recentAgents)) {
