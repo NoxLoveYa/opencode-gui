@@ -389,7 +389,7 @@ describe('source-control auth storage', () => {
     ]);
 
     await expect(first.listAccounts(origin)).resolves.toHaveLength(2);
-    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.includes('.tmp'))).toEqual([]);
     expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
   });
 
@@ -409,7 +409,7 @@ describe('source-control auth storage', () => {
     ]);
 
     await expect(store.listAccounts(origin)).resolves.toHaveLength(2);
-    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.includes('.tmp'))).toEqual([]);
   });
 
   describe('OAuth renewal', () => {

@@ -1,7 +1,7 @@
+import { writeFileDurable } from '../shared/durable-write.js';
 import { isPlainObject, isString } from '../shared/guards.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { withSourceControlFileLock } from './file-lock.js';
 
 const VERSION = 1;
@@ -220,15 +220,7 @@ export function createSourceControlAuditStore({
   };
   const writeState = async (state) => {
     await fsImpl.mkdir(path.dirname(filePath), { recursive: true });
-    const temporary = `${filePath}.${randomUUID()}.tmp`;
-    try {
-      await fsImpl.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-      await fsImpl.chmod(temporary, 0o600);
-      await fsImpl.rename(temporary, filePath);
-    } catch (error) {
-      await fsImpl.rm(temporary, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, fsPromises: fsImpl });
   };
   // A Git operation plan that never started is a record of nothing: the
   // registry cancels unstarted plans after 15 minutes and a restart cancels

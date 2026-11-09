@@ -3528,9 +3528,10 @@ process.exit(safe ? 0 : 1);
     const temporary = path.join(fixture.parent, '.checkout.openchamber-git_operation_one.tmp');
     const binding = createBindingService({ resolveRepository: resolveRepositoryIdentity,
       store: createBindingStore({ filePath: path.join(fixture.parent, 'ssh-bindings.json'), fsImpl: { ...fs,
-        writeFile: async (...args) => {
-          if (outcome === 'write') throw new Error('private-write-error');
-          return fs.writeFile(...args);
+        // The store writes its temp file through a handle opened here.
+        open: async (file, ...rest) => {
+          if (outcome === 'write' && String(file).includes('.tmp-')) throw new Error('private-write-error');
+          return fs.open(file, ...rest);
         },
       } }),
     });
@@ -3567,11 +3568,15 @@ process.exit(safe ? 0 : 1);
     const destination = path.join(fixture.parent, 'checkout');
     const temporary = path.join(fixture.parent, '.checkout.openchamber-git_operation_one.tmp');
     const filePath = path.join(fixture.parent, 'bindings.json');
-    const writeFile = vi.fn(async (...args) => {
+    // Called when the store opens its temp file; the store writes through that handle.
+    const writeTemporary = vi.fn(() => {
       if (failure === 'write') throw new Error('private token and path must never escape');
-      return fs.writeFile(...args);
     });
-    const store = createBindingStore({ filePath, fsImpl: { ...fs, writeFile } });
+    const open = async (file, ...rest) => {
+      if (String(file).includes('.tmp-')) writeTemporary();
+      return fs.open(file, ...rest);
+    };
+    const store = createBindingStore({ filePath, fsImpl: { ...fs, open } });
     const binding = createBindingService({ store, resolveRepository: resolveRepositoryIdentity });
     const operation = setup({
       bindClonedRepository: binding.bindClonedRepository,
@@ -3589,7 +3594,7 @@ process.exit(safe ? 0 : 1);
     await expect(fs.readFile(path.join(destination, 'README.md'), 'utf8')).resolves.toBe('ordinary content\n');
     await expect(fs.stat(temporary)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await binding.get(destination)).toMatchObject({ revision: 0, binding: null });
-    if (failure !== 'write') expect(writeFile).not.toHaveBeenCalled();
+    if (failure !== 'write') expect(writeTemporary).not.toHaveBeenCalled();
     await expect(operation.service.plan(intent)).rejects.toThrow('already exists');
     expect(operation.calls.filter((call) => call.args.includes('clone'))).toHaveLength(1);
   });
@@ -3601,9 +3606,10 @@ process.exit(safe ? 0 : 1);
     const temporary = path.join(fixture.parent, '.checkout.openchamber-git_operation_one.tmp');
     let failWrite;
     const writePending = new Promise((_resolve, reject) => { failWrite = reject; });
-    const writeFile = vi.fn(() => writePending);
+    const writeTemporary = vi.fn(() => writePending);
+    const open = (file, ...rest) => (String(file).includes('.tmp-') ? writeTemporary() : fs.open(file, ...rest));
     const binding = createBindingService({
-      store: createBindingStore({ filePath: path.join(fixture.parent, 'bindings.json'), fsImpl: { ...fs, writeFile } }),
+      store: createBindingStore({ filePath: path.join(fixture.parent, 'bindings.json'), fsImpl: { ...fs, open } }),
       resolveRepository: resolveRepositoryIdentity,
     });
     const operation = setup({
@@ -3613,7 +3619,7 @@ process.exit(safe ? 0 : 1);
     const plan = await operation.service.plan({ operation: 'clone', remoteUrl: ENDPOINT, destinationPath: destination,
       transportMode: 'system', unverifiedConfirmed: true });
     const executing = operation.service.execute(plan.operationId);
-    await vi.waitFor(() => expect(writeFile).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(writeTemporary).toHaveBeenCalledOnce());
     operation.service.cancel(plan.operationId);
     expect(operation.service.get(plan.operationId)).toMatchObject({ state: 'running', completedSteps: expect.arrayContaining(['checked-out']) });
     failWrite(new Error('disk full'));

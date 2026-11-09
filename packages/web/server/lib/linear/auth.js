@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { isPlainObject, readEnv, readFiniteNumber, readTrimmedString } from './parse.js';
 
 const DEFAULT_LINEAR_CLIENT_ID = '91bbe26a69a2c8568d3683f1e01e776c';
@@ -56,19 +57,7 @@ function readJsonFile(filePath) {
 
 function writeJsonFile(filePath, payload) {
   ensureStorageDir();
-  const tmpFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf8');
-  try {
-    fs.chmodSync(tmpFile, 0o600);
-  } catch {
-    // best-effort
-  }
-  fs.renameSync(tmpFile, filePath);
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // best-effort
-  }
+  writeFileDurableSync(filePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
 }
 
 function normalizeUser(user) {

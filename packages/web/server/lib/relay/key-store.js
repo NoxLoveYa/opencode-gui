@@ -15,6 +15,8 @@
 
 import { z } from 'zod';
 
+import { writeFileDurable } from '../shared/durable-write.js';
+
 const SLOTS = Object.freeze({
   signing: { field: 'signingKey', legacySettingsKey: 'relaySigningKey' },
   encryption: { field: 'encryptionKey', legacySettingsKey: 'relayEncryptionKey' },
@@ -88,15 +90,9 @@ export const createRelayKeyStore = ({
     const directory = path.dirname(filePath);
     const created = await fsPromises.mkdir(directory, { recursive: true, mode: 0o700 });
     if (created && process.platform !== 'win32') await fsPromises.chmod(directory, 0o700);
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      await fsPromises.writeFile(tmp, JSON.stringify(store, null, 2), { encoding: 'utf8', mode: 0o600 });
-      if (process.platform !== 'win32') await fsPromises.chmod(tmp, 0o600);
-      await fsPromises.rename(tmp, filePath);
-    } catch (error) {
-      await fsPromises.rm(tmp, { force: true }).catch(() => {});
-      throw error;
-    }
+    // Flushed before the rename: a crash must not leave this file zeroed, since
+    // a missing identity is minted anew and disconnects every paired device.
+    await writeFileDurable(filePath, JSON.stringify(store, null, 2), { mode: 0o600, fsPromises });
   };
 
   // Drops from settings.json every legacy key this file already holds. Best

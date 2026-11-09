@@ -1,4 +1,6 @@
+import { constants as fsConstants } from 'node:fs';
 import { createProjectIdFromPath, projectConfigFileStemOf } from '../projects/project-id.js';
+import { writeFileDurable } from '../shared/durable-write.js';
 import {
   buildPreferencesFields,
   flattenPreferences,
@@ -151,9 +153,32 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  // Write through a handle and fsync before closing. A rename or a delete of
+  // the old file can reach the disk before the data blocks do, and a crash then
+  // leaves a file of NUL bytes.
+  const writeFileSynced = async (filePath, text, mode, flags = 'w') => {
+    const handle = await fsPromises.open(filePath, flags, mode);
+    try {
+      await handle.writeFile(text, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  };
+
+  const syncExistingFile = async (filePath) => {
+    // Windows refuses to flush a read-only handle.
+    const handle = await fsPromises.open(filePath, 'r+');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  };
+
   const writeJsonFile = async (filePath, value) => {
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-    await fsPromises.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
+    await writeFileSynced(filePath, JSON.stringify(value, null, 2));
   };
 
   const uniqueStrings = (values) => Array.from(new Set(values.filter((value) => typeof value === 'string' && value.trim().length > 0)));
@@ -591,10 +616,86 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  // A crash after a rename or copy whose data blocks were never flushed leaves
+  // a file of NUL bytes (or no bytes at all). Nothing in it can be lost, so it
+  // is the one unreadable shape that is repaired; any other content may still
+  // hold the user's data.
+  const isBlankPreferencesText = (raw) => raw.replace(/[\0\s]/g, '') === '';
+
+  const warnPreferencesFailureOnce = (...args) => {
+    if (preferencesFailureLogged) return;
+    preferencesFailureLogged = true;
+    console.warn(...args);
+  };
+
+  // Puts back a moved file whose content turned out not to be blank. The link
+  // never replaces: if the path was filled meanwhile, both files stay and the
+  // warning names them.
+  const restoreMovedPreferences = async (aside) => {
+    let copied = false;
+    try {
+      try {
+        await fsPromises.link(aside, PREFERENCES_FILE_PATH);
+      } catch (error) {
+        if (error?.code === 'EEXIST') throw error;
+        // No hard links on this filesystem (FAT, some network shares).
+        await fsPromises.copyFile(aside, PREFERENCES_FILE_PATH, fsConstants.COPYFILE_EXCL);
+        copied = true;
+      }
+    } catch (error) {
+      console.warn(`Preferences file was moved to ${path.basename(aside)} but turned out to hold data, and could not be put back (${error?.code ?? error}); both files are kept, nothing was deleted.`);
+      return error?.code === 'EEXIST';
+    }
+    // A hard link shares the moved file's data; a copy is new data that must
+    // reach the disk before the file it came from goes.
+    if (copied) {
+      try {
+        await syncExistingFile(PREFERENCES_FILE_PATH);
+      } catch (error) {
+        console.warn(`Preferences file was put back from ${path.basename(aside)} but could not be flushed to disk (${error?.code ?? error}); ${path.basename(aside)} is kept.`);
+        return true;
+      }
+    }
+    await fsPromises.rm(aside, { force: true }).catch(() => {});
+    return true;
+  };
+
+  // Moves a blank preferences.json aside, never deleting it, then checks the
+  // moved file: a concurrent writer may have filled it between the read that
+  // found it blank and the rename, and that data goes back. The aside name is
+  // unique, so a rename never replaces a file. True means the path is settled
+  // and should be read again (the file moved, was gone, changed, or was put
+  // back); false means the move failed and the file stays in place.
+  const moveBlankPreferencesAside = async () => {
+    let aside = null;
+    try {
+      if (!isBlankPreferencesText(await fsPromises.readFile(PREFERENCES_FILE_PATH, 'utf8'))) return true;
+      aside = `${PREFERENCES_FILE_PATH}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+      await fsPromises.rename(PREFERENCES_FILE_PATH, aside);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return true;
+      warnPreferencesFailureOnce('Failed to move the empty preferences file aside:', error);
+      return false;
+    }
+    let stillBlank = false;
+    try {
+      stillBlank = isBlankPreferencesText(await fsPromises.readFile(aside, 'utf8'));
+    } catch (error) {
+      // Another process moved the aside again and owns it now.
+      if (error?.code === 'ENOENT') return true;
+      // Any other read failure leaves the content unknown, which counts as data.
+    }
+    if (!stillBlank) return restoreMovedPreferences(aside);
+    console.warn(`Preferences file was empty (likely zeroed by a crash); moved it to ${path.basename(aside)} and rebuilding it from settings.json.`);
+    return true;
+  };
+
   /**
-   * `{ status: 'missing' }` when the file does not exist, `{ status: 'ok',
+   * `{ status: 'missing' }` when the file does not exist, `{ status: 'blank' }`
+   * when it holds nothing but NUL bytes and whitespace, `{ status: 'ok',
    * fields }` when it parsed, `{ status: 'failed' }` for anything else. Only
-   * "missing" may be seeded; "failed" must leave the file alone.
+   * "missing" may be seeded; "failed" must leave the file alone, and "blank"
+   * is repaired by `resolvePreferenceFields`.
    */
   const readPreferenceFields = async () => {
     let raw;
@@ -604,18 +705,13 @@ export const createSettingsRuntime = (deps) => {
       if (error && typeof error === 'object' && error.code === 'ENOENT') {
         return { status: 'missing' };
       }
-      if (!preferencesFailureLogged) {
-        preferencesFailureLogged = true;
-        console.warn('Failed to read preferences file:', error);
-      }
+      warnPreferencesFailureOnce('Failed to read preferences file:', error);
       return { status: 'failed' };
     }
+    if (isBlankPreferencesText(raw)) return { status: 'blank' };
     const parsed = parsePreferencesDocument(raw);
     if (!parsed.ok) {
-      if (!preferencesFailureLogged) {
-        preferencesFailureLogged = true;
-        console.warn(`Preferences file is unreadable (${parsed.reason}); profile writes are paused until it is fixed or removed.`);
-      }
+      warnPreferencesFailureOnce(`Preferences file is unreadable (${parsed.reason}); profile writes are paused until it is fixed or removed.`);
       return { status: 'failed' };
     }
     preferencesFailureLogged = false;
@@ -626,6 +722,40 @@ export const createSettingsRuntime = (deps) => {
     await writeJsonFileAtomic(PREFERENCES_FILE_PATH, serializePreferencesDocument(fields));
   };
 
+  // Repair and seed happen as one attempt that concurrent readers share: only
+  // one of them moves a blank file and logs, and the seed never replaces a file
+  // another writer created first. Whatever is on disk after the attempt is what
+  // every waiter uses.
+  let preferencesRepair = null;
+
+  const repairAndSeedPreferences = async () => {
+    let current = await readPreferenceFields();
+    if (current.status === 'blank') {
+      if (!await moveBlankPreferencesAside()) return { status: 'failed' };
+      current = await readPreferenceFields();
+    }
+    if (current.status === 'missing') {
+      const seeded = seedPreferencesFrom(await readInstanceSettingsFromDisk(), Date.now());
+      try {
+        await writeJsonFileAtomic(PREFERENCES_FILE_PATH, serializePreferencesDocument(seeded), { createOnly: true });
+      } catch (error) {
+        console.warn('Failed to seed preferences file:', error);
+        return { status: 'missing' };
+      }
+      current = await readPreferenceFields();
+    }
+    // Blank again after a repair means something keeps writing it: leave it.
+    return current.status === 'blank' ? { status: 'failed' } : current;
+  };
+
+  /** `readPreferenceFields`, except a blank or missing file is repaired and seeded first. */
+  const resolvePreferenceFields = async () => {
+    const first = await readPreferenceFields();
+    if (first.status !== 'blank' && first.status !== 'missing') return first;
+    preferencesRepair ??= repairAndSeedPreferences().finally(() => { preferencesRepair = null; });
+    return preferencesRepair;
+  };
+
   // The merged document every consumer sees: instance facts from settings.json
   // plus the profile from preferences.json. On the first read of an install
   // that predates the split, the profile keys still sitting in settings.json
@@ -634,21 +764,14 @@ export const createSettingsRuntime = (deps) => {
   // still finds everything where it used to be.
   const readSettingsFromDisk = async ({ surface = null } = {}) => {
     const instance = await readInstanceSettingsFromDisk();
-    const preferences = await readPreferenceFields();
+    const preferences = await resolvePreferenceFields();
     if (preferences.status === 'failed') {
       preferencesUnavailable = true;
       return instance;
     }
     preferencesUnavailable = false;
-    if (preferences.status === 'missing') {
-      const seeded = seedPreferencesFrom(instance, Date.now());
-      try {
-        await writePreferencesToDisk(seeded);
-      } catch (error) {
-        console.warn('Failed to seed preferences file:', error);
-      }
-      return instance;
-    }
+    // Still missing: the seed could not be written; serve the instance part.
+    if (preferences.status === 'missing') return instance;
     return { ...instance, ...flattenPreferences(preferences.fields, normalizeSettingsSurface(surface)) };
   };
 
@@ -676,47 +799,6 @@ export const createSettingsRuntime = (deps) => {
     return parsed;
   };
 
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  const isTransientWindowsReplaceError = (error) => {
-    if (process.platform !== 'win32' || !error || typeof error !== 'object') {
-      return false;
-    }
-    return error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'EBUSY';
-  };
-
-  const replaceFile = async (tmp, target) => {
-    const maxAttempts = process.platform === 'win32' ? 6 : 1;
-    let lastError = null;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        await fsPromises.rename(tmp, target);
-        return;
-      } catch (error) {
-        lastError = error;
-        if (!isTransientWindowsReplaceError(error) || attempt === maxAttempts) {
-          break;
-        }
-        await sleep(25 * attempt);
-      }
-    }
-
-    if (!isTransientWindowsReplaceError(lastError)) {
-      throw lastError;
-    }
-
-    // Windows can transiently reject atomic replacement when another process
-    // briefly opens the target file. Preserve atomic rename everywhere it works,
-    // but fall back to a direct replacement so settings persistence does not
-    // get permanently wedged on Windows desktop installs.
-    try {
-      await fsPromises.copyFile(tmp, target);
-    } finally {
-      await fsPromises.rm(tmp, { force: true }).catch(() => {});
-    }
-  };
-
   const cleanupOrphanedSettingsTempFiles = async (directory) => {
     try {
       const entries = await fsPromises.readdir(directory, { withFileTypes: true });
@@ -729,7 +811,7 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
-  const writeJsonFileAtomic = async (filePath, text) => {
+  const writeJsonFileAtomic = async (filePath, text, { createOnly = false } = {}) => {
     const directory = path.dirname(filePath);
     // Tighten only a directory this write created (mkdir's mode is umasked):
     // an existing one keeps the permissions and ACLs an administrator gave it.
@@ -739,14 +821,11 @@ export const createSettingsRuntime = (deps) => {
     // readFile + JSON.parse and silently coerce parse errors to {}. A
     // partial read during a non-atomic writeFile would make their next
     // read-modify-write wipe the file.
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      await fsPromises.writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 });
-      if (process.platform !== 'win32') await fsPromises.chmod(tmp, 0o600);
-      await replaceFile(tmp, filePath);
+      const written = await writeFileDurable(filePath, text, { mode: 0o600, createOnly, fsPromises });
+      if (!written) return;
       if (process.platform !== 'win32') await fsPromises.chmod(filePath, 0o600);
     } catch (error) {
-      await fsPromises.rm(tmp, { force: true }).catch(() => {});
       console.warn(`Failed to write ${path.basename(filePath)}:`, error);
       throw error;
     }
@@ -758,7 +837,8 @@ export const createSettingsRuntime = (deps) => {
    * preferences.json is unreadable its part is skipped rather than replaced.
    */
   const writeSettingsToDisk = async (settings, { surface = null, changedKeys = null } = {}) => {
-    const current = preferencesUnavailable ? { status: 'failed' } : await readPreferenceFields();
+    const read = preferencesUnavailable ? { status: 'failed' } : await readPreferenceFields();
+    const current = read.status === 'blank' ? await resolvePreferenceFields() : read;
     if (current.status === 'failed') {
       // The profile part is not saved; settings.json keeps whatever legacy
       // profile copy it already holds rather than losing it too.
@@ -1128,13 +1208,18 @@ export const createSettingsRuntime = (deps) => {
     return normalizeSettingsSurface(surface) ? readSettingsFromDisk({ surface }) : migration9.settings;
   };
 
-  const persistSettings = async (changes, { surface = null } = {}) => {
+  // `onDropped(keys)` is called after a successful write with the keys that were
+  // refused and not stored (a profile key while preferences.json is unreadable).
+  // The return value stays the settings document: only the PUT route, which
+  // answers a client that may have to roll back, passes the callback.
+  const persistSettings = async (changes, { surface = null, onDropped = null } = {}) => {
     const result = persistSettingsLock.then(async () => {
       // Log field names only — changes can carry credentials (UI password,
       // client tokens, tunnel tokens) that must never reach the log file.
       console.log('[persistSettings] Updating fields:', Object.keys(changes || {}).join(', ') || '(none)');
       const current = await readSettingsFromDisk({ surface });
       const sanitized = sanitizeSettingsUpdate(changes);
+      const droppedKeys = [];
       for (const key of Object.keys(sanitized)) {
         // Device state belongs to the install in front of the user, never to
         // the instance; a client that still sends it is simply ignored.
@@ -1142,6 +1227,7 @@ export const createSettingsRuntime = (deps) => {
           delete sanitized[key];
         } else if (preferencesUnavailable && isProfileSettingsKey(key)) {
           console.warn(`[persistSettings] Dropping ${key}: preferences file is unreadable`);
+          droppedKeys.push(key);
           delete sanitized[key];
         }
       }
@@ -1234,6 +1320,7 @@ export const createSettingsRuntime = (deps) => {
       if (changedKeys.includes('lastDirectory') && next.lastDirectory !== current.lastDirectory) {
         onLastDirectoryChanged(next.lastDirectory);
       }
+      if (droppedKeys.length > 0) onDropped?.(droppedKeys);
       return formatSettingsResponse(next);
     });
     // A failed write (a full disk) rejects only its own caller; the next

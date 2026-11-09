@@ -1,3 +1,4 @@
+import { writeFileDurable } from '../shared/durable-write.js';
 import { isRecord as isObjectRecord } from '../shared/guards.js';
 import { TOMBSTONE_TTL_MS, applyFolderChanges, folderChangesBodySchema } from './folder-changes.js';
 
@@ -160,16 +161,8 @@ export const registerSessionFoldersRoutes = (app, dependencies) => {
   };
 
   const writeSnapshot = async (snapshot) => {
-    let tmp;
-    try {
-      await ensureDir();
-      tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      await fsPromises.writeFile(tmp, JSON.stringify(snapshot, null, 2), 'utf8');
-      await fsPromises.rename(tmp, filePath);
-    } catch (error) {
-      if (tmp) await fsPromises.unlink(tmp).catch(() => {});
-      throw error;
-    }
+    await ensureDir();
+    await writeFileDurable(filePath, JSON.stringify(snapshot, null, 2), { fsPromises });
   };
 
   const serialize = (task) => {

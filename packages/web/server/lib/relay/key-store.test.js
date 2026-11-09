@@ -128,6 +128,39 @@ describe('relay key store', () => {
     expect(second).toEqual(first);
   });
 
+  it('flushes the identity to disk before renaming it into place, so a crash cannot leave zeros', async () => {
+    const events = [];
+    const store = createRelayKeyStore({
+      fsPromises: {
+        ...fs.promises,
+        open: async (file, ...rest) => {
+          const handle = await fs.promises.open(file, ...rest);
+          if (!path.basename(String(file)).startsWith('relay-identity.json.tmp-')) return handle;
+          return {
+            writeFile: async (...args) => { events.push('write'); return handle.writeFile(...args); },
+            sync: async () => { events.push('sync'); return handle.sync(); },
+            close: async () => { events.push('close'); return handle.close(); },
+          };
+        },
+        rename: async (from, to) => {
+          events.push('rename');
+          return fs.promises.rename(from, to);
+        },
+      },
+      path,
+      dataDir,
+      readSettingsFromDiskMigrated: async () => ({}),
+      readSettingsStrict: async () => ({}),
+      writeSettingsToDisk: async () => {},
+      logger: { warn: () => {} },
+    });
+
+    await store.getOrCreate('signing', async () => makePair());
+
+    expect(events).toEqual(['write', 'sync', 'close', 'rename']);
+    expect(fs.readdirSync(dataDir).filter((name) => name.includes('.tmp-'))).toEqual([]);
+  });
+
   it('refuses to mint over a corrupt identity file', async () => {
     fs.writeFileSync(identityPath(), '{"signingKey": {"unfinished');
     await expect(makeStore().getOrCreate('signing', async () => makePair())).rejects.toThrow(/corrupt/);

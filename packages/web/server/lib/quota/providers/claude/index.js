@@ -25,44 +25,83 @@ const MAX_COOLDOWN_MS = 60 * 60 * 1000;
 const USAGE_TIMEOUT_MS = 10_000;
 const SESSION_EXPIRED_ERROR = 'Claude session expired. Open Claude Code to sign in again.';
 
-/**
- * Last good payload, kept only to survive Anthropic's aggressive rate limiting.
- * Keyed by credential fingerprint so a second account never sees the first
- * account's numbers.
- *
- * @type {{ fingerprint: string, usage: object, planLabel: string|null }|null}
- */
-let cachedUsage = null;
-let cooldownUntil = 0;
+/** The usage page asks every 3 minutes; a payload younger than this answers it without a request. */
+const PANEL_REUSE_MAX_AGE_MS = 3 * 60 * 1000;
+
 let pendingFetch = null;
-let lastFingerprint = null;
 
-const fingerprintOf = (credential) =>
-  createHash('sha256').update(`${credential.accessToken}\0${credential.refreshToken ?? ''}`).digest('hex');
+/**
+ * Hash of an access token -> when its 429 cooldown ends. Anthropic rate-limits
+ * the token, whoever asks, so `fetchQuota` and `fetchClaudeUsageForToken` share
+ * one cooldown per token. The key is a hash: no token is kept here.
+ *
+ * @type {Map<string, number>}
+ */
+const cooldowns = new Map();
 
-const cooldownFromHeader = (response) => {
+/**
+ * Hash of an access token -> its last good payload and when that was asked for.
+ * Both readers write it, so a payload one of them fetched serves the other, and
+ * it survives Anthropic's aggressive rate limiting. Keyed by token, so a second
+ * account never sees the first account's numbers. Entries older than the longest
+ * cooldown are dropped when one is written.
+ *
+ * @type {Map<string, { usage: object, planLabel: string|null, readAt: number }>}
+ */
+const payloads = new Map();
+
+const tokenKeyOf = (accessToken) => createHash('sha256').update(accessToken).digest('hex');
+
+/** Milliseconds left of the token's cooldown; 0 when it is not cooling down. */
+const cooldownRemaining = (accessToken, at) => Math.max(0, (cooldowns.get(tokenKeyOf(accessToken)) ?? 0) - at);
+
+const startCooldown = (accessToken, at, durationMs) => {
+  for (const [key, until] of cooldowns) {
+    if (until <= at) cooldowns.delete(key);
+  }
+  cooldowns.set(tokenKeyOf(accessToken), at + durationMs);
+};
+
+/** `readAt` is when the request was sent: the payload is never taken to be younger than it is. */
+const rememberPayload = (accessToken, usage, planLabel, readAt, at) => {
+  for (const [key, entry] of payloads) {
+    if (at - entry.readAt > MAX_COOLDOWN_MS) payloads.delete(key);
+  }
+  payloads.set(tokenKeyOf(accessToken), { usage, planLabel, readAt });
+};
+
+/** The token's payload when it was read at most `maxAgeMs` ago (`maxAgeMs` > 0), else null. */
+const freshPayload = (accessToken, maxAgeMs, at) => {
+  const entry = payloads.get(tokenKeyOf(accessToken));
+  return entry && at - entry.readAt < maxAgeMs ? entry : null;
+};
+
+const cooldownFromHeader = (response, now = Date.now) => {
   const raw = response.headers.get('retry-after');
   const retryAfter = Number(raw);
   if (Number.isFinite(retryAfter) && retryAfter > 0) {
     return Math.min(retryAfter * 1000, MAX_COOLDOWN_MS);
   }
   const retryAt = raw ? Date.parse(raw) : Number.NaN;
-  if (Number.isFinite(retryAt) && retryAt > Date.now()) {
-    return Math.min(retryAt - Date.now(), MAX_COOLDOWN_MS);
+  if (Number.isFinite(retryAt) && retryAt > now()) {
+    return Math.min(retryAt - now(), MAX_COOLDOWN_MS);
   }
   return DEFAULT_COOLDOWN_MS;
 };
 
-const cachedResultFor = (fingerprint, planLabel) => {
-  if (!cachedUsage || cachedUsage.fingerprint !== fingerprint) return null;
-  return buildResult({
-    providerId,
-    providerName,
-    ok: true,
-    configured: true,
-    usage: cachedUsage.usage,
-    planLabel: planLabel ?? cachedUsage.planLabel
-  });
+const resultFromPayload = (entry, planLabel) => buildResult({
+  providerId,
+  providerName,
+  ok: true,
+  configured: true,
+  usage: entry.usage,
+  planLabel: planLabel ?? entry.planLabel
+});
+
+/** The token's last good payload, whatever its age, or null. */
+const cachedResultFor = (accessToken, planLabel) => {
+  const entry = payloads.get(tokenKeyOf(accessToken));
+  return entry ? resultFromPayload(entry, planLabel) : null;
 };
 
 const failure = (error, { configured = true } = {}) =>
@@ -76,23 +115,21 @@ const fetchQuotaUncoalesced = async () => {
     return failure('Not configured', { configured: false });
   }
 
-  const fingerprint = fingerprintOf(credential);
-  if (lastFingerprint !== null && lastFingerprint !== fingerprint) {
-    cachedUsage = null;
-    cooldownUntil = 0;
-  }
-  lastFingerprint = fingerprint;
-
   const expiresAt = credential.expiresAt;
   if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now()) {
     return failure(SESSION_EXPIRED_ERROR);
   }
 
-  if (Date.now() < cooldownUntil) {
-    return cachedResultFor(fingerprint, credential.planLabel)
+  // A payload the usage guard (or an earlier poll) fetched lately answers without asking Anthropic again.
+  const recent = freshPayload(credential.accessToken, PANEL_REUSE_MAX_AGE_MS, Date.now());
+  if (recent) return resultFromPayload(recent, credential.planLabel);
+
+  if (cooldownRemaining(credential.accessToken, Date.now()) > 0) {
+    return cachedResultFor(credential.accessToken, credential.planLabel)
       ?? failure('Rate limited. Retrying soon.');
   }
 
+  const requestedAt = Date.now();
   let response;
   try {
     response = await fetch(USAGE_URL, {
@@ -108,8 +145,8 @@ const fetchQuotaUncoalesced = async () => {
   }
 
   if (response.status === 429) {
-    cooldownUntil = Date.now() + cooldownFromHeader(response);
-    return cachedResultFor(fingerprint, credential.planLabel)
+    startCooldown(credential.accessToken, Date.now(), cooldownFromHeader(response));
+    return cachedResultFor(credential.accessToken, credential.planLabel)
       ?? failure('Rate limited. Retrying soon.');
   }
 
@@ -130,7 +167,7 @@ const fetchQuotaUncoalesced = async () => {
 
   const { windows, models } = toClaudeUsage(payload);
   const usage = Object.keys(models).length > 0 ? { windows, models } : { windows };
-  cachedUsage = { fingerprint, usage, planLabel: credential.planLabel };
+  rememberPayload(credential.accessToken, usage, credential.planLabel, requestedAt, Date.now());
 
   return buildResult({
     providerId,
@@ -154,21 +191,28 @@ export const fetchQuota = () => {
 };
 
 /**
- * Usage of a login that is not the live one, read with the access token it was
- * saved with. Touches none of this module's caches or cooldown (those belong to
- * the live login), never refreshes a token (a refresh would rotate it behind
- * Claude Code's back), and answers `expired` without a request when the token
- * has ended.
+ * Usage of one login, read with the access token it is given. Never refreshes a
+ * token (a refresh would rotate it behind Claude Code's back), and answers
+ * `expired` without a request when the token has ended. A token that Anthropic
+ * rate-limited (here or in `fetchQuota`) answers `rate-limited` with the time
+ * left, without a request. A good answer is kept for `fetchQuota` to reuse.
+ * `maxAgeMs` (default 0: always ask) reuses a payload of the token that was
+ * read less long ago.
  *
  * @param {{ accessToken: string, expiresAt?: number|null }} credential
- * @param {{ fetchImpl?: typeof fetch, now?: () => number }} [options]
+ * @param {{ fetchImpl?: typeof fetch, now?: () => number, maxAgeMs?: number }} [options]
  * @returns {Promise<{ ok: true, usage: object } | { ok: false, errorKind: string, retryAfterMs?: number }>}
  */
-export const fetchClaudeUsageForToken = async (credential, { fetchImpl = fetch, now = Date.now } = {}) => {
+export const fetchClaudeUsageForToken = async (credential, { fetchImpl = fetch, now = Date.now, maxAgeMs = 0 } = {}) => {
   const { accessToken, expiresAt } = credential;
   if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now()) {
     return { ok: false, errorKind: 'expired' };
   }
+  const recent = freshPayload(accessToken, maxAgeMs, now());
+  if (recent) return { ok: true, usage: recent.usage };
+  const coolingDownMs = cooldownRemaining(accessToken, now());
+  if (coolingDownMs > 0) return { ok: false, errorKind: 'rate-limited', retryAfterMs: coolingDownMs };
+  const requestedAt = now();
   let response;
   try {
     response = await fetchImpl(USAGE_URL, {
@@ -179,7 +223,11 @@ export const fetchClaudeUsageForToken = async (credential, { fetchImpl = fetch, 
   } catch {
     return { ok: false, errorKind: 'network' };
   }
-  if (response.status === 429) return { ok: false, errorKind: 'rate-limited', retryAfterMs: cooldownFromHeader(response) };
+  if (response.status === 429) {
+    const retryAfterMs = cooldownFromHeader(response, now);
+    startCooldown(accessToken, now(), retryAfterMs);
+    return { ok: false, errorKind: 'rate-limited', retryAfterMs };
+  }
   if (response.status === 401 || response.status === 403) return { ok: false, errorKind: 'expired' };
   if (!response.ok) return { ok: false, errorKind: 'http' };
   let payload;
@@ -189,13 +237,14 @@ export const fetchClaudeUsageForToken = async (credential, { fetchImpl = fetch, 
     return { ok: false, errorKind: 'invalid' };
   }
   const { windows, models } = toClaudeUsage(payload);
-  return { ok: true, usage: Object.keys(models).length > 0 ? { windows, models } : { windows } };
+  const usage = Object.keys(models).length > 0 ? { windows, models } : { windows };
+  rememberPayload(accessToken, usage, null, requestedAt, now());
+  return { ok: true, usage };
 };
 
 /** Test seam: clears the rate-limit cache between cases. */
 export const resetClaudeQuotaCache = () => {
-  cachedUsage = null;
-  cooldownUntil = 0;
+  payloads.clear();
+  cooldowns.clear();
   pendingFetch = null;
-  lastFingerprint = null;
 };

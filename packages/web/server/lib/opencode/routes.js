@@ -289,8 +289,14 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 
   app.put('/api/config/settings', async (req, res) => {
     try {
-      const updated = await persistSettings(req.body ?? {}, { surface: settingsSurfaceOf(req) });
-      res.json(updated);
+      // Keys the server refused to store are reported next to the document so
+      // the client does not take them for saved; absent means none were refused.
+      let droppedKeys = [];
+      const updated = await persistSettings(req.body ?? {}, {
+        surface: settingsSurfaceOf(req),
+        onDropped: (keys) => { droppedKeys = keys; },
+      });
+      res.json(droppedKeys.length > 0 ? { ...updated, droppedKeys } : updated);
     } catch (error) {
       console.error('[API:PUT /api/config/settings] Failed to save settings:', error);
       console.error('[API:PUT /api/config/settings] Error stack:', error.stack);

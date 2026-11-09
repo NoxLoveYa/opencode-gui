@@ -12,6 +12,7 @@
 // into it instead of starting the next one.
 
 import fs from 'fs';
+import { writeFileDurable } from '../shared/durable-write.js';
 import path from 'path';
 import { assertPromptResponse } from '../opencode/prompt-response.js';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
@@ -367,10 +368,8 @@ export function createMessageQueueRuntime({
     writePromise = writePromise
       .then(async () => {
         await fs.promises.mkdir(dataDir, { recursive: true });
-        const tmpPath = `${filePath}.${process.pid}.tmp`;
         // Queued prompts are conversation content: readable by the owner only.
-        await fs.promises.writeFile(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
-        await fs.promises.rename(tmpPath, filePath);
+        await writeFileDurable(filePath, payload, { mode: 0o600 });
       })
       .catch((error) => {
         console.warn('[message-queue] failed to persist queue:', error?.message ?? error);

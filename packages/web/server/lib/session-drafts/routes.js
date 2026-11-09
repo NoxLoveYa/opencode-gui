@@ -1,5 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
+import { writeFileDurable } from '../shared/durable-write.js';
 
 /**
  * Drafts of new sessions the user started and left before sending, shared by
@@ -131,14 +132,7 @@ export const registerSessionDraftRoutes = (app, dependencies) => {
 
   const writeStore = async (store) => {
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    try {
-      await fsPromises.writeFile(tmp, JSON.stringify(store, null, 2), 'utf8');
-      await fsPromises.rename(tmp, filePath);
-    } catch (error) {
-      await fsPromises.unlink(tmp).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, JSON.stringify(store, null, 2), { fsPromises });
   };
 
   const announce = () => {

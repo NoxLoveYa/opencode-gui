@@ -33,6 +33,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { writeFileDurable } from './durable-write';
+
 const ARCHIVE_FILE_NAME = 'sessions-archive.json';
 const METADATA_FILE_NAME = 'sessions-metadata.json';
 /** Shared with the web server (`unread-baseline.js`): `{ since }`, written once. */
@@ -53,9 +55,17 @@ type StoredSessionMetadata = Record<string, SessionMetadata>;
 
 export type SessionStateFs = {
   readFile: (filePath: string, encoding: 'utf8') => Promise<string>;
-  writeFile: (filePath: string, data: string, encoding: 'utf8') => Promise<void>;
+  /** Replaces the file whole and durably (`durable-write.ts`): the old content or the new, never a partial one. */
+  writeFileDurable: (filePath: string, data: string) => Promise<void>;
   rename: (from: string, to: string) => Promise<void>;
   mkdir: (dirPath: string, options: { recursive: true }) => Promise<string | undefined>;
+};
+
+const nodeSessionStateFs: SessionStateFs = {
+  readFile: fs.promises.readFile,
+  writeFileDurable: (filePath, data) => writeFileDurable(filePath, data),
+  rename: fs.promises.rename,
+  mkdir: fs.promises.mkdir,
 };
 
 /** One session's metadata on OpenCode. `read` resolves `null` for a session OpenCode does not know. */
@@ -174,7 +184,7 @@ const describeError = (error: unknown): string => (error instanceof Error ? erro
 
 export const createSessionStateStore = ({
   dataDir,
-  fsPromises = fs.promises,
+  fsPromises = nodeSessionStateFs,
   now = Date.now,
 }: SessionStateStoreOptions) => {
   const archivePath = path.join(dataDir, ARCHIVE_FILE_NAME);
@@ -209,10 +219,7 @@ export const createSessionStateStore = ({
   const writeJsonObjectFile = (filePath: string, value: JsonObject): Promise<void> => {
     const write = async () => {
       await fsPromises.mkdir(dataDir, { recursive: true });
-      // Temp file in the same directory so the rename is atomic on one device.
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fsPromises.writeFile(tmpPath, JSON.stringify(value), 'utf8');
-      await fsPromises.rename(tmpPath, filePath);
+      await fsPromises.writeFileDurable(filePath, JSON.stringify(value));
     };
     const next = writeChain.then(write, write);
     writeChain = next.catch(() => undefined);

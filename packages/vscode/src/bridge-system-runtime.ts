@@ -20,6 +20,7 @@ import type { BridgeContext, BridgeResponse } from './bridge';
 import { ENTERPRISE_MODE_ERROR, isEnterpriseMode, publicEnterprisePolicy } from '../../web/server/lib/enterprise-mode.js';
 import { discoverProviderModels } from './model-discovery';
 import { openCodeTrust } from './opencodeTrust';
+import { writeFileDurableSync } from './durable-write';
 
 /** The base URL a custom provider was saved with; discovery sends its stored key only there. */
 const readStoredProviderBaseURL = (providerID: string): string | undefined => {
@@ -107,7 +108,7 @@ const getOrCreateInstallId = (scope: string): string => {
 
   const installId = randomUUID();
   fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(idPath, `${installId}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileDurableSync(idPath, `${installId}\n`, { mode: 0o600, followSymlinks: true });
   return installId;
 };
 

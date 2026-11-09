@@ -1,7 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import path from 'path';
 
-import { registerSessionFoldersRoutes } from './routes.js';
+import { registerSessionFoldersRoutes as registerRoutes } from './routes.js';
+
+// The store writes through a file handle and removes a failed temp file with
+// `rm`. These cases watch the bytes written and the temp file removed, so the
+// handle writes through the mocked `writeFile` and `rm` goes to `unlink`.
+const handleFs = (fsPromises) => ({
+  ...fsPromises,
+  open: async (tempPath) => ({
+    writeFile: (value) => fsPromises.writeFile(tempPath, value),
+    sync: async () => {},
+    close: async () => {},
+  }),
+  rm: (file) => fsPromises.unlink(file),
+});
+
+const registerSessionFoldersRoutes = (app, options) => registerRoutes(app, { ...options, fsPromises: handleFs(options.fsPromises) });
 
 const createRouteRegistry = () => {
   const routes = new Map();

@@ -21,6 +21,7 @@
  * so nothing is lost if a migration turns out wrong.
  */
 
+import { writeFileDurable } from '../shared/durable-write.js';
 import { asNonEmptyString } from '../shared/guards.js';
 import fsDefault from 'node:fs';
 import pathDefault from 'node:path';
@@ -178,9 +179,7 @@ export const createSessionMetadataStore = ({
       });
       return;
     }
-    const tmpPath = `${legacyPath}.${process.pid}.tmp`;
-    await fsPromises.writeFile(tmpPath, JSON.stringify(Object.fromEntries(unmigrated)), 'utf8');
-    await fsPromises.rename(tmpPath, legacyPath);
+    await writeFileDurable(legacyPath, JSON.stringify(Object.fromEntries(unmigrated)), { fsPromises });
   });
 
   /**

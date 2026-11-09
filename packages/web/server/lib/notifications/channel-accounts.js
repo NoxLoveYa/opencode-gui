@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 
 import { z } from 'zod';
 
+import { writeFileDurable } from '../shared/durable-write.js';
+
 /**
  * The accounts behind extension notification channels (`provides:
  * ["notifications"]`): one account per channel, keyed by the channel's
@@ -67,7 +69,6 @@ const publicViewOf = (channel) => {
  */
 export const createNotificationChannelAccounts = ({ persistPath, now = Date.now, fsImpl = fs }) => {
   let chain = Promise.resolve();
-  let writeSequence = 0;
   const pendingConnections = new Map();
 
   const beginConnect = (providerId) => {
@@ -99,10 +100,7 @@ export const createNotificationChannelAccounts = ({ persistPath, now = Date.now,
     const parsed = storeSchema.safeParse(store);
     if (!parsed.success) throw new Error('Invalid notification channel accounts store');
     await fsImpl.mkdir(path.dirname(persistPath), { recursive: true });
-    const tmp = `${persistPath}.tmp-${process.pid}-${now()}-${(writeSequence += 1)}`;
-    await fsImpl.writeFile(tmp, `${JSON.stringify(parsed.data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await fsImpl.rename(tmp, persistPath);
-    await fsImpl.chmod(persistPath, 0o600);
+    await writeFileDurable(persistPath, `${JSON.stringify(parsed.data, null, 2)}\n`, { mode: 0o600, fsPromises: fsImpl });
   };
 
   /** Read-modify-write under this process's chain for the file. */

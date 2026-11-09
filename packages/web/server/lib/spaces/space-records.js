@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { requireSpaceId } from './labels.js';
 import { MAX_KEPT_OUTPUT_CHARACTERS, MAX_SETUP_COMMAND_LENGTH, MAX_SETUP_COMMANDS } from './space-setup.js';
 import { sanitizeSpaceTaskTitle, spaceTaskTitleSchema } from './task-title.js';
@@ -195,10 +196,8 @@ export function createSpaceRecords({ dataDir, logger = console }) {
     const checked = recordSchema.parse({ version: 1, ...record });
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const file = fileOf(spaceId);
-    // Through a temporary name, so a crash in the middle never leaves half a record.
-    const temporary = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(checked, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporary, file);
+    // Through a temporary name, flushed first, so a crash in the middle never leaves half a record.
+    writeFileDurableSync(file, `${JSON.stringify(checked, null, 2)}\n`, { mode: 0o600 });
     return checked;
   };
 

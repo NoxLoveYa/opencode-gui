@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { writeFileDurableSync } from '../../server/lib/shared/durable-write.js';
 
 const TUNNEL_PROFILES_FILE_NAME = 'tunnel-profiles.json';
 const LEGACY_CLOUDFLARE_MANAGED_REMOTE_FILE_NAME = 'cloudflare-managed-remote-tunnels.json';
@@ -100,7 +101,7 @@ function writeLastManagedLocalConfigPath(configPath) {
     updatedAt: Date.now(),
   };
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf8');
+  writeFileDurableSync(filePath, JSON.stringify(next, null, 2), { followSymlinks: true });
 }
 
 

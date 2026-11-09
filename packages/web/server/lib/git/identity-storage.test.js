@@ -156,7 +156,7 @@ describe('git identity storage', () => {
     expect(results.every((result) => result.ok)).toBe(true);
     expect(store.getProfiles().map((entry) => entry.id).sort()).toEqual(['one', 'two']);
     expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
-    expect((await fs.readdir(path.dirname(filePath))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(path.dirname(filePath))).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 
   it('reclaims a crashed owner\'s lock rather than reading an empty store, and waits on a live one', async () => {

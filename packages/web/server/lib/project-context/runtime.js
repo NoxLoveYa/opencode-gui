@@ -12,6 +12,7 @@
  * directory never invalidates a reference.
  */
 
+import { writeFileDurable } from '../shared/durable-write.js';
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
 import { createPlanSummaryCache } from './plan-progress.js';
@@ -389,15 +390,8 @@ export const createProjectContextRuntime = (deps) => {
   };
 
   const writeJsonAtomic = async (filePath, value) => {
-    const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-    try {
-      await fsPromises.writeFile(temporaryPath, JSON.stringify(value, null, 2), 'utf8');
-      await fsPromises.rename(temporaryPath, filePath);
-    } catch (error) {
-      await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, JSON.stringify(value, null, 2), { fsPromises });
   };
 
   const withWriteLock = async (projectId, mutate) => {

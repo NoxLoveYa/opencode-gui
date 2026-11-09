@@ -547,6 +547,13 @@ describe('fs clone', () => {
   });
 });
 
+// The file is written through a handle and flushed before the rename; `writeFile` records the bytes.
+const handleFor = (writeFile, events) => vi.fn(async (file) => ({
+  writeFile: (data, encoding) => writeFile(file, data, encoding),
+  sync: async () => { events.push('sync'); },
+  close: async () => { events.push('close'); },
+}));
+
 describe('fs write', () => {
   it('does not rewrite a file when content is unchanged', async () => {
     const fsPromises = {
@@ -563,10 +570,13 @@ describe('fs write', () => {
   });
 
   it('writes a file when content changed', async () => {
+    const writeFile = vi.fn(async () => undefined);
+    const events = [];
     const fsPromises = {
       readFile: vi.fn(async () => 'old'),
       mkdir: vi.fn(async () => undefined),
-      writeFile: vi.fn(async () => undefined),
+      writeFile,
+      open: handleFor(writeFile, events),
       rename: vi.fn(async () => undefined),
       unlink: vi.fn(async () => undefined),
     };
@@ -580,10 +590,13 @@ describe('fs write', () => {
     expect(tmp).toMatch(/^\/repo\/file\.txt\.tmp-/);
     expect(fsPromises.writeFile).toHaveBeenCalledWith(tmp, 'new', 'utf8');
     expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
+    expect(events).toEqual(['sync', 'close']);
     expect(fsPromises.unlink).not.toHaveBeenCalled();
   });
 
   it('writes through existing symlinks without replacing the link', async () => {
+    const writeFile = vi.fn(async () => undefined);
+    const events = [];
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => {
         if (targetPath === '/repo/link.txt') return '/repo/target.txt';
@@ -591,7 +604,8 @@ describe('fs write', () => {
       }),
       readFile: vi.fn(async () => 'old'),
       mkdir: vi.fn(async () => undefined),
-      writeFile: vi.fn(async () => undefined),
+      writeFile,
+      open: handleFor(writeFile, events),
       rename: vi.fn(async () => undefined),
       unlink: vi.fn(async () => undefined),
     };
@@ -608,6 +622,8 @@ describe('fs write', () => {
   });
 
   it('rejects existing symlinks that resolve outside the workspace', async () => {
+    const writeFile = vi.fn(async () => undefined);
+    const events = [];
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => {
         if (targetPath === '/repo/link.txt') return '/outside/target.txt';
@@ -615,7 +631,8 @@ describe('fs write', () => {
       }),
       readFile: vi.fn(async () => 'old'),
       mkdir: vi.fn(async () => undefined),
-      writeFile: vi.fn(async () => undefined),
+      writeFile,
+      open: handleFor(writeFile, events),
       rename: vi.fn(async () => undefined),
       unlink: vi.fn(async () => undefined),
     };

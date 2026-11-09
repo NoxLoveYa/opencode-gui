@@ -15,7 +15,7 @@ import updaterPkg from 'electron-updater';
 import { z } from 'zod';
 import { ElectronSshManager } from './ssh-manager.mjs';
 import { collectLocalFileDiagnostics, collectSshBufferDiagnostics } from '@openchamber/web/server/lib/diagnostics/local-files.js';
-import { replaceFileWithRetry } from './windows-file-replace.mjs';
+import { replaceFileWithRetry, syncDirectory, writeFileSynced } from './windows-file-replace.mjs';
 import { persistMainWindowState } from './window-state.mjs';
 import { attachWindowVisibility, isNativeWindowVisible } from './window-visibility.mjs';
 import { createTrayController } from './tray.mjs';
@@ -694,9 +694,10 @@ const writeJsonFile = async (filePath, data) => {
   // JSON file that could parse-error and get coerced to {}.
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    await fsp.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await writeFileSynced(tmp, JSON.stringify(data, null, 2), 0o600);
     if (process.platform !== 'win32') await fsp.chmod(tmp, 0o600);
     await replaceFileWithRetry(tmp, filePath);
+    await syncDirectory(directory);
     if (process.platform !== 'win32') await fsp.chmod(filePath, 0o600);
   } catch (error) {
     await fsp.rm(tmp, { force: true }).catch(() => {});
@@ -1356,11 +1357,11 @@ const focusForegroundWindow = () => {
 const activeNotifications = new Set();
 const nativeNotificationClaims = new Map();
 const NATIVE_NOTIFICATION_DEDUPE_TTL_MS = 5000;
-// Ids of the notifications this run delivered on macOS, by session, so viewing
 // The kinds a window plays an OpenChamber sound for, reported by that window.
 // Their notifications are shown without the OS sound.
 const notificationSoundCoverage = createNotificationSoundCoverage();
 const windowsReportingSoundCoverage = new WeakSet();
+// Ids of the notifications this run delivered on macOS, by session, so viewing
 // the session removes them from Notification Center. Only macOS can remove a
 // delivered notification.
 const deliveredNotificationIdsBySession = new Map();
@@ -1430,9 +1431,9 @@ const maybeShowNativeNotification = (rawInput) => {
   const runtimeKey = readTrimmedString(payload.runtimeKey) || null;
 
   const notificationId = globalThis.crypto.randomUUID();
-  const notification = new Notification({
   // A window that shows the instance this came from and plays its own sound for this kind has the only sound.
   const soundCovered = notificationSoundCoverage.isCovered(payload.kind, runtimeKey);
+  const notification = new Notification({
     id: notificationId,
     title,
     body,
@@ -4737,7 +4738,6 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
     }
 
-    case 'desktop_clear_session_notifications': {
     case 'desktop_set_notification_sound_coverage': {
       // Local pages only (not in COMMANDS_SAFE_FOR_REMOTE): a remote page must
       // not decide which sound the app's notifications make.
@@ -4754,6 +4754,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
     }
 
+    case 'desktop_clear_session_notifications': {
       const sessionId = readTrimmedString(args?.sessionId);
       if (sessionId) clearSessionNotifications(sessionId);
       return null;

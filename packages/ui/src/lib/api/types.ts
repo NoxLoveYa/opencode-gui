@@ -1493,7 +1493,12 @@ export interface SettingsLoadResult {
 
 export interface SettingsAPI {
   load(): Promise<SettingsLoadResult>;
-  save(changes: Partial<SettingsPayload>): Promise<SettingsPayload>;
+  /**
+   * Resolves with the stored document. `droppedKeys` names sent keys the
+   * runtime refused to store (they are also absent from the document); absent
+   * means none were refused. It is not part of the settings document.
+   */
+  save(changes: Partial<SettingsPayload>): Promise<SettingsPayload & { droppedKeys?: string[] }>;
 
   restartOpenCode?: () => Promise<{ restarted: boolean }>;
 }

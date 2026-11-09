@@ -1,5 +1,6 @@
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import { writeFileDurable } from '../shared/durable-write.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -279,9 +280,7 @@ const writeExtensionStoreUnlocked = async (
   // file) cannot be cached as current.
   for (const listener of writeListeners) listener(persistPath);
   await fs.mkdir(path.dirname(persistPath), { recursive: true });
-  const tmp = `${persistPath}.tmp-${process.pid}-${Date.now()}-${(writeSequence += 1)}`;
-  await fs.writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-  await fs.rename(tmp, persistPath);
+  await writeFileDurable(persistPath, `${JSON.stringify(payload, null, 2)}\n`, { fsPromises: fs });
   for (const listener of writeListeners) listener(persistPath);
 };
 
@@ -327,7 +326,6 @@ export const ensureGuestStorageIds = async (persistPath, descriptors) => {
   return resolved;
 };
 
-let writeSequence = 0;
 /** @type {Set<(persistPath: string) => void>} */
 const writeListeners = new Set();
 

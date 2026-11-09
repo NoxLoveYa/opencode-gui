@@ -2,6 +2,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { writeFileDurable } from '@openchamber/web/server/lib/shared/durable-write.js';
+
 // GNOME 46+ shows a window's icon only through a .desktop file whose name or
 // StartupWMClass matches the window's app id; a window without one gets the
 // generic executable icon, on Wayland and XWayland alike. An AppImage started
@@ -110,14 +112,7 @@ const writeIfChanged = async (filePath, contents) => {
   const current = await readFileOrNull(filePath);
   if (current && current.equals(contents)) return false;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.tmp`;
-  try {
-    await fsp.writeFile(tempPath, contents, { mode: 0o644 });
-    await fsp.rename(tempPath, filePath);
-  } catch (error) {
-    await fsp.rm(tempPath, { force: true });
-    throw error;
-  }
+  await writeFileDurable(filePath, contents, { mode: 0o644, fsPromises: fsp });
   return true;
 };
 

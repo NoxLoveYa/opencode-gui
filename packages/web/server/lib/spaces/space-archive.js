@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { z } from 'zod';
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { requestedDirectories } from './dispatcher.js';
 
 import { SpaceError } from './errors.js';
@@ -106,9 +107,7 @@ export function createSpaceArchive({ dataDir, hostOpenCode, logger = console, no
       entries.delete(entry.spaceId);
     } else {
       fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-      const temporary = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(temporary, `${JSON.stringify(entry, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-      fs.renameSync(temporary, file);
+      writeFileDurableSync(file, `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 });
       entries.set(entry.spaceId, entry);
     }
     relock();

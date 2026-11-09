@@ -46,7 +46,21 @@ const makeSlowWriteFs = () => {
       await handle.close();
     }
   };
-  return { slowWriteFile, fsPromises: { ...realFs, writeFile: slowWriteFile } };
+  // The accessor writes through a handle, so the slow write goes on the handle.
+  const slowOpen = async (filePath, ...rest) => {
+    const handle = await realFs.open(filePath, ...rest);
+    return {
+      writeFile: async (data) => {
+        const half = Math.floor(data.length / 2);
+        await handle.writeFile(data.slice(0, half), 'utf8');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await handle.writeFile(data.slice(half), 'utf8');
+      },
+      sync: () => handle.sync(),
+      close: () => handle.close(),
+    };
+  };
+  return { slowWriteFile, fsPromises: { ...realFs, open: slowOpen } };
 };
 
 // Runs `writer` against filePath while a concurrent reader hammers it; returns
@@ -90,6 +104,65 @@ describe('cli settings accessors', () => {
 
       const leftovers = fs.readdirSync(dir).filter((name) => name.startsWith('settings.json.tmp-'));
       expect(leftovers).toEqual([]);
+    });
+  });
+
+  it('flushes the temp file to disk before renaming it over settings.json', async () => {
+    await withTempDir(async (dir) => {
+      const events = [];
+      const realFs = fs.promises;
+      const accessors = makeAccessors(dir, {
+        fsPromises: {
+          ...realFs,
+          open: async (filePath, ...rest) => {
+            const handle = await realFs.open(filePath, ...rest);
+            if (!path.basename(String(filePath)).startsWith('settings.json.tmp-')) return handle;
+            return {
+              writeFile: (...args) => { events.push('write'); return handle.writeFile(...args); },
+              sync: () => { events.push('sync'); return handle.sync(); },
+              close: () => { events.push('close'); return handle.close(); },
+            };
+          },
+          rename: async (from, to) => {
+            events.push('rename');
+            return realFs.rename(from, to);
+          },
+        },
+      });
+
+      await accessors.writeSettingsToDisk({ theme: 'dark' });
+
+      expect(events).toEqual(['write', 'sync', 'close', 'rename']);
+    });
+  });
+
+  it('keeps the save when the target cannot be reopened for the flush after the Windows copy fallback', async () => {
+    await withTempDir(async (dir) => {
+      const realFs = fs.promises;
+      const accessors = makeAccessors(dir, {
+        fsPromises: {
+          ...realFs,
+          rename: async () => {
+            throw Object.assign(new Error('EPERM: rename'), { code: 'EPERM' });
+          },
+          open: async (filePath, flags, ...rest) => {
+            if (path.basename(String(filePath)) === 'settings.json' && flags === 'r+') {
+              throw Object.assign(new Error('EBUSY: reopen refused'), { code: 'EBUSY' });
+            }
+            return realFs.open(filePath, flags, ...rest);
+          },
+        },
+      });
+      const original = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      try {
+        await accessors.writeSettingsToDisk({ theme: 'dark' });
+      } finally {
+        Object.defineProperty(process, 'platform', original);
+      }
+
+      expect(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'))).toEqual({ theme: 'dark' });
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('settings.json.tmp-'))).toEqual([]);
     });
   });
 

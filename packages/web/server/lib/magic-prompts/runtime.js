@@ -1,3 +1,5 @@
+import { writeFileDurable } from '../shared/durable-write.js';
+
 const FILE_VERSION = 1;
 const MAX_PROMPT_TEXT_LENGTH = 200_000;
 const PROMPT_ID_PATTERN = /^[A-Za-z0-9._-]{1,160}$/;
@@ -223,14 +225,7 @@ export const createMagicPromptRuntime = (dependencies) => {
 
   const writeDocument = async (document) => {
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-    const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    try {
-      await fsPromises.writeFile(temporaryPath, JSON.stringify(document, null, 2), 'utf8');
-      await fsPromises.rename(temporaryPath, filePath);
-    } catch (error) {
-      await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, JSON.stringify(document, null, 2), { fsPromises });
   };
 
   const persist = async (mutateOverrides) => {

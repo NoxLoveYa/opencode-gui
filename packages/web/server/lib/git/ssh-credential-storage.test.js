@@ -51,7 +51,7 @@ describe('managed SSH credential storage', () => {
 
     await expect(store.lookup('deploy-one')).resolves.toEqual(record);
     if (process.platform !== 'win32') expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
-    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(directory)).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 
   it('appends under one lock without dropping existing records and enforces capacity', async () => {

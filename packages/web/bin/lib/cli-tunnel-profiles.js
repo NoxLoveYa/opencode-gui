@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { writeFileDurableSync } from '../../server/lib/shared/durable-write.js';
 import {
   getTunnelProfilesFilePath,
   getLegacyCloudflareManagedRemoteFilePath,
@@ -227,7 +228,7 @@ function readTunnelProfilesFromDisk(options = {}) {
 function writeTunnelProfilesToDisk(data) {
   const filePath = getTunnelProfilesFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(sanitizeTunnelProfilesData(data), null, 2), { encoding: 'utf8', mode: 0o600 });
+  writeFileDurableSync(filePath, JSON.stringify(sanitizeTunnelProfilesData(data), null, 2), { mode: 0o600, followSymlinks: true });
 }
 
 function writeManagedRemotePairsToDiskFromProfiles(profilesData) {
@@ -246,7 +247,7 @@ function writeManagedRemotePairsToDiskFromProfiles(profilesData) {
 
   const filePath = getLegacyCloudflareManagedRemoteFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify({ version: 1, tunnels }, null, 2), { encoding: 'utf8', mode: 0o600 });
+  writeFileDurableSync(filePath, JSON.stringify({ version: 1, tunnels }, null, 2), { mode: 0o600, followSymlinks: true });
 }
 
 function readLegacyManagedRemoteEntries() {

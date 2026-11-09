@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { writeFileDurableSync } from '../shared/durable-write.js';
 
 // @simplewebauthn/server and its ASN.1 dependencies are ~130 modules; only
 // passkey registration and authentication need them, so they load on first use.
@@ -133,7 +134,7 @@ export const createUiPasskeys = ({
 
   const persistStore = (store) => {
     ensureStoreDirectory();
-    fs.writeFileSync(storeFile, JSON.stringify(store, null, 2));
+    writeFileDurableSync(storeFile, JSON.stringify(store, null, 2), { mode: 0o600, followSymlinks: true });
   };
 
   const createEmptyStore = () => ({

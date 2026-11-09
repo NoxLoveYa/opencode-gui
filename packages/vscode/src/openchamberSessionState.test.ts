@@ -44,7 +44,7 @@ const createMemoryFs = (initial: Record<string, string> = {}) => {
       }
       return content;
     },
-    writeFile: async (filePath, data) => {
+    writeFileDurable: async (filePath, data) => {
       files.set(filePath, data);
       writes.push(filePath);
     },

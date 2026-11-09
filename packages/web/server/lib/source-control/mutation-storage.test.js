@@ -80,7 +80,7 @@ describe('source-control mutation storage', () => {
     await store.claim(claimFor('key-one'));
 
     expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
-    expect((await fs.readdir(path.dirname(filePath))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(path.dirname(filePath))).filter((name) => name.includes('.tmp'))).toEqual([]);
     expect(JSON.parse(await fs.readFile(filePath, 'utf8'))).toMatchObject({
       version: 1,
       records: { 'key-one': { key: 'key-one', state: 'running', startedAt: 100, updatedAt: 100 } },
@@ -228,7 +228,7 @@ describe('source-control mutation storage', () => {
 
     await expect(failingStore.complete('key-one', 'digest-key-one', { state: 'failed' })).rejects.toThrow('rename failed');
     expect(await fs.readFile(filePath, 'utf8')).toBe(previous);
-    expect((await fs.readdir(path.dirname(filePath))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(path.dirname(filePath))).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 
   it.each([

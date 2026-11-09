@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { writeFileDurable } from '../shared/durable-write.js';
 import path from 'node:path';
 import { z } from 'zod';
 
@@ -78,7 +79,6 @@ export const readGuestAuthStore = async (persistPath) => {
 
 /** @type {Map<string, Promise<unknown>>} */
 const writeChains = new Map();
-let writeSequence = 0;
 
 // Two writers at once (a token refresh while a settings field saves) used to
 // share one temp file and a stale read: one of them lost. Every change to one
@@ -100,10 +100,7 @@ const writeGuestAuthStoreUnlocked = async (store, persistPath) => {
     throw new Error('Invalid guest auth store');
   }
   await fs.mkdir(path.dirname(persistPath), { recursive: true });
-  const tmp = `${persistPath}.tmp-${process.pid}-${Date.now()}-${(writeSequence += 1)}`;
-  await fs.writeFile(tmp, `${JSON.stringify(parsed.data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(tmp, persistPath);
-  await fs.chmod(persistPath, 0o600);
+  await writeFileDurable(persistPath, `${JSON.stringify(parsed.data, null, 2)}\n`, { mode: 0o600, fsPromises: fs });
 };
 
 

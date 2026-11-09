@@ -2,6 +2,7 @@ import { DateTime, IANAZone } from 'luxon';
 import { CronExpressionParser } from 'cron-parser';
 import { z } from 'zod';
 import { readProcessInstance } from '../scheduled-tasks/process-instance.js';
+import { writeFileDurable } from '../shared/durable-write.js';
 
 import { projectConfigFileStemOf, projectPathFromId } from './project-id.js';
 import {
@@ -661,16 +662,9 @@ export const createProjectConfigRuntime = (deps) => {
   const writeRawProjectConfigToDisk = async (projectID, document) => {
     const filePath = resolveProjectConfigPath(projectID);
     const parentDirectory = path.dirname(filePath);
-    const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     await fsPromises.mkdir(parentDirectory, { recursive: true });
-    try {
-      await fsPromises.writeFile(temporaryPath, JSON.stringify(document, null, 2), 'utf8');
-      await fsPromises.rename(temporaryPath, filePath);
-    } catch (error) {
-      await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, JSON.stringify(document, null, 2), { fsPromises });
     // Every write goes through a read of the whole document, so the legacy
     // file's content is now in the current one; drop it so a later read (or an
     // older build) cannot see two copies drifting apart.
@@ -1110,14 +1104,7 @@ export const createProjectConfigRuntime = (deps) => {
       return;
     }
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-    const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    try {
-      await fsPromises.writeFile(temporaryPath, text, 'utf8');
-      await fsPromises.rename(temporaryPath, filePath);
-    } catch (error) {
-      await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, text, { fsPromises });
   };
 
   const mergedProjectSetupOf = async (projectID, personalRaw) => (

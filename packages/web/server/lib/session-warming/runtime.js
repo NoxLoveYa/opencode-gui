@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
+import { writeFileDurable } from '../shared/durable-write.js';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
 
 /** Idle time between keep-alive requests; OpenCode's warming default. */
@@ -116,9 +117,7 @@ export const createSessionWarmingRuntime = ({
     writeChain = writeChain
       .then(async () => {
         await fs.promises.mkdir(dataDir, { recursive: true });
-        const tmpPath = `${filePath}.${process.pid}.tmp`;
-        await fs.promises.writeFile(tmpPath, payload, 'utf8');
-        await fs.promises.rename(tmpPath, filePath);
+        await writeFileDurable(filePath, payload);
       })
       .catch((error) => console.warn('[session-warming] failed to save:', error?.message ?? error));
     return writeChain;

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { getLinearAuth, getLinearAuthFilePath } from './auth.js';
 import { isPlainObject, readTrimmedString } from './parse.js';
 
@@ -79,19 +80,7 @@ function writeJsonFile(filePath, payload) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const tmpFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf8');
-  try {
-    fs.chmodSync(tmpFile, 0o600);
-  } catch {
-    // best-effort
-  }
-  fs.renameSync(tmpFile, filePath);
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // best-effort
-  }
+  writeFileDurableSync(filePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
 }
 
 export function getLinearMappingFilePath() {

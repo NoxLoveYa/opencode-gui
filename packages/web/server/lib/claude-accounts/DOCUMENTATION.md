@@ -19,7 +19,7 @@ This module attaches a saved login to a row id.
 | `swap.js` | `switchTo` and the live → store copies, one operation at a time. |
 | `claude-cli.js` | `claude auth login` run against a temporary config folder, then `claude auth status` there to check what was captured. |
 | `usage-guard.js` | The usage guard's decisions: what is over a threshold, who is eligible, when to read again, when to stay still. Pure; reading usage, switching, announcing and keeping readings are injected. |
-| `usage-scheduler.js` | When the guard looks: once as a Claude Agent session goes idle → busy, then every 60 s (20 s near a threshold) while one stays busy, and not at all otherwise. |
+| `usage-scheduler.js` | When the guard looks: once as a Claude Agent session goes idle → busy, then every 60 s while one stays busy (a round that has nothing to read does nothing), and not at all otherwise. |
 | `exhaustion.js` | What the guard and limit failover tell each other: which accounts are out until when, and which one was just switched to. |
 | `runtime.js` | The state the page reads, sign-in flows, adopting or saving the live login, and the interface limit failover uses. |
 | `routes.js` | `/api/openchamber/claude-accounts/*`, plus the middleware that makes OpenCode's `POST /api/credential/:id/activate` and `DELETE /api/credential/:id` move or drop the login. Registered before the generic OpenCode proxy (`../opencode/feature-routes-runtime.js`). |
@@ -98,8 +98,15 @@ answer 403 `enterprise_mode`; Use and limit failover stay allowed.
 - What a reading is worth: a window over its threshold stays over until it ends
   (`resetsAt`, or six hours after the read when the API gave no end), whatever
   the age. A reading that says "under" is trusted for the live account for three
-  minutes only; after that the live account is not watched, and the user is told
-  (see *Why a usage guard besides failover*).
+  minutes, ten when it is 15 or more points below every threshold; after that its
+  usage is unknown and the user is told. If it stays
+  unknown for three minutes of the guard trying, the guard moves to an account known
+  to be under, when there is one (see *Why a usage guard besides failover* and *Why
+  unreadable usage switches*).
+- Every failed read of the live account is logged with its kind, the Retry-After
+  and the wait chosen, and so is every change between protected and unprotected,
+  with the reason. A log line holds a kind and an error code, never a message that
+  could carry a token.
 - The guard keeps, per account, the last reading of the 5-hour window and of the
   weekly one (the fullest of the account's own and each model's, Opus included),
   as percent, end time and the time it was read. They are in the index
@@ -239,8 +246,7 @@ reached, so at 100% a little extra usage may still be billed; a lower threshold
 leaves room.
 
 It looks only while a Claude Agent session is busy: once as a session goes from
-idle to busy, then every 60 seconds, or every 20 while the live account is within
-5 points of a threshold. Money is spent by a working session, so an idle
+idle to busy, then a round every 60 seconds. Money is spent by a working session, so an idle
 OpenChamber asks Anthropic for nothing. What counts as busy is only what the hub
 said lately: a disconnect or reconnect forgets it, a deleted session leaves, a
 session silent for ten minutes is dropped, and a session that is still working
@@ -250,22 +256,39 @@ nothing while the setting is off, the feature is unavailable or fewer than two
 accounts have a saved login, and its timer then stays down. Settings are read
 from disk once and again after a save of one of the guard's three keys.
 
-Reads are rate-limited by account: at most one a minute (20 seconds for the live
-account near a threshold), and a failing usage API (429, 5xx, network) doubles the
-wait, up to ten minutes for a saved account and 90 seconds for the live one.
+Reads are rate-limited by account. A saved account is read at most once a minute.
+The live account is read by its distance to the nearest threshold: every 3 minutes
+when it is 15 or more points below every threshold, every minute from 5 to 15 points
+below, every 20 seconds within 5 points. A round between two reads answers from the
+last reading and asks Anthropic for nothing. A failing usage API (429, 5xx, network) doubles the
+wait, up to ten minutes for a saved account and 90 seconds for the live one. The
+one exception is a 429 of the live account: its Retry-After is waited out, up to
+five minutes, because asking sooner only extends the limit. That is the guard's
+own wait. The cooldown it shares with the quota module (below) can hold the token
+for much longer, up to an hour: each try after the five minutes is then answered
+locally with the time left, sends nothing, and is logged as a failed read.
 
 The live account is read by the guard itself, with the live token, and not through
-the quota module. The quota module keeps the last good payload while Anthropic
-rate-limits and answers it as a success with a new time, and it reads the folder of
-its own process, which can differ from the managed OpenCode's. Either would let the
-guard act on numbers from the past, or from another login. Reading it directly
-makes both impossible: the numbers are those of the login the swapper holds, read
-just now, or there are none.
+the quota module's `fetchQuota`. That one keeps the last good payload while
+Anthropic rate-limits and answers it as a success with a new time, and it reads
+the folder of its own process, which can differ from the managed OpenCode's.
+Either would let the guard act on numbers from the past, or from another login.
+Reading it directly makes both impossible: the numbers are those of the login the
+swapper holds, read just now, or there are none. The request itself goes through
+`fetchClaudeUsageForToken`, which shares the 429 cooldown of the token with
+`fetchQuota`: while the usage page's own poll has the token cooling down, the
+guard's read answers `rate-limited` with the time left and sends nothing. The other
+way round, a payload the guard fetched serves the page's own poll: `fetchQuota`
+reuses a payload of the token that is under 3 minutes old without a request, so
+while the guard reads, the page sends nothing of its own, and the page's cached
+answer on a 429 no longer hides a guard that is being rate-limited.
 
 The live account is unprotected when its usage is unknown for more than three
-minutes (the API keeps failing, the token has ended, the answer has no windows), or
-when its login is one nobody saved or whose owner is uncertain, which the guard
-never replaces. Then the page shows "Can't read Claude usage — extra usage is not
+minutes, or ten when its last reading was 15 or more points below every threshold
+(the API keeps failing, the token has ended, the answer has no windows)
+and there is no account to move to (see *Why unreadable usage switches*), or when
+its login is one nobody saved or whose owner is uncertain, which the guard never
+replaces. Then the page shows "Can't read Claude usage — extra usage is not
 protected", and one toast says so per episode. Each row shows how old its numbers
 are.
 
@@ -315,6 +338,71 @@ out is skipped by the other, and the account the guard switched to is excused fo
 a minute for a failure in flight on the one it left, so that failure is not
 counted against the new account.
 
+### Why unreadable usage switches
+
+The guard first stayed still when the live account's usage was unknown and said it
+could not protect the user. That left the account free to cross 100% unwatched,
+with extra usage billed and no switch, which is the case the guard exists for. A
+usage API that rate-limits for minutes while the live account is nearly full is
+exactly that state. So a live account whose reading is no longer trusted, and which
+has failed to be read for three minutes, moves
+to another account that is known to be under both thresholds: a reading of at most
+half an hour old, taken through the same gated read as for any candidate. An
+account nothing is known about, or one that is over, is never chosen blind: a
+switch to it could land on a full account. The first refusal of an expired live
+token still gets its retry after 15 seconds before anything happens, and a live
+login nobody saved is never replaced.
+
+The three minutes are counted from the first failed live read after the last good
+one (or the first round with no usable reading), also while that last reading is
+still trusted, and only over rounds that followed
+each other: a silence of more than 150 seconds between two rounds means no session
+worked, and the period starts again. A good read, or a different live account
+(switch, failover, manual Use), ends the period. So the first failed read after an
+idle start, with a reading kept from before the restart or a day old, does not
+switch anything; the failures have to go on. Rounds keep coming every minute during
+that time, also while a long Retry-After keeps the live account from being asked
+(the scheduler does not depend on the read gates), and a round asks to come back
+sooner when the period is due before the next one. The page's "not protected" notice
+does not wait for the three minutes. A far-below reading is trusted for ten minutes,
+so one 429 there warns and switches nothing; if the failures go on past the ten
+minutes, they have lasted more than three by then and the switch follows at once.
+
+The target needs a reading from the last three minutes (a candidate that can be
+read gets a fresh read through the usual gate; one that cannot is skipped) and may
+not be within 5 points of either threshold. The half hour of an ordinary switch is
+too long here: the account just left keeps its last good reading, and if both
+accounts then stay unreadable, that old "under" would send the login back to an
+account that may be billing, every 15 minutes.
+
+The switch respects the manual hold, the two-minute pause after a switch and the
+backoff after a failed one, uses the same swap with `expectLiveCredentialId`, and
+does not mark the account it leaves as exhausted, since its usage is unknown. The
+event is `switched` with `reason: 'unreadable'` and no window or percent, so the
+toast can say why. With no known-under account, or while a hold, pause or backoff
+runs, nothing changes and the account is unprotected as before.
+
+Two accounts that both cannot be read would otherwise trade the login every few
+minutes, each time reading the other as known to be under from an older reading.
+After such a switch no other one of this kind is made for 15 minutes. A switch
+because an account is over a threshold stays allowed during that time.
+
+### Why the live read slows down far from a threshold
+
+The guard read the live account every minute whatever its usage, and the usage API
+answered with a 429 and a `Retry-After` of 5 minutes after every 3 to 5 good reads. The
+account then sat 5 minutes unread, the "not protected" warning showed, and the
+fail-safe switched accounts for a rate limit alone. Reading less often where nothing
+is at stake removes most of those reads: an account 15 or more points below its
+thresholds is read every 3 minutes and trusted for 10, so a single 429 there
+changes nothing, while an account within 5 points still gets 20 seconds. A fixed
+slower cadence was weighed and dropped: it leaves the near-threshold case, which is
+the only one where money can be spent in minutes, as slow as the idle one.
+
+The page's own poll hit the same endpoint with the same token, and its cached
+answer on a 429 hid the failures. Both readers now keep their good payload per
+token and the page reuses one under 3 minutes old, so there is one reader while the
+guard is on duty and the page reads by itself when it is not.
 ### Why a sign-in sometimes makes its login live
 
 A sign-in captures the login in a temporary folder and saves it under a row; the

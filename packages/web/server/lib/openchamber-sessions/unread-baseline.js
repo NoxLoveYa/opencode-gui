@@ -17,6 +17,7 @@
 import fsDefault from 'node:fs';
 import pathDefault from 'node:path';
 import { z } from 'zod';
+import { writeFileDurable } from '../shared/durable-write.js';
 
 const FILE_NAME = 'sessions-unread.json';
 
@@ -59,9 +60,7 @@ export const createUnreadBaseline = ({
     const since = now();
     try {
       await fsPromises.mkdir(dataDir, { recursive: true });
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fsPromises.writeFile(tmpPath, JSON.stringify({ since }), 'utf8');
-      await fsPromises.rename(tmpPath, filePath);
+      await writeFileDurable(filePath, JSON.stringify({ since }), { fsPromises });
     } catch (error) {
       // This process still serves its baseline; the next start tries again.
       console.warn('[openchamber-sessions] could not save the unread baseline:', error?.message ?? error);

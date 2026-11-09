@@ -7,10 +7,10 @@
 // a constraint: a name the registry has never heard of keeps the old name
 // match, so skills installed before this file existed, or placed on disk by
 // hand, look exactly as they did before.
-import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { asNonEmptyString } from '../shared/guards.js';
 
 const VERSION = 1;
@@ -95,9 +95,7 @@ export const removeInstalledSources = (skillName) => {
 const writeEntries = (entries) => {
   const target = installedSourcesPath();
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ version: VERSION, entries }, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, target);
+  writeFileDurableSync(target, JSON.stringify({ version: VERSION, entries }, null, 2), { mode: 0o600 });
 };
 
 /**

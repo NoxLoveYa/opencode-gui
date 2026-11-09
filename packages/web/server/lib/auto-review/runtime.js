@@ -14,6 +14,7 @@
 // attempt, so a retry after a crash or a lost response never sends twice.
 
 import fs from 'fs';
+import { writeFileDurable } from '../shared/durable-write.js';
 import path from 'path';
 import { z } from 'zod';
 import { assertOpenCodeApiResponse } from '../opencode/prompt-response.js';
@@ -310,10 +311,8 @@ export function createAutoReviewRuntime({
     const payload = JSON.stringify({ version: FILE_VERSION, revision, runs: Array.from(runs.values()) });
     const write = writePromise.then(async () => {
       await fs.promises.mkdir(dataDir, { recursive: true });
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
       // Prompts and handoffs are conversation content: readable by the owner only.
-      await fs.promises.writeFile(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
-      await fs.promises.rename(tmpPath, filePath);
+      await writeFileDurable(filePath, payload, { mode: 0o600 });
     });
     writePromise = write.catch((error) => {
       console.warn('[auto-review] failed to persist runs:', error?.message ?? error);

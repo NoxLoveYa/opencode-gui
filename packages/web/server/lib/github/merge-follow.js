@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { writeFileDurable } from '../shared/durable-write.js';
 import { parseTrackedItem, trackedItemKey } from '../tracked-items/items.js';
 
 const OWNER = 'github-user-merges';
@@ -57,12 +58,7 @@ export function createMergeFollowRuntime({ dataDir, notify, now = Date.now }) {
   void loaded.catch((error) => console.warn('[merge-follow] load failed:', error.message));
   const persist = async () => {
     await fs.mkdir(dataDir, { recursive: true });
-    const temporary = `${file}.${process.pid}.tmp`;
-    try {
-      await fs.writeFile(temporary, JSON.stringify({ version: 1, entries: [...entries.values()] }), { mode: 0o600 });
-      await fs.chmod(temporary, 0o600);
-      await fs.rename(temporary, file);
-    } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
+    await writeFileDurable(file, JSON.stringify({ version: 1, entries: [...entries.values()] }), { mode: 0o600, fsPromises: fs });
   };
   const interest = () => trackedItems?.setServerInterest(OWNER, stopped ? new Map() : new Map([...entries].map(([key, entry]) => [key, entry.item])));
   const accept = (states) => serialize(async () => {

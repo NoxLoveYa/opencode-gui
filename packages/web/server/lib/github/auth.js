@@ -1,3 +1,4 @@
+import { writeFileDurable, writeFileDurableSync } from '../shared/durable-write.js';
 import { isPlainObject, isString } from '../shared/guards.js';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
@@ -277,15 +278,7 @@ export function createGitHubAuthStore({ filePath, fsImpl = fs, lockWaitMs = 2_00
   let transactions = Promise.resolve();
   const writeState = async (state) => {
     await fsImpl.mkdir(path.dirname(filePath), { recursive: true });
-    const temporary = `${filePath}.${randomUUID()}.tmp`;
-    try {
-      await fsImpl.writeFile(temporary, `${JSON.stringify(serializeState(state), null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-      await fsImpl.chmod(temporary, 0o600);
-      await fsImpl.rename(temporary, filePath);
-    } catch (error) {
-      await fsImpl.rm(temporary, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, `${JSON.stringify(serializeState(state), null, 2)}\n`, { mode: 0o600, fsPromises: fsImpl });
   };
   const readState = async () => {
     let encoded;
@@ -461,9 +454,7 @@ function readSettingsFile() {
 
 function writeSettingsFile(settings) {
   fsSync.mkdirSync(STORAGE_DIR, { recursive: true });
-  const tmpFile = `${SETTINGS_FILE}.${process.pid}.${Date.now()}.tmp`;
-  fsSync.writeFileSync(tmpFile, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
-  fsSync.renameSync(tmpFile, SETTINGS_FILE);
+  writeFileDurableSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), { mode: 0o600 });
 }
 
 const githubInstanceAccounts = async (host) => {

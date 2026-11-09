@@ -118,14 +118,13 @@ describe('user merge follows', () => {
 
   it('rolls back a failed start write before registering server interest', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-merge-follow-')); folders.push(dataDir);
-    const temporary = path.join(dataDir, `github-merge-follow.json.${process.pid}.tmp`);
-    await fs.mkdir(temporary);
     const tracked = service();
     const runtime = createMergeFollowRuntime({ dataDir, notify: vi.fn(), now: () => 100 });
     await runtime.attach(tracked);
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValue(Object.assign(new Error('disk failure'), { code: 'EIO' }));
     await expect(runtime.onMutationSucceeded(mutation())).rejects.toThrow();
     expect(tracked.setServerInterest.mock.calls.at(-1)[1].size).toBe(0);
-    await fs.rm(temporary, { recursive: true });
+    rename.mockRestore();
     await runtime.onMutationSucceeded(mutation());
     expect(tracked.setServerInterest.mock.calls.at(-1)[1].size).toBe(1);
     await runtime.stop();

@@ -13,6 +13,7 @@
  * once OpenCode holds the session's state.
  */
 
+import { writeFileDurable } from '../shared/durable-write.js';
 import { asNonEmptyString } from '../shared/guards.js';
 import fsDefault from 'node:fs';
 import pathDefault from 'node:path';
@@ -144,11 +145,8 @@ export const createArchiveStore = ({
   const persist = async () => {
     const payload = JSON.stringify(snapshot());
     await fsPromises.mkdir(dataDir, { recursive: true });
-    // Temp file in the same directory so the rename is atomic on one device:
-    // a reader sees either the previous file or the complete new one.
-    const tmpPath = `${filePath}.${process.pid}.tmp`;
-    await fsPromises.writeFile(tmpPath, payload, 'utf8');
-    await fsPromises.rename(tmpPath, filePath);
+    // A reader sees either the previous file or the complete new one.
+    await writeFileDurable(filePath, payload, { fsPromises });
   };
 
   /**

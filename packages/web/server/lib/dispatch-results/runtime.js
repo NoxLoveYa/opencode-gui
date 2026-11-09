@@ -15,6 +15,7 @@
 // so a restart in between still delivers.
 
 import fs from 'fs';
+import { writeFileDurable } from '../shared/durable-write.js';
 import path from 'path';
 import { z } from 'zod';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
@@ -280,9 +281,7 @@ export function createDispatchResultsRuntime({
     const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
     const write = writePromise.then(async () => {
       await fs.promises.mkdir(dataDir, { recursive: true });
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fs.promises.writeFile(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
-      await fs.promises.rename(tmpPath, filePath);
+      await writeFileDurable(filePath, payload, { mode: 0o600 });
     });
     // The chain survives a failed write so later writes still run; the caller
     // still sees this one fail, since "on disk" is what it waits for.

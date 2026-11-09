@@ -8,6 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { writeFileDurable } from '../shared/durable-write.js';
 
 export const GOAL_OBJECTIVE_CHAR_LIMIT = 5_000;
 
@@ -39,7 +40,7 @@ export const writeObjective = async (sessionId, content) => {
     throw Object.assign(new Error('objective content is required'), { statusCode: 400 });
   }
   await fs.promises.mkdir(goalsDir(), { recursive: true });
-  await fs.promises.writeFile(objectiveFilePath(sessionId), text, 'utf8');
+  await writeFileDurable(objectiveFilePath(sessionId), text, { followSymlinks: true });
   return { content: text };
 };
 

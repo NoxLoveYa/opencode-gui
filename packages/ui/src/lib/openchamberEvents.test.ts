@@ -540,6 +540,24 @@ describe('openchamber events', () => {
     unsubscribe();
   });
 
+  test('dispatches the Claude usage guard events: a switch for a window, one for unreadable usage, and a refusal to guess', async () => {
+    const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
+    const events: unknown[] = [];
+    const unsubscribe = subscribeOpenchamberEvents((event) => events.push(event));
+    const source = MockEventSource.instances[0];
+    const send = (properties: Record<string, string | number | null>) => source.onmessage?.({ data: JSON.stringify({ type: 'openchamber:claude-usage-guard', properties }) });
+
+    send({ kind: 'switched', fromAccount: 'Perso', toAccount: 'Work', window: '5h', percent: 93 });
+    send({ kind: 'switched', reason: 'unreadable', fromAccount: 'Perso', toAccount: 'Work', window: null, percent: null });
+    send({ kind: 'switched', fromAccount: 'Perso', toAccount: 'Work', window: null, percent: null });
+
+    expect(events).toEqual([
+      { type: 'claude-usage-guard', guard: { kind: 'switched', fromAccount: 'Perso', toAccount: 'Work', window: '5h', percent: 93 } },
+      { type: 'claude-usage-guard', guard: { kind: 'switched', reason: 'unreadable', fromAccount: 'Perso', toAccount: 'Work' } },
+    ]);
+    unsubscribe();
+  });
+
   test('dispatches an agent plan-open request and drops one without a plan id', async () => {
     const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
     const events: unknown[] = [];

@@ -9,6 +9,7 @@
 // Wired into the same trigger fanout as web push (see runtime.js); the relay carries only
 // generic, model-based text (no session content) — see APNS.md.
 
+import { writeFileDurable } from '../shared/durable-write.js';
 import { sessionKeyFor, withHashedSessionKeys } from './session-key.js';
 import { parsePushKey, sealPushContent } from './push-seal.js';
 import {
@@ -182,7 +183,7 @@ export const createApnsRuntime = (deps) => {
 
   const writeTokensToDisk = async (data) => {
     await fsPromises.mkdir(path.dirname(APNS_TOKENS_FILE_PATH), { recursive: true });
-    await fsPromises.writeFile(APNS_TOKENS_FILE_PATH, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await writeFileDurable(APNS_TOKENS_FILE_PATH, JSON.stringify(data, null, 2), { mode: 0o600, followSymlinks: true, fsPromises });
   };
 
   const persistTokenUpdate = async (mutate) => {

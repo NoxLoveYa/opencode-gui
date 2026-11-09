@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { DesktopSettings } from '@/lib/desktop';
 import { useUIStore } from '@/stores/useUIStore';
 import { loadAppearancePreferences, applyAppearancePreferences } from '@/lib/appearancePersistence';
@@ -426,6 +427,28 @@ const forgetServerSettings = (keys: SettingsKey[]): void => {
   _serverKnownSettings = next;
 };
 
+/**
+ * Record a write response as the server's answer for the keys that were sent.
+ * The response is authoritative: a sent key it omits is not held by the server
+ * (dropped, or normalised away), so the optimistic value must not outlive it.
+ */
+const settleServerSettings = (sentKeys: SettingsKey[], response: Partial<DesktopSettings>): void => {
+  forgetServerSettings(sentKeys);
+  rememberServerSettings(response);
+};
+
+// The part of a write response that sits beside the settings document.
+const settingsWriteReportSchema = z.object({ droppedKeys: z.array(z.string()).optional() });
+
+/**
+ * The sent keys a write response reports as refused (`droppedKeys`, beside the
+ * document, never inside it). Absent means none. A key the server only
+ * normalised — trimmed, or emptied into "unset" — is stored, so it is not listed.
+ */
+const refusedSettingsKeys = (dropped: string[] | undefined, sentKeys: SettingsKey[]): SettingsKey[] => (
+  sentKeys.filter((key) => dropped?.includes(key))
+);
+
 /** Keys of `changes` whose value differs from what the server is known to hold. */
 const withoutRedundantSettings = (changes: Partial<DesktopSettings>): Partial<DesktopSettings> => {
   const next: Partial<DesktopSettings> = {};
@@ -757,18 +780,20 @@ async function _flushSettingsUpdate({ keepalive = false }: { keepalive?: boolean
         try {
           // The runtime API hands back whatever the bridge or server returned;
           // it is parsed here like any other boundary payload.
-          const updated = sanitizeWebSettings(await runtimeSettings.save(changes));
+          const response = await runtimeSettings.save(changes);
+          const updated = sanitizeWebSettings(response);
           if (!isSettingsRuntimeContextCurrent(context)) return;
           if (updated) {
-            rememberServerSettings(updated);
+            const refused = refusedSettingsKeys(settingsWriteReportSchema.safeParse(response).data?.droppedKeys, settingsKeysOf(changes));
+            settleServerSettings(settingsKeysOf(changes), updated);
             const reconciled = _settingsMutationTracker.reconcile(updated, operation);
             applyServerSettings(reconciled);
             dispatchSettingsSynced(reconciled, false);
             _settingsCache = null;
+            ok = refused.length === 0;
           }
           if (!updated) forgetSentSettings();
-          ok = Boolean(updated);
-          dispatchSettingsSaveState(updated ? 'saved' : 'error');
+          dispatchSettingsSaveState(ok ? 'saved' : 'error');
           return;
         } catch (error) {
           if (!isSettingsRuntimeContextCurrent(context)) return;
@@ -796,15 +821,17 @@ async function _flushSettingsUpdate({ keepalive = false }: { keepalive?: boolean
           return;
         }
 
-        const updated = sanitizeWebSettings(await response.json().catch(() => null));
+        const body = await response.json().catch(() => null);
+        const updated = sanitizeWebSettings(body);
         if (!isSettingsRuntimeContextCurrent(context)) return;
         if (updated) {
-          rememberServerSettings(updated);
+          const refused = refusedSettingsKeys(settingsWriteReportSchema.safeParse(body).data?.droppedKeys, settingsKeysOf(changes));
+          settleServerSettings(settingsKeysOf(changes), updated);
           const reconciled = _settingsMutationTracker.reconcile(updated, operation);
           applyServerSettings(reconciled);
           dispatchSettingsSynced(reconciled, false);
-          ok = true;
-          dispatchSettingsSaveState('saved');
+          ok = refused.length === 0;
+          dispatchSettingsSaveState(ok ? 'saved' : 'error');
           // Invalidate GET cache so next read sees the fresh data
           _settingsCache = null;
         } else {

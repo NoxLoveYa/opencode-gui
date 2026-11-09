@@ -86,15 +86,24 @@ describe('push subscription persistence', () => {
       fsPromises: {
         mkdir: vi.fn(async () => {}),
         readFile: vi.fn(async () => content),
-        writeFile: vi.fn(async (_path, data) => {
-          if (failNextWrite) {
-            failNextWrite = false;
-            const error = new Error('ENOSPC: no space left on device, write');
-            error.code = 'ENOSPC';
-            throw error;
-          }
-          content = data;
-        }),
+        // The store writes through a handle, then renames the temp file into place.
+        open: vi.fn(async () => ({
+          writeFile: async (data) => {
+            if (failNextWrite) {
+              failNextWrite = false;
+              const error = new Error('ENOSPC: no space left on device, write');
+              error.code = 'ENOSPC';
+              throw error;
+            }
+            content = data;
+          },
+          sync: async () => {},
+          close: async () => {},
+        })),
+        rename: vi.fn(async () => {}),
+        rm: vi.fn(async () => {}),
+        // The file is not a link: the store resolves it before writing.
+        realpath: vi.fn(async (file) => file),
       },
     });
     const subscription = (endpoint) => ({ endpoint, p256dh: 'p256dh', auth: 'auth' });

@@ -80,7 +80,7 @@ describe('installed skill provenance registry', () => {
     const byName = readInstalledSources();
     expect(byName.has('skill-creator')).toBe(false);
     expect(byName.get('kept')).toHaveLength(1);
-    expect(fs.readdirSync(dataDir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    expect(fs.readdirSync(dataDir).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 
   it('narrows the badge to recorded sources and falls back to the name without records', () => {

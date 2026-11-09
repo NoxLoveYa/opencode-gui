@@ -4,7 +4,11 @@ import { createExhaustionRegistry } from './exhaustion.js';
 import {
   CANDIDATE_UNDER_MAX_AGE_MS,
   EXPIRED_RETRY_MS,
+  FAILSAFE_SWITCH_PAUSE_MS,
+  FAR_FETCH_INTERVAL_MS,
+  FAR_LIVE_READING_AGE_MS,
   LIVE_MAX_BACKOFF_MS,
+  LIVE_RATE_LIMIT_MAX_WAIT_MS,
   MANUAL_HOLD_MS,
   MAX_LIVE_READING_AGE_MS,
   MIN_FETCH_INTERVAL_MS,
@@ -39,6 +43,12 @@ const usageOf = (fiveHour, weekly) => ({
   weekly: weekly === null ? null : reading(...[].concat(weekly)),
 });
 const FAILS = (errorKind, extra = {}) => ({ ok: false, errorKind, ...extra });
+/** Thresholds are 90 and 80: 10 and 20 points below, so neither far from them (3 minutes) nor near (20 seconds): read every minute. */
+const midUsage = () => usageOf(80, 60);
+/** More than 15 points below both thresholds: read every 3 minutes, and trusted for 10. */
+const farUsage = () => usageOf(40, 40);
+/** Nothing is known about the other accounts, so a live account that cannot be read has nowhere safe to go. */
+const OTHERS_UNREADABLE = { crd_b: FAILS('expired'), crd_c: FAILS('expired') };
 
 const createHarness = ({ settings = ON, accounts = ACCOUNTS, live = 'crd_a', readings = {}, available = true, loaded = {}, hangFetch = false } = {}) => {
   let clock = NOW;
@@ -65,7 +75,9 @@ const createHarness = ({ settings = ON, accounts = ACCOUNTS, live = 'crd_a', rea
     fetchUsage: async (credentialId, { live: isLive }) => {
       fetched.push({ credentialId, live: isLive, at: clock });
       if (hangFetch) await new Promise(() => {});
-      return state.readings[credentialId] ?? FAILS('not-saved');
+      const answer = state.readings[credentialId] ?? FAILS('not-saved');
+      if (answer instanceof Error) throw answer;
+      return answer;
     },
     switchTo: async (credentialId, options) => {
       switched.push({ credentialId, ...options });
@@ -346,7 +358,7 @@ describe('when every account is over', () => {
     const harness = allOver();
     await harness.guard.tick();
     harness.advance(2 * HOUR + MIN_FETCH_INTERVAL_MS);
-    harness.state.readings.crd_a = usageOf(10, 10);
+    harness.state.readings.crd_a = midUsage();
     expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
     expect(harness.guard.getView().allOver).toBe(false);
 
@@ -514,7 +526,7 @@ describe('how often it reads', () => {
   const liveReads = (harness) => harness.fetched.filter((entry) => entry.credentialId === 'crd_a').length;
 
   it('reads an account at most once a minute', async () => {
-    const harness = createHarness();
+    const harness = createHarness({ readings: { crd_a: midUsage() } });
 
     await harness.guard.tick();
     harness.advance(30_000);
@@ -549,11 +561,11 @@ describe('how often it reads', () => {
     expect(waits).toEqual([120_000, 240_000, 480_000, 600_000, 600_000]);
   });
 
-  it('asks the live account again within a minute and a half however long it has failed', async () => {
-    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited', { retryAfterMs: 5 * 60_000 }) } });
+  /** How long the live account waits between its reads, found by stepping a second at a time. */
+  const liveWaits = async (harness, rounds) => {
     await harness.guard.tick();
     const waits = [];
-    for (let round = 0; round < 5; round += 1) {
+    for (let round = 0; round < rounds; round += 1) {
       const before = liveReads(harness);
       let waited = 0;
       while (liveReads(harness) === before && waited <= 10 * 60_000) {
@@ -563,8 +575,28 @@ describe('how often it reads', () => {
       }
       waits.push(waited);
     }
+    return waits;
+  };
 
-    expect(waits).toEqual(Array(5).fill(LIVE_MAX_BACKOFF_MS));
+  it('asks the live account again within a minute and a half when the API struggles, however long it has failed', async () => {
+    for (const failure of [FAILS('network'), FAILS('http'), FAILS('rate-limited'), FAILS('rate-limited', { retryAfterMs: 30_000 })]) {
+      const harness = createHarness({ readings: { crd_a: failure, ...OTHERS_UNREADABLE } });
+
+      expect(await liveWaits(harness, 5)).toEqual(Array(5).fill(LIVE_MAX_BACKOFF_MS));
+    }
+  });
+
+  it('waits out the Retry-After of the live account up to five minutes, and not a second less (the 429 that was asked again too soon)', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited', { retryAfterMs: 300_000 }), ...OTHERS_UNREADABLE } });
+
+    expect(await liveWaits(harness, 3)).toEqual(Array(3).fill(LIVE_RATE_LIMIT_MAX_WAIT_MS));
+    expect(harness.fetched.filter((entry) => entry.live).map((entry) => entry.at - NOW)).toEqual([0, 300_000, 600_000, 900_000]);
+  });
+
+  it('does not wait longer than five minutes for the live account, whatever it is told', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited', { retryAfterMs: 3_600_000 }), ...OTHERS_UNREADABLE } });
+
+    expect(await liveWaits(harness, 2)).toEqual([LIVE_RATE_LIMIT_MAX_WAIT_MS, LIVE_RATE_LIMIT_MAX_WAIT_MS]);
   });
 
   it('honours a longer wait the API asks for from an account that is not live, within the cap', async () => {
@@ -584,17 +616,17 @@ describe('how often it reads', () => {
 
   it('backs off on a server error and a network failure, and starts over after a good read', async () => {
     for (const kind of ['http', 'network']) {
-      const harness = createHarness({ readings: { crd_a: FAILS(kind) } });
+      const harness = createHarness({ readings: { crd_a: FAILS(kind), ...OTHERS_UNREADABLE } });
       await harness.guard.tick();
       harness.advance(MIN_FETCH_INTERVAL_MS + 1_000);
       await harness.guard.tick();
       expect(liveReads(harness)).toBe(1);
     }
 
-    const harness = createHarness({ readings: { crd_a: FAILS('http') } });
+    const harness = createHarness({ readings: { crd_a: FAILS('http'), ...OTHERS_UNREADABLE } });
     await harness.guard.tick();
     harness.advance(120_000);
-    harness.state.readings.crd_a = usageOf(10, 10);
+    harness.state.readings.crd_a = midUsage();
     await harness.guard.tick();
     expect(liveReads(harness)).toBe(2);
     harness.advance(MIN_FETCH_INTERVAL_MS);
@@ -607,8 +639,8 @@ describe('how often it reads', () => {
     expect(liveReads(harness)).toBe(4);
   });
 
-  it('does not switch for a live account it cannot read, and says it is not watched', async () => {
-    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited') } });
+  it('does not switch for a live account it cannot read when no other account is known to be under, and says it is not watched', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited'), ...OTHERS_UNREADABLE } });
 
     expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
 
@@ -658,11 +690,11 @@ describe('what it keeps', () => {
 
 describe('a reading that is not fresh (the audit repros 1 and 2)', () => {
   it('does not take a reading from the past for the live account: after three minutes it is unknown, and the user is told once', async () => {
-    const harness = createHarness({ readings: { crd_a: usageOf(40, 40) } });
+    const harness = createHarness({ readings: { crd_a: midUsage() } });
     expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
     expect(harness.guard.getView().unprotected).toBeNull();
 
-    harness.state.readings.crd_a = FAILS('network');
+    Object.assign(harness.state.readings, { crd_a: FAILS('network'), ...OTHERS_UNREADABLE });
     harness.advance(MAX_LIVE_READING_AGE_MS - 1_000);
     expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
 
@@ -681,11 +713,11 @@ describe('a reading that is not fresh (the audit repros 1 and 2)', () => {
   });
 
   it('is watching again, and the notice goes, as soon as the live account can be read', async () => {
-    const harness = createHarness({ readings: { crd_a: FAILS('network') } });
+    const harness = createHarness({ readings: { crd_a: FAILS('network'), ...OTHERS_UNREADABLE } });
     await harness.guard.tick();
     expect(harness.guard.getView().unprotected).toBe('unreadable');
 
-    harness.state.readings.crd_a = usageOf(40, 40);
+    harness.state.readings.crd_a = midUsage();
     harness.advance(LIVE_MAX_BACKOFF_MS);
     expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
 
@@ -724,7 +756,7 @@ describe('a reading that is not fresh (the audit repros 1 and 2)', () => {
   });
 
   it('treats a reading with no window in it as unknown', async () => {
-    const harness = createHarness({ readings: { crd_a: usageOf(null, null) } });
+    const harness = createHarness({ readings: { crd_a: usageOf(null, null), ...OTHERS_UNREADABLE } });
 
     expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
   });
@@ -782,7 +814,7 @@ describe('a manual Use', () => {
   });
 
   it('leaves the guard fully on duty when the account chosen is under its thresholds', async () => {
-    const harness = createHarness({ readings: { crd_a: usageOf(10, 10), crd_b: usageOf(10, 10) } });
+    const harness = createHarness({ readings: { crd_a: midUsage(), crd_b: usageOf(10, 10) } });
     await harness.guard.tick();
 
     await harness.guard.noteManualSwitch('crd_b');
@@ -853,7 +885,7 @@ describe('the last audit', () => {
       const harness = createHarness({ readings: { crd_a: usageOf(20, 20) } });
       await harness.guard.tick();
       harness.advance(9 * HOUR);
-      harness.state.readings.crd_a = FAILS('expired');
+      Object.assign(harness.state.readings, { crd_a: FAILS('expired'), ...OTHERS_UNREADABLE });
       return harness;
     };
 
@@ -946,5 +978,547 @@ describe('the last audit', () => {
     expect(await guard.tick()).toEqual({ polling: true, outcome: 'settings-unreadable' });
     failing = false;
     expect(await guard.tick()).toMatchObject({ polling: true, outcome: 'skipped' });
+  });
+});
+
+describe('a live account whose usage is unknown (the fail-safe)', () => {
+  const failSafeEvent = (from = 'Perso', to = 'Work') => ({ kind: 'switched', reason: 'unreadable', fromAccount: from, toAccount: to, window: null, percent: null });
+  /** The live account was read and is under; its reads fail from the next minute. Returns right after the first failed read. */
+  const failuresBegin = async (options = {}) => {
+    const harness = createHarness({ readings: { crd_a: midUsage(), ...options.readings }, ...options.harness });
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+    harness.state.readings.crd_a = FAILS('network');
+    harness.advance(MIN_FETCH_INTERVAL_MS);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+    return harness;
+  };
+  /** Rounds a minute apart, as the scheduler runs them while a session works (a longer silence restarts the unknown period). */
+  const runFor = async (harness, ms) => {
+    for (let left = ms; left > 0; left -= MIN_FETCH_INTERVAL_MS) {
+      harness.advance(Math.min(left, MIN_FETCH_INTERVAL_MS));
+      await harness.guard.tick();
+    }
+  };
+  /** The same, and three minutes after the first failed read: the moment the guard may act (the round is the test's). */
+  const goesUnreadable = async (options = {}) => {
+    const harness = await failuresBegin(options);
+    await runFor(harness, MAX_LIVE_READING_AGE_MS - MIN_FETCH_INTERVAL_MS);
+    harness.advance(MIN_FETCH_INTERVAL_MS);
+    return harness;
+  };
+  /** A reading kept from before a restart or a long idle. */
+  const STALE = { crd_a: { fiveHour: { percent: 20, resetsAt: NOW + 2 * HOUR }, weekly: null, readAt: NOW - 24 * HOUR } };
+
+  it('moves to an account known to be under once the live one has been unknown for three minutes of trying, and says why', async () => {
+    const harness = await failuresBegin();
+    await runFor(harness, MAX_LIVE_READING_AGE_MS - MIN_FETCH_INTERVAL_MS);
+    harness.advance(MIN_FETCH_INTERVAL_MS - 1_000);
+    // The page is told it cannot watch the account; the switch waits for the full period.
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown', nextPollMs: 1_000 });
+    expect(harness.switched).toEqual([]);
+
+    harness.advance(1_000);
+    expect(await harness.guard.tick()).toMatchObject({ polling: true, outcome: 'switched', reason: 'unreadable', toCredentialId: 'crd_b' });
+
+    expect(harness.switched).toEqual([{ credentialId: 'crd_b', expectLiveCredentialId: 'crd_a' }]);
+    expect(harness.announced).toEqual([{ kind: 'unprotected', reason: 'unreadable' }, failSafeEvent()]);
+    expect(harness.guard.getView().unprotected).toBeNull();
+    // The account it left is unknown, not exhausted; the new one is excused for a failure still in flight on the old one.
+    expect(harness.exhaustion.isExhausted('crd_a')).toBe(false);
+    expect(harness.exhaustion.recentSwitchAt('crd_b')).toBe(harness.now());
+    expect(harness.logger.info).toHaveBeenCalledWith(expect.stringContaining('switched from "Perso" to "Work": usage of the live account could not be read'));
+    // The switch line says what happened; "protecting again" would follow it a millisecond later and claim more.
+    expect(harness.logger.info.mock.calls.map(([line]) => line)).toEqual([expect.stringContaining('usage of the live account could not be read')]);
+  });
+
+  it('logs nothing about protection for the new account until it has a state of its own to report', async () => {
+    const harness = await goesUnreadable();
+    await harness.guard.tick();
+
+    harness.advance(MIN_FETCH_INTERVAL_MS);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+    expect(harness.logger.info).toHaveBeenCalledTimes(1);
+    expect(harness.guard.getView().unprotected).toBeNull();
+  });
+
+  describe('an idle start', () => {
+    const starts = {
+      'with a reading kept from before, a day old': { loaded: STALE },
+      'with no reading at all': {},
+    };
+
+    for (const [name, options] of Object.entries(starts)) {
+      it(`does not switch for one failed read ${name}, and does when the failures go on past three minutes`, async () => {
+        const harness = createHarness({ ...options, readings: { crd_a: FAILS('http') } });
+
+        expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+        expect(harness.switched).toEqual([]);
+
+        harness.advance(MIN_FETCH_INTERVAL_MS);
+        await harness.guard.tick();
+        harness.advance(MIN_FETCH_INTERVAL_MS);
+        await harness.guard.tick();
+        harness.advance(MIN_FETCH_INTERVAL_MS - 1_000);
+        expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+        expect(harness.switched).toEqual([]);
+
+        harness.advance(1_000);
+        expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable', toCredentialId: 'crd_b' });
+      });
+    }
+
+    it('does not count the time while no session worked: a silence between rounds starts the period again', async () => {
+      const harness = createHarness({ loaded: STALE, readings: { crd_a: FAILS('http') } });
+      await harness.guard.tick();
+
+      harness.advance(10 * 60_000);
+      expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+      expect(harness.switched).toEqual([]);
+
+      for (let minute = 0; minute < 2; minute += 1) {
+        harness.advance(MIN_FETCH_INTERVAL_MS);
+        await harness.guard.tick();
+      }
+      expect(harness.switched).toEqual([]);
+      harness.advance(MIN_FETCH_INTERVAL_MS);
+      expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable' });
+    });
+  });
+
+  it('starts the period again after a good read', async () => {
+    const harness = createHarness({ loaded: STALE, readings: { crd_a: FAILS('http') } });
+    await harness.guard.tick();
+    harness.advance(120_000);
+    await harness.guard.tick();
+    expect(harness.switched).toEqual([]);
+
+    // Two minutes of failures, then the API answers.
+    harness.advance(90_000);
+    harness.state.readings.crd_a = midUsage();
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+
+    // It fails again: the first failed read after that good one starts the new period.
+    harness.state.readings.crd_a = FAILS('network');
+    harness.advance(MIN_FETCH_INTERVAL_MS);
+    await harness.guard.tick();
+    harness.advance(130_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    expect(harness.switched).toEqual([]);
+
+    harness.advance(50_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable' });
+  });
+
+  it('starts the period again when the live login changes (failover, a manual Use)', async () => {
+    const harness = createHarness({ loaded: STALE, readings: { crd_a: FAILS('http'), crd_b: FAILS('network'), crd_c: usageOf(10, 10) } });
+    await harness.guard.tick();
+
+    // Failover moved the login to b, which cannot be read either.
+    harness.advance(100_000);
+    harness.state.live = { credentialId: 'crd_b', unsaved: false };
+    await harness.guard.tick();
+    harness.advance(90_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    harness.advance(50_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    expect(harness.switched).toEqual([]);
+
+    // Three minutes after b's first failed read, not a's.
+    harness.advance(40_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable', toCredentialId: 'crd_c' });
+    expect(harness.switched).toEqual([{ credentialId: 'crd_c', expectLiveCredentialId: 'crd_b' }]);
+  });
+
+  it('keeps counting through a long Retry-After: rounds go on every minute while the live account is not asked', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited', { retryAfterMs: LIVE_RATE_LIMIT_MAX_WAIT_MS }) } });
+    const outcomes = [];
+    for (let minute = 0; minute < 4; minute += 1) {
+      if (minute > 0) harness.advance(MIN_FETCH_INTERVAL_MS);
+      outcomes.push(await harness.guard.tick());
+    }
+
+    expect(outcomes.map((outcome) => [outcome.polling, outcome.outcome])).toEqual([
+      [true, 'live-unknown'], [true, 'live-unknown'], [true, 'live-unknown'], [true, 'switched'],
+    ]);
+    expect(harness.fetched.filter((entry) => entry.live)).toHaveLength(1);
+  });
+
+  it('reads the candidates through the same gates, and takes the first one known to be under, in OpenCode\'s order', async () => {
+    const harness = await goesUnreadable({ readings: { crd_b: FAILS('expired'), crd_c: usageOf(20, 20) } });
+
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_c' });
+
+    expect(harness.fetched.filter((entry) => !entry.live).map((entry) => entry.credentialId)).toEqual(['crd_b', 'crd_c']);
+  });
+
+  it('never goes to an account nothing is known about, or one that is over, and then says it cannot protect the user', async () => {
+    const harness = await goesUnreadable({ readings: { crd_b: FAILS('expired'), crd_c: usageOf([95, 3], 10) } });
+
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+
+    expect(harness.switched).toEqual([]);
+    expect(harness.announced).toEqual([{ kind: 'unprotected', reason: 'unreadable' }]);
+    expect(harness.guard.getView().unprotected).toBe('unreadable');
+  });
+
+  describe('which candidate is trusted', () => {
+    const under = (readAt, percent = 10) => ({ fiveHour: { percent, resetsAt: NOW + 6 * HOUR }, weekly: null, readAt });
+
+    it('needs a reading from the last three minutes: an older "under" is read again, and does not stand when the read fails', async () => {
+      // 10 minutes old when the guard acts: worth something for an ordinary switch, not for this one.
+      const readable = await goesUnreadable({ harness: { loaded: { crd_b: under(NOW - 10 * 60_000) } } });
+      expect(await readable.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_b' });
+      expect(readable.fetched.some((entry) => entry.credentialId === 'crd_b' && !entry.live && entry.at === readable.now())).toBe(true);
+
+      const unreadable = await goesUnreadable({ harness: { loaded: { crd_b: under(NOW - 10 * 60_000) } }, readings: { crd_b: FAILS('rate-limited'), crd_c: FAILS('expired') } });
+      expect(await unreadable.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+      expect(unreadable.switched).toEqual([]);
+      expect(unreadable.announced).toEqual([{ kind: 'unprotected', reason: 'unreadable' }]);
+    });
+
+    it('is never the account that was just left and cannot be read now, whatever its last good reading says (the audit repro)', async () => {
+      // a was read at 80% once (10 points below its threshold), then every read fails; b is readable when the guard leaves a, and not afterwards.
+      const harness = await goesUnreadable({ readings: { crd_a: usageOf(80, 10), crd_c: FAILS('expired') } });
+      expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_b' });
+      harness.state.readings.crd_b = FAILS('rate-limited');
+
+      // Far past the 15 minutes of pause, and inside the half hour in which a's old reading still said "under".
+      await runFor(harness, 25 * 60_000);
+
+      expect(harness.switched).toEqual([{ credentialId: 'crd_b', expectLiveCredentialId: 'crd_a' }]);
+      expect(harness.state.live.credentialId).toBe('crd_b');
+      expect(harness.guard.getView().unprotected).toBe('unreadable');
+
+      // Once a can be read again, and is under, it is a fine target (its failed reads had backed off for up to ten minutes).
+      harness.state.readings.crd_a = usageOf(30, 30);
+      await runFor(harness, 11 * 60_000);
+      expect(harness.switched.at(-1)).toEqual({ credentialId: 'crd_a', expectLiveCredentialId: 'crd_b' });
+    });
+
+    it('is not within five points of a threshold, on either window', async () => {
+      const fiveHour = await goesUnreadable({ readings: { crd_b: usageOf(85, 10), crd_c: usageOf(20, 20) } });
+      expect(await fiveHour.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_c' });
+
+      const weekly = await goesUnreadable({ readings: { crd_b: usageOf(10, 75), crd_c: FAILS('expired') } });
+      expect(await weekly.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+      expect(weekly.switched).toEqual([]);
+
+      const clear = await goesUnreadable({ readings: { crd_b: usageOf(84.9, 74.9), crd_c: usageOf(20, 20) } });
+      expect(await clear.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_b' });
+    });
+  });
+
+  it('skips an account failover marked exhausted', async () => {
+    const harness = await goesUnreadable();
+    harness.exhaustion.markExhausted('crd_b', harness.now() + HOUR);
+
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_c' });
+  });
+
+  it('does not replace a login nobody saved, whatever the other accounts read', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('network') } });
+    harness.state.live = { credentialId: null, unsaved: true };
+
+    for (let minute = 0; minute < 10; minute += 1) {
+      harness.advance(60_000);
+      expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unsaved' });
+    }
+
+    expect(harness.switched).toEqual([]);
+    expect(harness.announced).toEqual([{ kind: 'unprotected', reason: 'unsaved' }]);
+  });
+
+  it('leaves the first refusal of an expired live token to its retry after 15 seconds, and a second one to the three minutes', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('expired') } });
+
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown', nextPollMs: EXPIRED_RETRY_MS });
+    harness.advance(EXPIRED_RETRY_MS);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    expect(harness.switched).toEqual([]);
+
+    await runFor(harness, MAX_LIVE_READING_AGE_MS - EXPIRED_RETRY_MS - 1_000);
+    expect(harness.switched).toEqual([]);
+    harness.advance(1_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable' });
+  });
+
+  it('does not trade the login between two accounts that both cannot be read inside 15 minutes', async () => {
+    const harness = await goesUnreadable({ readings: { crd_c: FAILS('expired') } });
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_b' });
+    const switchedAt = harness.now();
+
+    // Now b cannot be read either, and a is known to be under again.
+    harness.state.readings.crd_b = FAILS('network');
+    harness.state.readings.crd_a = usageOf(30, 30);
+    for (let minute = 0; minute < 14; minute += 1) {
+      harness.advance(60_000);
+      await harness.guard.tick();
+    }
+
+    expect(harness.now() - switchedAt).toBeLessThan(FAILSAFE_SWITCH_PAUSE_MS);
+    expect(harness.switched).toHaveLength(1);
+    expect(harness.announced).toEqual([failSafeEvent(), { kind: 'unprotected', reason: 'unreadable' }]);
+
+    // Past the pause it may leave b for the account known to be under.
+    harness.advance(60_000 + 1_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable', toCredentialId: 'crd_a' });
+    expect(harness.switched).toHaveLength(2);
+    expect(harness.guard.getView().unprotected).toBeNull();
+  });
+
+  it('keeps switching for an account that is over a threshold during that pause', async () => {
+    const harness = await goesUnreadable({ readings: { crd_c: usageOf(10, 10) } });
+    await harness.guard.tick();
+    expect(harness.switched).toHaveLength(1);
+
+    harness.advance(SWITCH_COOLDOWN_MS);
+    harness.state.readings.crd_b = usageOf(95, 10);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', toCredentialId: 'crd_c' });
+    expect(harness.announced[1]).toMatchObject({ kind: 'switched', window: '5h', percent: 95 });
+    expect(harness.announced[1]).not.toHaveProperty('reason');
+  });
+
+  it('waits after a switch that failed, and tells the user in the meantime', async () => {
+    const harness = await goesUnreadable();
+    harness.state.switchBehaviour = async () => { throw Object.assign(new Error('boom'), { code: 'activate-failed' }); };
+
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switch-failed' });
+    expect(harness.announced).toEqual([{ kind: 'unprotected', reason: 'unreadable' }]);
+
+    harness.advance(60_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    expect(harness.switched).toHaveLength(1);
+
+    harness.advance(61_000);
+    harness.state.switchBehaviour = undefined;
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable' });
+    expect(harness.announced).toHaveLength(2);
+  });
+
+  it('leaves an account the user just picked by hand for ten minutes, when that was over a threshold whose window has ended since', async () => {
+    const harness = createHarness({
+      loaded: { crd_a: { fiveHour: { percent: 95, resetsAt: NOW + 6 * 60_000 }, weekly: null, readAt: NOW } },
+      readings: { crd_a: FAILS('network') },
+    });
+    await harness.guard.noteManualSwitch('crd_a');
+    // The first failed read, while the window still runs, starts the unknown period.
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'manual-hold' });
+
+    // The window ends after six minutes; the period is long over, and only the hold keeps the guard still.
+    await runFor(harness, 7 * 60_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    await runFor(harness, MANUAL_HOLD_MS - 7 * 60_000 - 1_000);
+    expect(harness.switched).toEqual([]);
+
+    harness.advance(1_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable' });
+  });
+});
+
+describe('what the guard logs about reading usage', () => {
+  const warnings = (harness) => harness.logger.warn.mock.calls.map(([line]) => line);
+
+  it('logs every failed read of the live account with its kind, the Retry-After and the wait chosen, once per wait', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('rate-limited', { retryAfterMs: 300_000 }), ...OTHERS_UNREADABLE } });
+
+    await harness.guard.tick();
+    harness.advance(10_000);
+    await harness.guard.tick();
+    harness.advance(LIVE_RATE_LIMIT_MAX_WAIT_MS);
+    await harness.guard.tick();
+
+    const reads = warnings(harness).filter((line) => line.includes('read the live account'));
+    expect(reads).toEqual([
+      '[claude-accounts] usage guard could not read the live account\'s usage: rate-limited, retry-after 300s, next try in 300s',
+      '[claude-accounts] usage guard could not read the live account\'s usage: rate-limited, retry-after 300s, next try in 300s',
+    ]);
+  });
+
+  it('logs the other kinds too, without a Retry-After, and nothing for an account that is not live', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('http'), ...OTHERS_UNREADABLE } });
+
+    await harness.guard.tick();
+
+    expect(warnings(harness).filter((line) => line.includes('could not read'))).toEqual([
+      '[claude-accounts] usage guard could not read the live account\'s usage: http, next try in 90s',
+    ]);
+  });
+
+  it('logs the code of a read that threw, and never its message', async () => {
+    const harness = createHarness({
+      readings: { crd_a: Object.assign(new Error('Bearer sk-ant-oat01-secret'), { code: 'store-unreadable' }), ...OTHERS_UNREADABLE },
+    });
+
+    await harness.guard.tick();
+
+    expect(warnings(harness)).toContainEqual(expect.stringContaining('network, cause store-unreadable, next try in 90s'));
+    expect(JSON.stringify([harness.logger.warn.mock.calls, harness.logger.info.mock.calls, harness.announced])).not.toContain('sk-ant');
+  });
+
+  it('logs when the guard stops protecting the live account, with the reason, and when it protects it again', async () => {
+    const harness = createHarness({ readings: { crd_a: FAILS('network'), ...OTHERS_UNREADABLE } });
+
+    await harness.guard.tick();
+    harness.advance(LIVE_MAX_BACKOFF_MS);
+    await harness.guard.tick();
+
+    expect(warnings(harness).filter((line) => line.includes('not protecting'))).toEqual([
+      '[claude-accounts] usage guard is not protecting the live account: unreadable',
+    ]);
+    expect(harness.logger.info).not.toHaveBeenCalled();
+
+    harness.state.readings.crd_a = usageOf(30, 30);
+    harness.advance(LIVE_MAX_BACKOFF_MS);
+    await harness.guard.tick();
+
+    expect(harness.logger.info).toHaveBeenCalledWith('[claude-accounts] usage guard is protecting the live account again');
+    harness.advance(MIN_FETCH_INTERVAL_MS);
+    await harness.guard.tick();
+    expect(harness.logger.info).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs a login nobody saved as the reason', async () => {
+    const harness = createHarness();
+    harness.state.live = { credentialId: null, unsaved: true };
+
+    await harness.guard.tick();
+    await harness.guard.tick();
+
+    expect(warnings(harness)).toEqual(['[claude-accounts] usage guard is not protecting the live account: unsaved']);
+  });
+});
+
+describe('how often the live account is read, and how long its reading is trusted, by distance to a threshold', () => {
+  const liveReadTimes = (harness) => harness.fetched.filter((entry) => entry.live).map((entry) => entry.at - NOW);
+  /** Rounds every `step` ms, as the scheduler runs them while a session works. */
+  const runRounds = async (harness, totalMs, step = MIN_FETCH_INTERVAL_MS) => {
+    for (let left = totalMs; left > 0; left -= step) {
+      harness.advance(Math.min(left, step));
+      await harness.guard.tick();
+    }
+  };
+
+  it('reads a live account 15 or more points below every threshold every 3 minutes, on time in rounds a minute apart', async () => {
+    const harness = createHarness({ readings: { crd_a: farUsage() } });
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+
+    await runRounds(harness, 10 * 60_000);
+
+    expect(liveReadTimes(harness)).toEqual([0, 180_000, 360_000, 540_000]);
+  });
+
+  it('still reads on time when each round runs a little longer than a minute', async () => {
+    const harness = createHarness({ readings: { crd_a: farUsage() } });
+    await harness.guard.tick();
+
+    await runRounds(harness, 8 * 60_000, 61_000);
+
+    // The third round after a read is at 183 s: the next gate (180 s) is open, and a fourth round is not needed.
+    expect(liveReadTimes(harness)).toEqual([0, 183_000, 366_000]);
+  });
+
+  it('keeps one minute from 5 to 15 points below a threshold, and 20 seconds within 5, on either window', async () => {
+    const cases = [
+      [usageOf(75, 65), FAR_FETCH_INTERVAL_MS], // exactly 15 below on both: far
+      [usageOf(76, 65), MIN_FETCH_INTERVAL_MS], // 14 below on the 5-hour window: not far
+      [usageOf(10, 66), MIN_FETCH_INTERVAL_MS], // 14 below on the weekly window: not far
+      [usageOf(80, 10), MIN_FETCH_INTERVAL_MS], // 10 below
+      [usageOf(86, 10), NEAR_FETCH_INTERVAL_MS], // 4 below
+      [usageOf(85, 10), NEAR_FETCH_INTERVAL_MS], // exactly 5 below: near
+      [usageOf(10, 75), NEAR_FETCH_INTERVAL_MS],
+    ];
+    for (const [first, wait] of cases) {
+      const harness = createHarness({ readings: { crd_a: first } });
+      await harness.guard.tick();
+      harness.advance(wait - 1_000);
+      await harness.guard.tick();
+      expect(liveReadTimes(harness)).toHaveLength(1);
+      harness.advance(1_000);
+      await harness.guard.tick();
+      expect(liveReadTimes(harness)).toHaveLength(2);
+    }
+  });
+
+  it('counts a window that was not read as no distance at all, and a reading with no window as not far', async () => {
+    const harness = createHarness({ readings: { crd_a: usageOf(10, null) } });
+    await harness.guard.tick();
+    harness.advance(FAR_FETCH_INTERVAL_MS);
+    await harness.guard.tick();
+    expect(liveReadTimes(harness)).toEqual([0, FAR_FETCH_INTERVAL_MS]);
+
+    const none = createHarness({ readings: { crd_a: usageOf(null, null), ...OTHERS_UNREADABLE } });
+    await none.guard.tick();
+    none.advance(MIN_FETCH_INTERVAL_MS - 1_000);
+    await none.guard.tick();
+    expect(liveReadTimes(none)).toHaveLength(1);
+  });
+
+  it('does not warn or switch for a single 429 while far below, and reads again after its Retry-After', async () => {
+    const harness = createHarness({ readings: { crd_a: farUsage() } });
+    await harness.guard.tick();
+    harness.state.readings.crd_a = FAILS('rate-limited', { retryAfterMs: LIVE_RATE_LIMIT_MAX_WAIT_MS });
+
+    // The 429 comes at the 3 minute read; the account is asked again 5 minutes later, and answers.
+    await runRounds(harness, 7 * 60_000);
+    harness.state.readings.crd_a = farUsage();
+    await runRounds(harness, 4 * 60_000);
+
+    expect(liveReadTimes(harness)).toEqual([0, 180_000, 480_000, 660_000]);
+    expect(harness.announced).toEqual([]);
+    expect(harness.switched).toEqual([]);
+    expect(harness.guard.getView().unprotected).toBeNull();
+    expect(harness.logger.warn.mock.calls.map(([line]) => line)).toEqual([
+      expect.stringContaining('rate-limited, retry-after 300s, next try in 300s'),
+    ]);
+  });
+
+  it('trusts a far-below reading for ten minutes and not a second longer, then warns, and the long failure switches', async () => {
+    const harness = createHarness({ readings: { crd_a: farUsage() } });
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+    harness.state.readings.crd_a = FAILS('rate-limited', { retryAfterMs: LIVE_RATE_LIMIT_MAX_WAIT_MS });
+
+    await runRounds(harness, FAR_LIVE_READING_AGE_MS);
+    expect(harness.announced).toEqual([]);
+    expect(harness.switched).toEqual([]);
+    expect(harness.guard.getView().unprotected).toBeNull();
+
+    // The failures began at the 3 minute read: by now they have lasted more than three minutes.
+    harness.advance(1_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable', toCredentialId: 'crd_b' });
+  });
+
+  it('trusts a reading that is not far below for three minutes only: the audited cadence and trust are unchanged', async () => {
+    const harness = createHarness({ readings: { crd_a: midUsage(), ...OTHERS_UNREADABLE } });
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+    harness.state.readings.crd_a = FAILS('http');
+
+    harness.advance(MAX_LIVE_READING_AGE_MS);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'below' });
+    harness.advance(1_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    expect(harness.announced).toEqual([{ kind: 'unprotected', reason: 'unreadable' }]);
+  });
+
+  it('warns after ten minutes without a good read of a far-below account, once', async () => {
+    const harness = createHarness({ readings: { crd_a: farUsage(), ...OTHERS_UNREADABLE } });
+    await harness.guard.tick();
+    harness.state.readings.crd_a = FAILS('network');
+
+    await runRounds(harness, FAR_LIVE_READING_AGE_MS + 5 * 60_000);
+
+    expect(harness.announced).toEqual([{ kind: 'unprotected', reason: 'unreadable' }]);
+    expect(harness.switched).toEqual([]);
+  });
+
+  it('lets a far-below reading that is followed by a nearer one be trusted by the nearer one', async () => {
+    const harness = createHarness({ readings: { crd_a: farUsage(), ...OTHERS_UNREADABLE } });
+    await harness.guard.tick();
+    harness.advance(FAR_FETCH_INTERVAL_MS);
+    harness.state.readings.crd_a = midUsage();
+    await harness.guard.tick();
+    harness.state.readings.crd_a = FAILS('network');
+
+    harness.advance(MAX_LIVE_READING_AGE_MS + 1_000);
+    expect(await harness.guard.tick()).toMatchObject({ outcome: 'live-unknown' });
   });
 });

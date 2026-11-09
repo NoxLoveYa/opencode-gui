@@ -1,6 +1,7 @@
 import { appendManagedPermissions, appendManagedPlugin } from './managed-plugin-config.js';
 import { managedPermissionRules } from '../agent-tool/runtime.js';
 import { isLimitFailoverConfigured } from '../limit-failover/policy.js';
+import { writeFileDurable } from '../shared/durable-write.js';
 import { materializeSessionTitlePlugin } from './session-title-plugin.js';
 
 export const MANAGED_CONFIG_FILE_NAME = 'opencode.managed.json';
@@ -76,14 +77,7 @@ export const createManagedConfigRuntime = ({
     const text = `${JSON.stringify(config, null, 2)}\n`;
     // Temp + rename: OpenCode reacts to the write immediately, and a partial
     // read would make it drop every managed plugin until the next change.
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      await fsPromises.writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 });
-      await fsPromises.rename(tmp, filePath);
-    } catch (error) {
-      await fsPromises.rm(tmp, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, text, { mode: 0o600, fsPromises });
   };
 
   /**

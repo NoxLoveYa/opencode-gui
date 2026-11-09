@@ -133,7 +133,13 @@ describe('project-config runtime', () => {
     try {
       await runtime.saveScheduledWorktreeCleanup('project-test', record);
       const failing = createProjectConfigRuntime({
-        fsPromises: { ...fsPromises, writeFile: async () => { throw new Error('Disk is full'); } },
+        fsPromises: {
+          ...fsPromises,
+          open: async (file, ...rest) => {
+            if (String(file).includes('.tmp-')) throw new Error('Disk is full');
+            return fsPromises.open(file, ...rest);
+          },
+        },
         path, projectsDirPath: tempRoot,
       });
       await expect(failing.saveScheduledWorktreeCleanup('project-test', { ...record, sessionID: 'ses_2' })).rejects.toThrow('Disk is full');

@@ -58,7 +58,7 @@ describe('createUnreadBaseline', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const fsPromises = {
       ...fs.promises,
-      writeFile: () => Promise.reject(new Error('read-only')),
+      open: () => Promise.reject(new Error('read-only')),
     };
     const baseline = createUnreadBaseline({ dataDir: makeDataDir(), fsPromises, now: () => 1000 });
     expect(await baseline.get()).toBe(1000);

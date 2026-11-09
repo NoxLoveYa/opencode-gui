@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { writeFileDurable } from '../shared/durable-write.js';
 import { isString } from '../shared/guards.js';
 
 const DIRECTORY_NAME = 'workflow-runs';
@@ -118,10 +119,7 @@ export const createWorkflowRunStore = ({ fsPromises, path, dataDir, now = Date.n
 
   const writeRun = async (run) => {
     await fsPromises.mkdir(directory, { recursive: true, mode: 0o700 });
-    const target = fileFor(run.id);
-    const temporary = `${target}.${process.pid}.tmp`;
-    await fsPromises.writeFile(temporary, JSON.stringify(run), { encoding: 'utf8', mode: 0o600 });
-    await fsPromises.rename(temporary, target);
+    await writeFileDurable(fileFor(run.id), JSON.stringify(run), { mode: 0o600, fsPromises });
   };
 
   // Oldest end first; a run whose report has not gone out is kept, and so is

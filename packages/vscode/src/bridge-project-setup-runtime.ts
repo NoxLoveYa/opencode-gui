@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { writeFileDurable } from './durable-write';
 import {
   EMPTY_SHARED_PROJECT_CONFIG,
   ProjectSetupValidationError,
@@ -113,14 +114,7 @@ const readJsonDocumentIfPresent = async (filePath: string, missingCodes: string[
 
 const writeJsonAtomic = async (filePath: string, text: string): Promise<void> => {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    await fs.promises.writeFile(tmp, text, 'utf8');
-    await fs.promises.rename(tmp, filePath);
-  } catch (error) {
-    await fs.promises.rm(tmp, { force: true }).catch(() => {});
-    throw error;
-  }
+  await writeFileDurable(filePath, text);
 };
 
 /** A store over one projects directory; the default is the shared OpenChamber one. */

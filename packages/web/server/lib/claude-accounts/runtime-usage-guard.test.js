@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { fetchClaudeUsageForToken } from '../quota/providers/claude/index.js';
+import { fetchClaudeUsageForToken, resetClaudeQuotaCache } from '../quota/providers/claude/index.js';
 import { createClaudeAccountsRuntime } from './runtime.js';
 import { createClaudeAccountStore } from './store.js';
 import { MANUAL_HOLD_MS, MAX_LIVE_READING_AGE_MS } from './usage-guard.js';
@@ -18,6 +18,8 @@ let dataDir;
 let configDir;
 
 beforeEach(() => {
+  // The real usage reader keeps a rate-limit cooldown per token; the tokens repeat from test to test.
+  resetClaudeQuotaCache();
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-usage-guard-'));
   homeDir = path.join(root, 'home');
   dataDir = path.join(root, 'data');
@@ -126,6 +128,7 @@ const createHarness = ({ settings = ON, usage = {}, savedFetch, openCode = creat
 const seed = (store, ...names) => {
   for (const name of names) store.saveAccount(`crd_${name}`, { claudeAiOauth: login(name), oauthAccount: account(name) });
 };
+const errorResponse = (status, headers = {}) => ({ ok: false, status, headers: new Headers(headers), json: async () => ({}) });
 const status = (sessionID, type) => ({ type: 'session.status', properties: { sessionID, status: { type } } });
 
 describe('switching before extra usage starts', () => {
@@ -289,12 +292,14 @@ describe('the live account\'s usage (the audit repro: a cached payload passed of
     const { runtime, store, state, events, advance, readsOf } = createHarness();
     seed(store, 'a', 'b');
     writeLive(login('a'), account('a'));
-    state.usage.a = quota(40, 40);
+    // 10 and 20 points below the thresholds: read every minute, trusted for three.
+    state.usage.a = quota(80, 60);
     await runtime.usageGuard.tick();
     expect((await runtime.getState()).usageGuard.unprotected).toBeNull();
 
-    // Anthropic rate-limits from now on.
+    // Anthropic rate-limits from now on, and nothing is known about the other account: there is nowhere safe to go.
     state.usage.a = null;
+    state.usage.b = null;
     for (let minute = 0; minute < 10; minute += 1) {
       advance(60_000);
       await runtime.usageGuard.tick();
@@ -317,6 +322,7 @@ describe('the live account\'s usage (the audit repro: a cached payload passed of
     seed(store, 'a', 'b');
     writeLive(login('a'), account('a'));
     state.usage.a = null;
+    state.usage.b = null;
     await runtime.usageGuard.tick();
     expect((await runtime.getState()).usageGuard.unprotected).toBe('unreadable');
 
@@ -324,6 +330,64 @@ describe('the live account\'s usage (the audit repro: a cached payload passed of
     advance(120_000);
     await runtime.usageGuard.tick();
     expect((await runtime.getState()).usageGuard.unprotected).toBeNull();
+  });
+
+  it('moves to an account known to be under when the live usage cannot be read: the login, OpenCode\'s row and the page all follow, and the event says why', async () => {
+    const { runtime, store, state, events, openCode, logger, advance } = createHarness();
+    seed(store, 'a', 'b', 'c');
+    writeLive(login('a'), account('a'));
+    state.usage.a = null;
+    state.usage.b = null;
+    state.usage.c = quota(20, 20);
+
+    // Not for one failed read: only after three minutes of rounds that could not read it.
+    expect(await runtime.usageGuard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    for (let minute = 1; minute < 3; minute += 1) {
+      advance(60_000);
+      expect(await runtime.usageGuard.tick()).toMatchObject({ outcome: 'live-unknown' });
+    }
+    expect(liveToken()).toBe(login('a').accessToken);
+    advance(60_000);
+    expect(await runtime.usageGuard.tick()).toMatchObject({ outcome: 'switched', reason: 'unreadable', toCredentialId: 'crd_c' });
+
+    expect(liveToken()).toBe(login('c').accessToken);
+    expect(openCode.rows.find((row) => row.active).id).toBe('crd_c');
+    expect(events).toEqual([
+      { type: 'openchamber:claude-usage-guard', properties: { kind: 'unprotected', reason: 'unreadable' } },
+      {
+        type: 'openchamber:claude-usage-guard',
+        properties: { kind: 'switched', reason: 'unreadable', fromAccount: 'Perso', toAccount: 'Spare', window: null, percent: null },
+      },
+    ]);
+    expect((await runtime.getState()).usageGuard.unprotected).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not read the live account\'s usage: http'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('switched from "Perso" to "Spare": usage of the live account could not be read'));
+    // Nothing a token could leave behind.
+    expect(JSON.stringify([events, logger.warn.mock.calls, logger.info.mock.calls])).not.toContain('sk-ant');
+  });
+
+  it('does not ask the usage API again for the live account before its Retry-After has passed', async () => {
+    const network = vi.fn(async () => errorResponse(429, { 'retry-after': '300' }));
+    const { runtime, store, advance, logger } = createHarness({
+      savedFetch: (credential, options) => (nameOfToken(credential.accessToken) === 'a'
+        ? fetchClaudeUsageForToken(credential, { fetchImpl: network, now: options.now })
+        : { ok: false, errorKind: 'http' }),
+    });
+    seed(store, 'a', 'b');
+    writeLive(login('a'), account('a'));
+
+    await runtime.usageGuard.tick();
+    expect(network).toHaveBeenCalledTimes(1);
+    for (let second = 10; second < 300; second += 10) {
+      advance(10_000);
+      await runtime.usageGuard.tick();
+    }
+    expect(network).toHaveBeenCalledTimes(1);
+
+    advance(10_000);
+    await runtime.usageGuard.tick();
+    expect(network).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('rate-limited, retry-after 300s, next try in 300s'));
   });
 });
 
@@ -525,9 +589,9 @@ describe('when it looks', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('reads the live account at once and then every minute while a session works, and not while idle', async () => {
+  it('reads the live account at once and then every minute while a session works and it is 5 to 15 points from a threshold, and not while idle', async () => {
     vi.useFakeTimers();
-    const { runtime, store, readsOf, advance } = createHarness();
+    const { runtime, store, readsOf, advance } = createHarness({ usage: { a: quota(80, 60) } });
     seed(store, 'a', 'b');
     writeLive(login('a'), account('a'));
 

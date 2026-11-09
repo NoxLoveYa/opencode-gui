@@ -14,11 +14,12 @@ const createRuntime = async ({
   onClaudeUsageGuardSettingsChanged = undefined,
   chatRoots = undefined,
   fs = fsPromises,
+  createFs = undefined,
 } = {}) => {
   const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-settings-runtime-'));
   const settingsFilePath = path.join(tempRoot, 'settings.json');
   const runtime = createSettingsRuntime({
-    fsPromises: fs,
+    fsPromises: createFs ? createFs(tempRoot) : fs,
     path,
     crypto,
     SETTINGS_FILE_PATH: settingsFilePath,
@@ -567,14 +568,21 @@ describe('settings runtime', () => {
     let failNextSettingsWrite = true;
     const fs = {
       ...fsPromises,
-      writeFile: async (file, ...rest) => {
-        if (failNextSettingsWrite && path.basename(String(file)).startsWith('settings.json.tmp-')) {
-          failNextSettingsWrite = false;
-          const error = new Error('ENOSPC: no space left on device, write');
-          error.code = 'ENOSPC';
-          throw error;
+      open: async (file, ...rest) => {
+        const handle = await fsPromises.open(file, ...rest);
+        if (!failNextSettingsWrite || !path.basename(String(file)).startsWith('settings.json.tmp-')) {
+          return handle;
         }
-        return fsPromises.writeFile(file, ...rest);
+        failNextSettingsWrite = false;
+        return {
+          writeFile: async () => {
+            const error = new Error('ENOSPC: no space left on device, write');
+            error.code = 'ENOSPC';
+            throw error;
+          },
+          sync: () => handle.sync(),
+          close: () => handle.close(),
+        };
       },
     };
     const { runtime, settingsFilePath, cleanup } = await createRuntime({
@@ -598,14 +606,21 @@ describe('settings runtime', () => {
     let failNextSettingsWrite = true;
     const fs = {
       ...fsPromises,
-      writeFile: async (file, ...rest) => {
-        if (failNextSettingsWrite && path.basename(String(file)).startsWith('settings.json.tmp-')) {
-          failNextSettingsWrite = false;
-          const error = new Error('ENOSPC: no space left on device, write');
-          error.code = 'ENOSPC';
-          throw error;
+      open: async (file, ...rest) => {
+        const handle = await fsPromises.open(file, ...rest);
+        if (!failNextSettingsWrite || !path.basename(String(file)).startsWith('settings.json.tmp-')) {
+          return handle;
         }
-        return fsPromises.writeFile(file, ...rest);
+        failNextSettingsWrite = false;
+        return {
+          writeFile: async () => {
+            const error = new Error('ENOSPC: no space left on device, write');
+            error.code = 'ENOSPC';
+            throw error;
+          },
+          sync: () => handle.sync(),
+          close: () => handle.close(),
+        };
       },
     };
     const { runtime, settingsFilePath, cleanup } = await createRuntime({
@@ -666,6 +681,198 @@ describe('settings runtime', () => {
       expect(files.some((f) => f.startsWith('settings.json.tmp-'))).toBe(false);
     } finally {
       await fsPromises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('settings runtime: crash-safe writes', () => {
+  const isTmpOf = (file, name) => path.basename(String(file)).startsWith(`${name}.tmp-`);
+
+  // Records the order of the calls that decide durability: the temp file's
+  // write, flush and close, the rename, and a flush of any handle opened on
+  // the target or its directory.
+  const recordingFs = (events, { directory, failRename = false, fakeDirectoryHandle = false } = {}) => ({
+    ...fsPromises,
+    open: async (file, ...rest) => {
+      const name = path.basename(String(file));
+      const label = isTmpOf(file, 'settings.json') ? 'tmp'
+        : name === 'settings.json' ? 'target'
+        : path.resolve(String(file)) === directory ? 'dir'
+        : null;
+      if (!label) return fsPromises.open(file, ...rest);
+      const handle = label === 'dir' && fakeDirectoryHandle ? null : await fsPromises.open(file, ...rest);
+      return {
+        writeFile: (...args) => { events.push(`${label}:write`); return handle.writeFile(...args); },
+        sync: async () => { events.push(`${label}:sync`); },
+        close: async () => { events.push(`${label}:close`); await handle?.close(); },
+      };
+    },
+    rename: async (from, to) => {
+      if (isTmpOf(from, 'settings.json')) events.push('rename');
+      if (failRename) {
+        const error = new Error('EPERM: operation not permitted, rename');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return fsPromises.rename(from, to);
+    },
+    copyFile: async (from, to) => {
+      if (isTmpOf(from, 'settings.json')) events.push('copy');
+      return fsPromises.copyFile(from, to);
+    },
+    rm: async (file, ...rest) => {
+      if (isTmpOf(file, 'settings.json')) events.push('rm-tmp');
+      return fsPromises.rm(file, ...rest);
+    },
+  });
+
+  const withPlatform = async (platform, run) => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform });
+    try {
+      await run();
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  };
+
+  it('flushes the temp file to disk before renaming it over the target', async () => {
+    const events = [];
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({ fs: recordingFs(events) });
+    try {
+      await runtime.writeSettingsToDisk({ lastDirectory: '/work/a' });
+      expect(events.slice(0, 4)).toEqual(['tmp:write', 'tmp:sync', 'tmp:close', 'rename']);
+      expect(JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8')).lastDirectory).toBe('/work/a');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('closes the temp file handle when the write fails', async () => {
+    const events = [];
+    const fs = recordingFs(events);
+    const open = fs.open;
+    fs.open = async (file, ...rest) => {
+      const handle = await open(file, ...rest);
+      if (!isTmpOf(file, 'settings.json')) return handle;
+      return { ...handle, writeFile: async () => { throw new Error('boom'); } };
+    };
+    const { runtime, cleanup } = await createRuntime({ fs });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runtime.writeSettingsToDisk({ lastDirectory: '/work/a' })).rejects.toThrow('boom');
+      expect(events).toContain('tmp:close');
+      expect(events).not.toContain('rename');
+    } finally {
+      warn.mockRestore();
+      await cleanup();
+    }
+  });
+
+  it('flushes the directory after the rename on POSIX', async () => {
+    const events = [];
+    const { runtime, cleanup } = await createRuntime({
+      createFs: (tempRoot) => recordingFs(events, { directory: path.resolve(tempRoot), fakeDirectoryHandle: true }),
+    });
+    try {
+      await withPlatform('linux', () => runtime.writeSettingsToDisk({ lastDirectory: '/work/a' }));
+      expect(events.indexOf('dir:sync')).toBeGreaterThan(events.indexOf('rename'));
+      expect(events).toContain('dir:close');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('keeps the save when the directory flush is unsupported', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({
+      createFs: (tempRoot) => ({
+        ...fsPromises,
+        open: async (file, ...rest) => {
+          if (path.resolve(String(file)) === path.resolve(tempRoot)) {
+            const error = new Error('EINVAL: invalid argument, fsync');
+            error.code = 'EINVAL';
+            throw error;
+          }
+          return fsPromises.open(file, ...rest);
+        },
+      }),
+    });
+    try {
+      await withPlatform('linux', () => runtime.writeSettingsToDisk({ lastDirectory: '/work/a' }));
+      expect(JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8')).lastDirectory).toBe('/work/a');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('does not open the directory on Windows', async () => {
+    const events = [];
+    const { runtime, cleanup } = await createRuntime({
+      createFs: (tempRoot) => recordingFs(events, { directory: path.resolve(tempRoot), fakeDirectoryHandle: true }),
+    });
+    try {
+      await withPlatform('win32', () => runtime.writeSettingsToDisk({ lastDirectory: '/work/a' }));
+      expect(events).toContain('rename');
+      expect(events).not.toContain('dir:sync');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('flushes the target after the Windows copy fallback and before removing the temp file', async () => {
+    const events = [];
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({ fs: recordingFs(events, { failRename: true }) });
+    try {
+      await withPlatform('win32', () => runtime.writeSettingsToDisk({ lastDirectory: '/work/a' }));
+      const copy = events.indexOf('copy');
+      expect(copy).toBeGreaterThan(-1);
+      expect(events.slice(copy)).toEqual(['copy', 'target:sync', 'target:close', 'rm-tmp']);
+      expect(JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8')).lastDirectory).toBe('/work/a');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // The rename is refused and so is the reopen of the target for the flush.
+  const copyFallbackWithRefusedReopen = (code) => ({
+    ...fsPromises,
+    rename: async () => {
+      const error = new Error('EPERM: operation not permitted, rename');
+      error.code = 'EPERM';
+      throw error;
+    },
+    open: async (file, flags, ...rest) => {
+      if (path.basename(String(file)) === 'settings.json' && flags === 'r+') {
+        const error = new Error(`${code}: reopen refused`);
+        error.code = code;
+        throw error;
+      }
+      return fsPromises.open(file, flags, ...rest);
+    },
+  });
+
+  it('keeps the save when the target cannot be reopened for the flush after the Windows copy fallback', async () => {
+    const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime({ fs: copyFallbackWithRefusedReopen('EBUSY') });
+    try {
+      await withPlatform('win32', () => runtime.writeSettingsToDisk({ lastDirectory: '/work/a' }));
+      expect(JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8')).lastDirectory).toBe('/work/a');
+      expect((await fsPromises.readdir(tempRoot)).filter((name) => name.startsWith('settings.json.tmp-'))).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('fails the save when the flush after the Windows copy fallback fails for another reason', async () => {
+    const { runtime, tempRoot, cleanup } = await createRuntime({ fs: copyFallbackWithRefusedReopen('EIO') });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withPlatform('win32', async () => {
+        await expect(runtime.writeSettingsToDisk({ lastDirectory: '/work/a' })).rejects.toThrow('EIO');
+      });
+      expect((await fsPromises.readdir(tempRoot)).filter((name) => name.startsWith('settings.json.tmp-'))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      await cleanup();
     }
   });
 });
@@ -752,6 +959,521 @@ describe('settings runtime: preferences.json split', () => {
     } finally {
       await cleanup();
     }
+  });
+
+  it('reports the profile keys it refused through onDropped and leaves the returned document alone', async () => {
+    const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ desktopLanAccessEnabled: true }));
+      await fsPromises.writeFile(path.join(tempRoot, 'preferences.json'), '{ not json');
+      const onDropped = vi.fn();
+
+      const returned = await runtime.persistSettings({ fontSize: 130, desktopKeepAwakeEnabled: true }, { onDropped });
+
+      expect(onDropped).toHaveBeenCalledTimes(1);
+      expect(onDropped).toHaveBeenCalledWith(['fontSize']);
+      // Other callers keep reading a plain document; the report travels apart from it.
+      expect(returned).not.toHaveProperty('droppedKeys');
+      expect(returned).toMatchObject({ desktopKeepAwakeEnabled: true });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  describe('a preferences.json left blank by a crash', () => {
+    const zeroed = '\0'.repeat(10_650);
+
+    const expectRecovered = async ({ runtime, settingsFilePath, tempRoot }, original) => {
+      const preferencesPath = path.join(tempRoot, 'preferences.json');
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ desktopLanAccessEnabled: true, fontSize: 110 }));
+      await fsPromises.writeFile(preferencesPath, original);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        expect(await runtime.readSettingsFromDisk()).toMatchObject({ desktopLanAccessEnabled: true, fontSize: 110 });
+
+        const aside = (await fsPromises.readdir(tempRoot)).filter((name) => name.startsWith('preferences.json.corrupt-'));
+        expect(aside).toHaveLength(1);
+        expect(await fsPromises.readFile(path.join(tempRoot, aside[0]), 'utf8')).toBe(original);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0][0])).toContain(aside[0]);
+        expect((await readJson(preferencesPath)).fields.fontSize.value).toBe(110);
+
+        const onDropped = vi.fn();
+        await runtime.persistSettings({ fontSize: 130 }, { onDropped });
+        expect(onDropped).not.toHaveBeenCalled();
+        expect((await readJson(preferencesPath)).fields.fontSize.value).toBe(130);
+
+        // The orphan temp-file cleanup must never take the moved file.
+        await runtime.readSettingsFromDiskMigrated();
+        expect(await fsPromises.readdir(tempRoot)).toContain(aside[0]);
+      } finally {
+        warn.mockRestore();
+      }
+    };
+
+    it('is moved aside untouched and rebuilt from settings.json when all NUL', async () => {
+      const harness = await createRuntime({ mergePersistedSettings: (current, changes) => ({ ...current, ...changes }) });
+      try {
+        await expectRecovered(harness, zeroed);
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it('recovers a zero-length file the same way', async () => {
+      const harness = await createRuntime({ mergePersistedSettings: (current, changes) => ({ ...current, ...changes }) });
+      try {
+        await expectRecovered(harness, '');
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it('recovers a whitespace-only file the same way', async () => {
+      const harness = await createRuntime({ mergePersistedSettings: (current, changes) => ({ ...current, ...changes }) });
+      try {
+        await expectRecovered(harness, ' \n\0\t ');
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it('leaves truncated JSON in place and keeps refusing profile keys', async () => {
+      const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime({ mergePersistedSettings: (current, changes) => ({ ...current, ...changes }) });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const preferencesPath = path.join(tempRoot, 'preferences.json');
+        await fsPromises.writeFile(settingsFilePath, JSON.stringify({ fontSize: 110 }));
+        await fsPromises.writeFile(preferencesPath, '{"version":1,"fie');
+        const onDropped = vi.fn();
+
+        await runtime.persistSettings({ fontSize: 130 }, { onDropped });
+
+        expect(onDropped).toHaveBeenCalledWith(['fontSize']);
+        expect(await fsPromises.readFile(preferencesPath, 'utf8')).toBe('{"version":1,"fie');
+        expect((await fsPromises.readdir(tempRoot)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+      } finally {
+        warn.mockRestore();
+        await cleanup();
+      }
+    });
+
+    it('stays in place and keeps profile writes paused when the move fails', async () => {
+      const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime({
+        mergePersistedSettings: (current, changes) => ({ ...current, ...changes }),
+        fs: {
+          ...fsPromises,
+          rename: async (from, to) => {
+            if (path.basename(String(from)) === 'preferences.json') {
+              throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+            }
+            return fsPromises.rename(from, to);
+          },
+        },
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const preferencesPath = path.join(tempRoot, 'preferences.json');
+        await fsPromises.writeFile(settingsFilePath, JSON.stringify({ fontSize: 110 }));
+        await fsPromises.writeFile(preferencesPath, zeroed);
+        const onDropped = vi.fn();
+
+        await runtime.persistSettings({ fontSize: 130 }, { onDropped });
+        await Promise.all(Array.from({ length: 10 }, () => runtime.readSettingsFromDisk()));
+
+        expect(onDropped).toHaveBeenCalledWith(['fontSize']);
+        expect(await fsPromises.readFile(preferencesPath, 'utf8')).toBe(zeroed);
+        expect((await fsPromises.readdir(tempRoot)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+        // One outage, one warning: not one per read.
+        expect(warn.mock.calls.filter(([message]) => String(message).includes('Failed to move'))).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+        await cleanup();
+      }
+    });
+
+    it('keeps a profile save made while concurrent reads repair and seed, and warns once', async () => {
+      for (let trial = 0; trial < 40; trial += 1) {
+        const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime({ mergePersistedSettings: (current, changes) => ({ ...current, ...changes }) });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          await fsPromises.writeFile(settingsFilePath, JSON.stringify({ fontSize: 110 }));
+          await fsPromises.writeFile(path.join(tempRoot, 'preferences.json'), zeroed);
+
+          const reads = Array.from({ length: 12 }, () => runtime.readSettingsFromDisk());
+          for (let tick = 0; tick < trial % 5; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+          const save = runtime.persistSettings({ fontSize: 130 });
+          await Promise.all([...reads, save]);
+
+          expect((await readJson(path.join(tempRoot, 'preferences.json'))).fields.fontSize.value).toBe(130);
+          expect(warn.mock.calls.filter(([message]) => String(message).includes('moved it to'))).toHaveLength(1);
+          expect((await fsPromises.readdir(tempRoot)).filter((name) => name.includes('.corrupt-'))).toHaveLength(1);
+        } finally {
+          warn.mockRestore();
+          await cleanup();
+        }
+      }
+    });
+
+    // A writer fills the file between the read that found it blank and the rename.
+    const racingRename = (tempRoot, { refill = null } = {}) => async (from, to) => {
+      if (path.basename(String(from)) === 'preferences.json') {
+        await fsPromises.writeFile(from, JSON.stringify({ version: 1, fields: { fontSize: { value: 150, updatedAt: 5 } } }));
+      }
+      await fsPromises.rename(from, to);
+      if (refill && path.basename(String(from)) === 'preferences.json') {
+        await fsPromises.writeFile(path.join(tempRoot, 'preferences.json'), JSON.stringify({ version: 1, fields: { fontSize: { value: 160, updatedAt: 6 } } }));
+      }
+    };
+
+    it('puts back a moved file that turned out to hold data, losing nothing', async () => {
+      const harness = await createRuntime({ createFs: (tempRoot) => ({ ...fsPromises, rename: racingRename(tempRoot) }) });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await fsPromises.writeFile(harness.settingsFilePath, JSON.stringify({ fontSize: 110 }));
+        await fsPromises.writeFile(path.join(harness.tempRoot, 'preferences.json'), zeroed);
+
+        expect(await harness.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 150 });
+
+        expect((await fsPromises.readdir(harness.tempRoot)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+        expect((await readJson(path.join(harness.tempRoot, 'preferences.json'))).fields.fontSize.value).toBe(150);
+        expect(warn.mock.calls.filter(([message]) => String(message).includes('moved it to'))).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+        await harness.cleanup();
+      }
+    });
+
+    it('keeps both files and names them when the path was refilled before the moved data could go back', async () => {
+      const harness = await createRuntime({ createFs: (tempRoot) => ({ ...fsPromises, rename: racingRename(tempRoot, { refill: true }) }) });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await fsPromises.writeFile(harness.settingsFilePath, JSON.stringify({ fontSize: 110 }));
+        await fsPromises.writeFile(path.join(harness.tempRoot, 'preferences.json'), zeroed);
+
+        // The refilled file is what is read now.
+        expect(await harness.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 160 });
+
+        const aside = (await fsPromises.readdir(harness.tempRoot)).filter((name) => name.includes('.corrupt-'));
+        expect(aside).toHaveLength(1);
+        expect((await readJson(path.join(harness.tempRoot, aside[0]))).fields.fontSize.value).toBe(150);
+        const message = warn.mock.calls.map(([text]) => String(text)).find((text) => text.includes('could not be put back'));
+        expect(message).toContain(aside[0]);
+        expect(message).toContain('preferences.json');
+      } finally {
+        warn.mockRestore();
+        await harness.cleanup();
+      }
+    });
+
+    for (const [label, bytes] of [
+      ['a UTF-16 file with a byte order mark', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('{"version":1,"fields":{}}', 'utf16le')])],
+      ['valid JSON followed by NUL bytes', Buffer.from(`{"version":1,"fields":{}}${'\0'.repeat(32)}`)],
+    ]) {
+      it(`never moves ${label}`, async () => {
+        const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const preferencesPath = path.join(tempRoot, 'preferences.json');
+          await fsPromises.writeFile(settingsFilePath, JSON.stringify({ fontSize: 110 }));
+          await fsPromises.writeFile(preferencesPath, bytes);
+          const onDropped = vi.fn();
+
+          await runtime.persistSettings({ fontSize: 130 }, { onDropped });
+
+          expect(onDropped).toHaveBeenCalledWith(['fontSize']);
+          expect(await fsPromises.readFile(preferencesPath)).toEqual(bytes);
+          expect((await fsPromises.readdir(tempRoot)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+        } finally {
+          warn.mockRestore();
+          await cleanup();
+        }
+      });
+    }
+  });
+
+  it('does not call onDropped when nothing was refused', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const onDropped = vi.fn();
+
+      await runtime.persistSettings({ fontSize: 130 }, { onDropped });
+
+      expect(onDropped).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// Each case fails one file call at a chosen moment, or lets another writer win
+// a race at that moment, so a defense is exercised alone instead of being
+// masked by the one behind it.
+describe('settings runtime: preferences.json repair under injected faults', () => {
+  const zeroed = '\0'.repeat(64);
+  const readJson = async (filePath) => JSON.parse(await fsPromises.readFile(filePath, 'utf8'));
+  const validDoc = (value) => JSON.stringify({ version: 1, fields: { fontSize: { value, updatedAt: 5 } } });
+  const isPreferences = (file) => path.basename(String(file)) === 'preferences.json';
+  const isAside = (file) => path.basename(String(file)).startsWith('preferences.json.corrupt-');
+  const errorWith = (code) => Object.assign(new Error(`${code}: injected`), { code });
+  const asidesOf = async (tempRoot) => (await fsPromises.readdir(tempRoot)).filter((name) => name.startsWith('preferences.json.corrupt-'));
+  const warned = (warn, text) => warn.mock.calls.filter(([message]) => String(message).includes(text));
+
+  // A writer fills the file between the read that found it blank and the rename.
+  const fillThenRename = async (from, to) => {
+    if (isPreferences(from)) await fsPromises.writeFile(from, validDoc(150));
+    return fsPromises.rename(from, to);
+  };
+
+  const arrange = async (createFs, preferences) => {
+    const harness = await createRuntime({ createFs });
+    await fsPromises.writeFile(harness.settingsFilePath, JSON.stringify({ fontSize: 110 }));
+    if (preferences !== undefined) await fsPromises.writeFile(path.join(harness.tempRoot, 'preferences.json'), preferences);
+    harness.preferencesPath = path.join(harness.tempRoot, 'preferences.json');
+    harness.warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    harness.done = async () => {
+      harness.warn.mockRestore();
+      await harness.cleanup();
+    };
+    return harness;
+  };
+
+  it('keeps a valid file that appears just before the seed links into place', async () => {
+    const h = await arrange(() => ({
+      ...fsPromises,
+      link: async (from, to) => {
+        if (isPreferences(to)) await fsPromises.writeFile(to, validDoc(150));
+        return fsPromises.link(from, to);
+      },
+    }));
+    try {
+      expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 150 });
+      expect(await fsPromises.readFile(h.preferencesPath, 'utf8')).toBe(validDoc(150));
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('seeds through an exclusive create when hard links are refused', async () => {
+    const h = await arrange(() => ({ ...fsPromises, link: async () => { throw errorWith('EPERM'); } }));
+    try {
+      await h.runtime.readSettingsFromDisk();
+      expect((await readJson(h.preferencesPath)).fields.fontSize.value).toBe(110);
+      expect((await fsPromises.readdir(h.tempRoot)).filter((name) => name.includes('.tmp-'))).toEqual([]);
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('keeps a valid file that appears just before the exclusive-create fallback opens it', async () => {
+    const h = await arrange(() => ({
+      ...fsPromises,
+      link: async () => { throw errorWith('EPERM'); },
+      open: async (file, flags, ...rest) => {
+        if (isPreferences(file) && flags === 'wx') await fsPromises.writeFile(file, validDoc(150));
+        return fsPromises.open(file, flags, ...rest);
+      },
+    }));
+    try {
+      expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 150 });
+      expect(await fsPromises.readFile(h.preferencesPath, 'utf8')).toBe(validDoc(150));
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('still seeds when the temp file cannot be removed afterwards', async () => {
+    const h = await arrange(() => ({
+      ...fsPromises,
+      rm: async (file, ...rest) => {
+        if (path.basename(String(file)).startsWith('preferences.json.tmp-')) throw errorWith('EBUSY');
+        return fsPromises.rm(file, ...rest);
+      },
+    }));
+    try {
+      await h.runtime.readSettingsFromDisk();
+      expect((await readJson(h.preferencesPath)).fields.fontSize.value).toBe(110);
+      expect(warned(h.warn, 'Failed to')).toHaveLength(0);
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('renames exactly once across 12 concurrent readers', async () => {
+    let renames = 0;
+    const h = await arrange(() => ({
+      ...fsPromises,
+      rename: async (from, to) => {
+        if (isPreferences(from)) renames += 1;
+        return fsPromises.rename(from, to);
+      },
+    }), zeroed);
+    try {
+      await Promise.all(Array.from({ length: 12 }, () => h.runtime.readSettingsFromDisk()));
+      expect(renames).toBe(1);
+      expect(await asidesOf(h.tempRoot)).toHaveLength(1);
+      expect(warned(h.warn, 'moved it to')).toHaveLength(1);
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('retries on the next read after a shared attempt rejected', async () => {
+    const h = await arrange(() => fsPromises, zeroed);
+    let failOnce = true;
+    h.warn.mockImplementation((message) => {
+      if (failOnce && String(message).includes('moved it to')) {
+        failOnce = false;
+        throw new Error('log sink failed');
+      }
+    });
+    try {
+      await expect(h.runtime.readSettingsFromDisk()).rejects.toThrow('log sink failed');
+      expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 110 });
+      expect((await readJson(h.preferencesPath)).fields.fontSize.value).toBe(110);
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('starts a new attempt for a later blank file and keeps every moved file', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    const h = await arrange(() => fsPromises, '\0'.repeat(10));
+    try {
+      await h.runtime.readSettingsFromDisk();
+      await fsPromises.rm(h.preferencesPath);
+      await fsPromises.writeFile(h.preferencesPath, '\0'.repeat(20));
+      await h.runtime.readSettingsFromDisk();
+
+      const asides = await asidesOf(h.tempRoot);
+      expect(asides).toHaveLength(2);
+      const contents = await Promise.all(asides.map((name) => fsPromises.readFile(path.join(h.tempRoot, name), 'utf8')));
+      expect(contents.sort()).toEqual(['\0'.repeat(10), '\0'.repeat(20)]);
+      expect((await readJson(h.preferencesPath)).fields.fontSize.value).toBe(110);
+    } finally {
+      now.mockRestore();
+      await h.done();
+    }
+  });
+
+  it('does not move a file another writer filled after the blank read', async () => {
+    let renames = 0;
+    let reads = 0;
+    const h = await arrange(() => ({
+      ...fsPromises,
+      readFile: async (file, ...rest) => {
+        // Reads of the file: the resolver's, the repair's, then the re-read before the move.
+        if (isPreferences(file)) {
+          reads += 1;
+          if (reads === 3) await fsPromises.writeFile(file, validDoc(150));
+        }
+        return fsPromises.readFile(file, ...rest);
+      },
+      rename: async (from, to) => {
+        if (isPreferences(from)) renames += 1;
+        return fsPromises.rename(from, to);
+      },
+    }), zeroed);
+    try {
+      expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 150 });
+      expect(renames).toBe(0);
+      expect(await asidesOf(h.tempRoot)).toEqual([]);
+    } finally {
+      await h.done();
+    }
+  });
+
+  it('re-reads without a warning when the moved file is gone by the time it is checked', async () => {
+    const h = await arrange(() => ({
+      ...fsPromises,
+      readFile: async (file, ...rest) => {
+        if (isAside(file)) {
+          // Another process moved the aside again.
+          await fsPromises.rm(file);
+          throw errorWith('ENOENT');
+        }
+        return fsPromises.readFile(file, ...rest);
+      },
+    }), zeroed);
+    try {
+      expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 110 });
+      expect((await readJson(h.preferencesPath)).fields.fontSize.value).toBe(110);
+      expect(warned(h.warn, 'could not be put back')).toHaveLength(0);
+      expect(warned(h.warn, 'moved it to')).toHaveLength(0);
+    } finally {
+      await h.done();
+    }
+  });
+
+  describe('when a moved file turns out to hold data and hard links are refused', () => {
+    const refusingLinks = (extra = {}) => () => ({
+      ...fsPromises,
+      rename: fillThenRename,
+      link: async (from, to) => {
+        if (isPreferences(to) && isAside(from)) throw errorWith('EPERM');
+        return fsPromises.link(from, to);
+      },
+      ...extra,
+    });
+
+    it('copies it back, flushes the copy and only then removes the moved file', async () => {
+      const order = [];
+      const h = await arrange(refusingLinks({
+        open: async (file, flags, ...rest) => {
+          const handle = await fsPromises.open(file, flags, ...rest);
+          if (!isPreferences(file) || flags !== 'r+') return handle;
+          return { sync: async () => { order.push('sync'); return handle.sync(); }, close: () => handle.close() };
+        },
+        rm: async (file, ...rest) => {
+          if (isAside(file)) order.push('rm-aside');
+          return fsPromises.rm(file, ...rest);
+        },
+      }), zeroed);
+      try {
+        expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 150 });
+        expect(await fsPromises.readFile(h.preferencesPath, 'utf8')).toBe(validDoc(150));
+        expect(await asidesOf(h.tempRoot)).toEqual([]);
+        expect(order).toEqual(['sync', 'rm-aside']);
+      } finally {
+        await h.done();
+      }
+    });
+
+    it('keeps the moved file when the copy cannot be flushed', async () => {
+      const h = await arrange(refusingLinks({
+        open: async (file, flags, ...rest) => {
+          if (isPreferences(file) && flags === 'r+') throw errorWith('EIO');
+          return fsPromises.open(file, flags, ...rest);
+        },
+      }), zeroed);
+      try {
+        expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 150 });
+        expect(await asidesOf(h.tempRoot)).toHaveLength(1);
+        expect(warned(h.warn, 'could not be flushed')).toHaveLength(1);
+      } finally {
+        await h.done();
+      }
+    });
+
+    it('never overwrites a file that appears just before the copy', async () => {
+      const h = await arrange(refusingLinks({
+        copyFile: async (from, to, mode) => {
+          if (isPreferences(to)) await fsPromises.writeFile(to, validDoc(160));
+          return fsPromises.copyFile(from, to, mode);
+        },
+      }), zeroed);
+      try {
+        expect(await h.runtime.readSettingsFromDisk()).toMatchObject({ fontSize: 160 });
+        expect(await fsPromises.readFile(h.preferencesPath, 'utf8')).toBe(validDoc(160));
+        const asides = await asidesOf(h.tempRoot);
+        expect(asides).toHaveLength(1);
+        expect(await fsPromises.readFile(path.join(h.tempRoot, asides[0]), 'utf8')).toBe(validDoc(150));
+        const message = String(warned(h.warn, 'could not be put back')[0]?.[0]);
+        expect(message).toContain(asides[0]);
+      } finally {
+        await h.done();
+      }
+    });
   });
 });
 

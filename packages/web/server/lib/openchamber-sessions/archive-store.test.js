@@ -74,9 +74,9 @@ describe('createArchiveStore', () => {
     const seen = [];
     const fsPromises = {
       ...fs.promises,
-      writeFile: async (target, payload, encoding) => {
+      open: async (target, ...rest) => {
         seen.push(readFile(dataDir));
-        return fs.promises.writeFile(target, payload, encoding);
+        return fs.promises.open(target, ...rest);
       },
     };
     const store = createArchiveStore({ dataDir, fsPromises });
@@ -94,7 +94,7 @@ describe('createArchiveStore', () => {
     const fsPromises = {
       ...fs.promises,
       readFile: async () => { throw unreadable; },
-      writeFile: async () => { throw new Error('must not write'); },
+      open: async () => { throw new Error('must not write'); },
     };
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -108,7 +108,7 @@ describe('createArchiveStore', () => {
     writeFile(dataDir, { ses_1: 7 });
     const store = createArchiveStore({ dataDir });
     await store.getAll();
-    const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+    const writeSpy = vi.spyOn(fs.promises, 'open');
     await expect(store.forget(['ses_9'])).resolves.toEqual({ failedIds: [] });
     expect(writeSpy).not.toHaveBeenCalled();
 

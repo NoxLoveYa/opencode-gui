@@ -1,3 +1,4 @@
+import { writeFileDurable } from '../shared/durable-write.js';
 import { isPlainObject, isString } from '../shared/guards.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -111,17 +112,7 @@ export function createContributorProvenanceStore({
   };
   const writeState = async (state) => {
     await fsImpl.mkdir(path.dirname(filePath), { recursive: true });
-    const temporary = `${filePath}.${crypto.randomUUID()}.tmp`;
-    try {
-      await fsImpl.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, {
-        encoding: 'utf8', mode: 0o600, flag: 'wx',
-      });
-      await fsImpl.chmod(temporary, 0o600);
-      await fsImpl.rename(temporary, filePath);
-    } catch (error) {
-      await fsImpl.rm(temporary, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, fsPromises: fsImpl });
   };
   const resolveIdentity = async (directory) => {
     const [repository, gitPaths] = await Promise.all([

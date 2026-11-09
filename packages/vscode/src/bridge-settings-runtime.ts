@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { preferencesFs } from './bridge-settings-fs';
+import { writeFileDurable } from './durable-write';
 import { BUILT_IN_SKILL_LOCATION, type DiscoveredSkill, type SkillScope, type SkillSource } from './opencodeConfig';
 import type { BridgeContext } from './bridge';
 import { filterPersistableSettingsChanges, withoutSecretSettings } from './settings-registry-gate';
@@ -14,6 +16,7 @@ import {
   buildPreferencesFields,
   flattenPreferences,
   instancePartOf,
+  isProfileSettingsKey,
   legacySettingsDocumentOf,
   profilePartOf,
   parsePreferencesDocument,
@@ -237,10 +240,100 @@ type PreferencesReadResult =
 let preferencesUnavailable = false;
 let preferencesUnavailableLogged = false;
 
-const readPreferencesFromDisk = (): PreferencesReadResult => {
+// A crash after a rename or copy whose data blocks were never flushed leaves a
+// file of NUL bytes (or no bytes at all). Nothing in it can be lost, so it is
+// the one unreadable shape that is repaired; any other content may still hold
+// the user's data.
+const isBlankPreferencesText = (raw: string): boolean => raw.replace(/[\0\s]/g, '') === '';
+
+const isExistsError = <T>(error: T): boolean => error instanceof Error && 'code' in error && error.code === 'EEXIST';
+
+const warnPreferencesUnavailableOnce = (message: string): void => {
+  if (preferencesUnavailableLogged) return;
+  preferencesUnavailableLogged = true;
+  console.warn(message);
+};
+
+// Puts back a moved file whose content turned out not to be blank. The link
+// never replaces: if the path was filled meanwhile, both files stay and the
+// warning names them. True when the path is settled and should be read again.
+const restoreMovedPreferences = (aside: string): boolean => {
+  let copied = false;
+  try {
+    try {
+      preferencesFs.linkSync(aside, OPENCHAMBER_PREFERENCES_PATH);
+    } catch (error) {
+      if (isExistsError(error)) throw error;
+      // No hard links on this filesystem (FAT, some network shares).
+      preferencesFs.copyFileSync(aside, OPENCHAMBER_PREFERENCES_PATH, fs.constants.COPYFILE_EXCL);
+      copied = true;
+    }
+  } catch (error) {
+    console.warn(`[OpenChamber] preferences.json was moved to ${path.basename(aside)} but turned out to hold data, and could not be put back (${error instanceof Error ? error.message : String(error)}); both files are kept, nothing was deleted.`);
+    return isExistsError(error);
+  }
+  // A hard link shares the moved file's data; a copy is new data that must
+  // reach the disk before the file it came from goes.
+  if (copied) {
+    try {
+      const fd = preferencesFs.openSync(OPENCHAMBER_PREFERENCES_PATH, 'r+');
+      try {
+        preferencesFs.fsyncSync(fd);
+      } finally {
+        preferencesFs.closeSync(fd);
+      }
+    } catch (error) {
+      console.warn(`[OpenChamber] preferences.json was put back from ${path.basename(aside)} but could not be flushed to disk (${error instanceof Error ? error.message : String(error)}); ${path.basename(aside)} is kept.`);
+      return true;
+    }
+  }
+  try {
+    preferencesFs.rmSync(aside, { force: true });
+  } catch {
+    // The file is back; an aside that will not go is only litter.
+  }
+  return true;
+};
+
+// Moves a blank preferences.json aside, never deleting it, so the file reads as
+// missing and is seeded from settings.json. The file is read again first, and
+// the moved file is checked afterwards: a writer in another window or the
+// server may have filled it in between, and that data goes back. The aside name
+// is unique, so the rename never replaces a file. True means the path is
+// settled and should be read again; false means the move failed and the file
+// stays in place and unreadable.
+const moveBlankPreferencesAside = (): boolean => {
+  const aside = `${OPENCHAMBER_PREFERENCES_PATH}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    if (!isBlankPreferencesText(preferencesFs.readFileSync(OPENCHAMBER_PREFERENCES_PATH, 'utf8'))) return true;
+    preferencesFs.renameSync(OPENCHAMBER_PREFERENCES_PATH, aside);
+  } catch (error) {
+    // Another window or the server moved it first.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    warnPreferencesUnavailableOnce(`[OpenChamber] Failed to move the empty preferences.json aside: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+  let stillBlank = false;
+  try {
+    stillBlank = isBlankPreferencesText(preferencesFs.readFileSync(aside, 'utf8'));
+  } catch (error) {
+    // Another process moved the aside again and owns it now.
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+    // Any other read failure leaves the content unknown, which counts as data.
+  }
+  if (!stillBlank) return restoreMovedPreferences(aside);
+  console.warn(`[OpenChamber] preferences.json was empty (likely zeroed by a crash); moved it to ${path.basename(aside)} and rebuilding it from settings.json.`);
+  return true;
+};
+
+const readPreferencesFromDisk = (canRepair = true): PreferencesReadResult => {
   let result: PreferencesReadResult;
   try {
-    const parsed = parsePreferencesDocument(fs.readFileSync(OPENCHAMBER_PREFERENCES_PATH, 'utf8'));
+    const raw = preferencesFs.readFileSync(OPENCHAMBER_PREFERENCES_PATH, 'utf8');
+    if (canRepair && isBlankPreferencesText(raw) && moveBlankPreferencesAside()) {
+      return readPreferencesFromDisk(false);
+    }
+    const parsed = parsePreferencesDocument(raw);
     result = parsed.ok ? { status: 'ok', fields: parsed.fields } : { status: 'unreadable', reason: parsed.reason };
   } catch (error) {
     // SAFETY: fs errors carry a `code` string; anything else is reported by message.
@@ -252,44 +345,61 @@ const readPreferencesFromDisk = (): PreferencesReadResult => {
 
   if (result.status === 'unreadable') {
     preferencesUnavailable = true;
-    if (!preferencesUnavailableLogged) {
-      preferencesUnavailableLogged = true;
-      console.warn(`[OpenChamber] ${OPENCHAMBER_PREFERENCES_PATH} could not be read (${result.reason}); profile settings are unavailable until the file is fixed or removed.`);
-    }
+    warnPreferencesUnavailableOnce(`[OpenChamber] ${OPENCHAMBER_PREFERENCES_PATH} could not be read (${result.reason}); profile settings are unavailable until the file is fixed or removed.`);
   } else {
     preferencesUnavailable = false;
+    // A read that works ends the outage, so the next one is announced again.
+    preferencesUnavailableLogged = false;
   }
   return result;
 };
 
-// Atomic write: tmp file + rename, so readers never see a partial JSON. Throws
-// on failure (after removing the tmp file) so a failed save is reported, not
-// mistaken for success.
+// Atomic write (`durable-write.ts`): readers never see a partial JSON, and a
+// crash leaves the old or the new file, never one of NUL bytes. Throws on
+// failure so a failed save is reported, not mistaken for success.
 const writeJsonAtomic = async (filePath: string, text: string): Promise<void> => {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await writeFileDurable(filePath, text);
+};
+
+const writeFileSyncedSync = (filePath: string, text: string, flags: string): void => {
+  const fd = preferencesFs.openSync(filePath, flags);
   try {
-    await fs.promises.writeFile(tmp, text, 'utf8');
-    await fs.promises.rename(tmp, filePath);
-  } catch (error) {
-    await fs.promises.rm(tmp, { force: true }).catch(() => {});
-    throw error;
+    preferencesFs.writeFileSync(fd, text, 'utf8');
+    preferencesFs.fsyncSync(fd);
+  } finally {
+    preferencesFs.closeSync(fd);
   }
 };
 
-const writeJsonAtomicSync = (filePath: string, text: string): void => {
+// Creates a file that does not exist yet and never replaces one: false when it
+// already exists, so a seed cannot overwrite what another window or the server
+// wrote first. The finished temp file is hard-linked into place; filesystems
+// without links (FAT, some network shares) fall back to an exclusive create.
+const writeJsonCreateOnlySync = (filePath: string, text: string): boolean => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs.writeFileSync(tmp, text, 'utf8');
-    fs.renameSync(tmp, filePath);
-  } catch (error) {
+    writeFileSyncedSync(tmp, text, 'w');
     try {
-      fs.rmSync(tmp, { force: true });
+      preferencesFs.linkSync(tmp, filePath);
+      return true;
+    } catch (error) {
+      if (isExistsError(error)) return false;
+    }
+    try {
+      writeFileSyncedSync(filePath, text, 'wx');
+      return true;
+    } catch (error) {
+      if (isExistsError(error)) return false;
+      throw error;
+    }
+  } finally {
+    try {
+      preferencesFs.rmSync(tmp, { force: true });
     } catch {
       // Nothing more to clean up.
     }
-    throw error;
   }
 };
 
@@ -301,12 +411,16 @@ const readSharedSettingsFromDisk = (): Record<string, unknown> => {
   let preferences = readPreferencesFromDisk();
   if (preferences.status === 'missing') {
     const seeded = seedPreferencesFrom(stripDerived(settings), Date.now());
+    preferences = { status: 'ok', fields: seeded };
     try {
-      writeJsonAtomicSync(OPENCHAMBER_PREFERENCES_PATH, serializePreferencesDocument(seeded));
+      // Another window or the server may have created the file first: its
+      // content wins, so read it back instead of using the seed.
+      if (!writeJsonCreateOnlySync(OPENCHAMBER_PREFERENCES_PATH, serializePreferencesDocument(seeded))) {
+        preferences = readPreferencesFromDisk(false);
+      }
     } catch (error) {
       console.warn('[OpenChamber] Failed to seed preferences.json:', error instanceof Error ? error.message : String(error));
     }
-    preferences = { status: 'ok', fields: seeded };
   }
   if (preferences.status !== 'ok') {
     return settings;
@@ -317,10 +431,12 @@ const readSharedSettingsFromDisk = (): Record<string, unknown> => {
 // Write a complete merged document: profile keys go to preferences.json (keeping
 // the stamps of unchanged values), everything else to settings.json. A key the
 // document no longer carries leaves whichever file owned it.
+// Returns the changed profile keys it refused to store (preferences.json is
+// unreadable); empty when everything landed.
 const writeSharedSettingsToDisk = async (
   document: Record<string, unknown>,
   changedKeys: Iterable<string> | null = null,
-): Promise<void> => {
+): Promise<string[]> => {
   const preferences = readPreferencesFromDisk();
   if (preferencesUnavailable) {
     console.warn('[OpenChamber] preferences.json is unreadable; profile settings were not saved.');
@@ -330,7 +446,7 @@ const writeSharedSettingsToDisk = async (
       ...instancePartOf(document),
       ...profilePartOf(onDisk),
     }, null, 2));
-    return;
+    return [...(changedKeys ?? [])].filter(isProfileSettingsKey);
   }
   const previousFields = preferences.status === 'ok' ? preferences.fields : {};
   // This host is always the VS Code surface kind: per-surface profile keys it
@@ -342,6 +458,7 @@ const writeSharedSettingsToDisk = async (
   await writeJsonAtomic(OPENCHAMBER_PREFERENCES_PATH, serializePreferencesDocument(nextFields));
   // The legacy copy of the profile's base values rides along for older builds.
   await writeJsonAtomic(OPENCHAMBER_SHARED_SETTINGS_PATH, JSON.stringify(legacySettingsDocumentOf(document, nextFields), null, 2));
+  return [];
 };
 
 // Fields derived from runtime context — never persisted, always recomputed.
@@ -410,7 +527,19 @@ export const readSettings = (ctx?: BridgeContext): Record<string, unknown> => {
   };
 };
 
-export const persistSettings = async (changes: Record<string, unknown>, ctx?: BridgeContext): Promise<Record<string, unknown>> => {
+// One save at a time: each reads the files, merges its changes and writes the
+// result back, so two overlapping saves would each start from the same old
+// state and the later write would drop the earlier one's keys. A failed save
+// rejects only its own caller; the next one still runs.
+let persistSettingsLock: Promise<unknown> = Promise.resolve();
+
+export const persistSettings = (changes: Record<string, unknown>, ctx?: BridgeContext): Promise<Record<string, unknown>> => {
+  const result = persistSettingsLock.then(() => persistSettingsUnlocked(changes, ctx));
+  persistSettingsLock = result.catch(() => {});
+  return result;
+};
+
+const persistSettingsUnlocked = async (changes: Parameters<typeof persistSettings>[0], ctx?: BridgeContext) => {
   const current = readSettings(ctx);
   // Only keys the settings registry knows as stored shared fields reach disk.
   const restChanges = filterPersistableSettingsChanges(stripDerived({ ...(changes || {}) }));
@@ -470,11 +599,18 @@ export const persistSettings = async (changes: Record<string, unknown>, ctx?: Br
   // Write to the shared files (canonical, cross-client); a failed write rejects
   // so the webview reports the save as failed. Also mirror into globalState so
   // older builds can still read recent values if a user downgrades the extension.
-  await writeSharedSettingsToDisk(persistable, [...Object.keys(restChanges), ...keysToClear]);
+  const droppedKeys = await writeSharedSettingsToDisk(persistable, [...Object.keys(restChanges), ...keysToClear]);
+  // A refused key is not stored anywhere: it falls back to what was there, in
+  // the mirror and in the answer, so no reader mistakes it for saved.
+  for (const key of droppedKeys) {
+    if (Object.prototype.hasOwnProperty.call(persistedCurrent, key)) persistable[key] = persistedCurrent[key];
+    else delete persistable[key];
+  }
   await ctx?.context?.globalState.update(SETTINGS_KEY, persistable);
 
-  // Return the same shape as readSettings (derived fields re-applied, secrets withheld).
-  return {
+  // Return the same shape as readSettings (derived fields re-applied, secrets
+  // withheld), plus the refused keys when there are any, as the web route does.
+  const response = {
     ...withoutSecretSettings(persistable),
     themeVariant: current.themeVariant,
     lastDirectory: current.lastDirectory,
@@ -483,4 +619,5 @@ export const persistSettings = async (changes: Record<string, unknown>, ctx?: Br
         ? persistable.opencodeBinary
         : undefined,
   };
+  return droppedKeys.length > 0 ? { ...response, droppedKeys } : response;
 };

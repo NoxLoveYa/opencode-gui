@@ -1,3 +1,4 @@
+import { writeFileDurable } from '../shared/durable-write.js';
 import { sessionKeyFor, withHashedSessionKeys } from './session-key.js';
 
 const PUSH_SUBSCRIPTIONS_VERSION = 1;
@@ -76,7 +77,7 @@ export const createPushRuntime = (deps) => {
 
   const writePushSubscriptionsToDisk = async (data) => {
     await fsPromises.mkdir(path.dirname(PUSH_SUBSCRIPTIONS_FILE_PATH), { recursive: true });
-    await fsPromises.writeFile(PUSH_SUBSCRIPTIONS_FILE_PATH, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await writeFileDurable(PUSH_SUBSCRIPTIONS_FILE_PATH, JSON.stringify(data, null, 2), { mode: 0o600, followSymlinks: true, fsPromises });
   };
 
   const persistPushSubscriptionUpdate = async (mutate) => {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import {
   MAX_COMMAND_LENGTH,
   MAX_VARIABLES,
@@ -114,11 +115,9 @@ export const createEnvironmentStore = ({ filePath }) => {
 
   const write = (document) => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const temporaryPath = `${filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     // rename keeps the temporary file's mode, so an older, wider file is
     // replaced by a 0600 one.
-    fs.renameSync(temporaryPath, filePath);
+    writeFileDurableSync(filePath, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
     cached = document;
   };
 

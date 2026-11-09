@@ -125,7 +125,7 @@ const deferred = <T>() => {
 };
 
 const registerSettingsApi = (
-  save: (changes: Partial<SettingsPayload>) => Promise<SettingsPayload>,
+  save: (changes: Partial<SettingsPayload>) => Promise<SettingsPayload & { droppedKeys?: string[] }>,
   load: () => Promise<{ settings: SettingsPayload; source: 'web' | 'vscode' }> = async () => ({ settings: {}, source: 'web' }),
 ): void => {
   registerRuntimeAPIs({
@@ -137,7 +137,7 @@ const registerSettingsApi = (
   } as unknown as RuntimeAPIs);
 };
 
-const registerSettingsSave = (save: (changes: Partial<SettingsPayload>) => Promise<SettingsPayload>): void => {
+const registerSettingsSave = (save: (changes: Partial<SettingsPayload>) => Promise<SettingsPayload & { droppedKeys?: string[] }>): void => {
   registerSettingsApi(save);
 };
 
@@ -1347,6 +1347,135 @@ describe('updateDesktopSettings', () => {
     await updateDesktopSettings({ fontSize: 18 });
 
     expect(saveCalls).toEqual([{ fontSize: 18 }, { fontSize: 18 }]);
+  });
+
+  test('a response that omits a sent key does not leave its value known, so the same write is sent again', async () => {
+    getWindow();
+    invalidateSettingsCache();
+    let applied = false;
+    const saveCalls: Array<Partial<SettingsPayload>> = [];
+    registerSettingsSave(async (changes) => {
+      saveCalls.push(changes);
+      // The server dropped the key the first time (unreadable preferences) and
+      // stores it once the file is repaired.
+      return applied ? { ...changes } : {};
+    });
+
+    await updateDesktopSettings({ defaultModel: 'provider/m19' });
+    applied = true;
+    await updateDesktopSettings({ defaultModel: 'provider/m19' });
+
+    expect(saveCalls).toEqual([{ defaultModel: 'provider/m19' }, { defaultModel: 'provider/m19' }]);
+  });
+
+  test('a response that omits a sent key over HTTP does not leave its value known either', async () => {
+    getWindow();
+    invalidateSettingsCache();
+    const previousFetch = globalThis.fetch;
+    const bodies: unknown[] = [];
+    const answerFromServer: typeof fetch = async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(bodies.length === 1 ? {} : { defaultModel: 'provider/m19' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+    try {
+      globalThis.fetch = answerFromServer;
+
+      await updateDesktopSettings({ defaultModel: 'provider/m19' });
+      await updateDesktopSettings({ defaultModel: 'provider/m19' });
+
+      expect(bodies).toEqual([{ defaultModel: 'provider/m19' }, { defaultModel: 'provider/m19' }]);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test('a sent key the server reports in droppedKeys resolves not ok, reports an error and is sent again', async () => {
+    getWindow();
+    invalidateSettingsCache();
+    const saveCalls: Array<Partial<SettingsPayload>> = [];
+    let dropped = true;
+    registerSettingsSave(async (changes) => {
+      saveCalls.push(changes);
+      return dropped ? { droppedKeys: ['defaultModel'] } : { ...changes };
+    });
+    const states: string[] = [];
+    const unsubscribe = subscribeToSettingsSaveState(() => {
+      states.push(getSettingsSaveState());
+    });
+
+    try {
+      const refused = await updateDesktopSettings({ defaultModel: 'provider/m20' });
+      expect(refused).toEqual({ ok: false });
+      expect(states).toEqual(['saving', 'error']);
+
+      dropped = false;
+      expect(await updateDesktopSettings({ defaultModel: 'provider/m20' })).toEqual({ ok: true });
+      expect(saveCalls).toEqual([{ defaultModel: 'provider/m20' }, { defaultModel: 'provider/m20' }]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test('droppedKeys over HTTP resolves not ok for the refused key only and stays out of the settings', async () => {
+    getWindow();
+    invalidateSettingsCache();
+    const previousFetch = globalThis.fetch;
+    const syncedSettings: SettingsPayload[] = [];
+    const handleSettingsSynced = (event: Event) => {
+      if (event instanceof CustomEvent) syncedSettings.push(event.detail.settings);
+    };
+    const answerFromServer: typeof fetch = async () => new Response(
+      JSON.stringify({ defaultAgent: 'build', droppedKeys: ['defaultModel'] }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+    getWindow().addEventListener('openchamber:settings-synced', handleSettingsSynced);
+    try {
+      globalThis.fetch = answerFromServer;
+
+      const result = await updateDesktopSettings({ defaultModel: 'provider/m21', defaultAgent: 'build' });
+
+      expect(result).toEqual({ ok: false });
+      expect(syncedSettings.at(-1)).toEqual({ defaultAgent: 'build' });
+      // The stored key is known to the server; the refused one is not.
+      expect(await updateDesktopSettings({ defaultAgent: 'build' })).toEqual({ ok: true });
+    } finally {
+      getWindow().removeEventListener('openchamber:settings-synced', handleSettingsSynced);
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test('a refused key whose old value the server echoes keeps that value known', async () => {
+    getWindow();
+    invalidateSettingsCache();
+    const saveCalls: Array<Partial<SettingsPayload>> = [];
+    registerSettingsApi(async (changes) => {
+      saveCalls.push(changes);
+      // Refused, and the document still carries the old value (legacy copy).
+      return { defaultModel: 'provider/old', droppedKeys: ['defaultModel'] };
+    }, async () => ({
+      settings: { defaultModel: 'provider/old', draftStartersCraftGoalAdded: true, draftStartersScheduleTaskAdded: true },
+      source: 'web',
+    }));
+    await syncDesktopSettings();
+
+    expect(await updateDesktopSettings({ defaultModel: 'provider/new' })).toEqual({ ok: false });
+    expect(saveCalls).toEqual([{ defaultModel: 'provider/new' }]);
+
+    // The server still holds the old value, so writing it back needs no request.
+    expect(await updateDesktopSettings({ defaultModel: 'provider/old' })).toEqual({ ok: true });
+    expect(saveCalls).toHaveLength(1);
+  });
+
+  test('a value the server normalised away is still a successful write', async () => {
+    getWindow();
+    invalidateSettingsCache();
+    registerSettingsSave(async () => ({}));
+
+    // An emptied model is stored as "unset": the key leaves the document.
+    expect(await updateDesktopSettings({ defaultModel: '' })).toEqual({ ok: true });
+    expect(getSettingsSaveState()).toBe('idle');
   });
 
   test('does not invent theme defaults when the authoritative snapshot omits theme fields', async () => {

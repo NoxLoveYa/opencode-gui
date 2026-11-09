@@ -19,12 +19,14 @@ const createMemoryBindingFs = () => {
     rm: async (file) => { files.delete(file); },
     writeFile: async (file, text) => { files.set(file, text); },
     rename: async (from, to) => { files.set(to, files.get(from)); files.delete(from); },
-    open: async (file) => {
+    open: async (file, flags) => {
+      // A read-only open is the flush of the directory after a write.
+      if (flags === 'r') return { sync: async () => {}, close: async () => {} };
       if (files.has(file)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
       files.set(file, '');
       const stat = { dev: 1n, ino: nextInode++ };
       lockStats.set(file, stat);
-      return { writeFile: async (text) => { files.set(file, text); }, stat: async () => stat, close: async () => {} };
+      return { writeFile: async (text) => { files.set(file, text); }, sync: async () => {}, stat: async () => stat, close: async () => {} };
     },
     lstat: async (file) => lockStats.get(file),
     unlink: async (file) => { files.delete(file); lockStats.delete(file); },

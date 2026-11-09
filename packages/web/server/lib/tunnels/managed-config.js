@@ -1,3 +1,5 @@
+import { writeFileDurable } from '../shared/durable-write.js';
+
 export const createManagedTunnelConfigRuntime = (deps) => {
   const {
     fsPromises,
@@ -51,7 +53,7 @@ export const createManagedTunnelConfigRuntime = (deps) => {
 
   const writeManagedRemoteTunnelConfigToDisk = async (data) => {
     await fsPromises.mkdir(path.dirname(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH), { recursive: true });
-    await fsPromises.writeFile(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await writeFileDurable(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, JSON.stringify(data, null, 2), { mode: 0o600, followSymlinks: true, fsPromises });
   };
 
   const migrateManagedRemoteTunnelConfigFromLegacyFile = async () => {

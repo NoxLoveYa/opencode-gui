@@ -1,8 +1,8 @@
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { isPlainObject, isString } from '../shared/guards.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
 import { withSourceControlFileLockSync } from '../source-control/file-lock.js';
 import { isProviderId } from '../source-control/provider-id.js';
 
@@ -176,17 +176,7 @@ export function createGitIdentityStore({
   const writeState = (state) => {
     const parsed = parseState(state);
     fsImpl.mkdirSync(path.dirname(filePath), { recursive: true });
-    const temporary = `${filePath}.${randomUUID()}.tmp`;
-    try {
-      fsImpl.writeFileSync(temporary, `${JSON.stringify(parsed, null, 2)}\n`, {
-        encoding: 'utf8', mode: 0o600, flag: 'wx',
-      });
-      fsImpl.chmodSync(temporary, 0o600);
-      fsImpl.renameSync(temporary, filePath);
-    } catch (error) {
-      try { fsImpl.rmSync(temporary, { force: true }); } catch {}
-      throw error;
-    }
+    writeFileDurableSync(filePath, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600, fs: fsImpl });
     return parsed;
   };
   const readState = () => {

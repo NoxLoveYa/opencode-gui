@@ -1,5 +1,6 @@
+import { writeFileDurable } from '../shared/durable-write.js';
 import { isPlainObject } from '../shared/guards.js';
-import crypto, { randomUUID } from 'node:crypto';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants as fsConstants } from 'node:fs';
@@ -200,15 +201,7 @@ export function createWorktreeBootstrapStore({
     const encoded = `${JSON.stringify(parseState(state, maxRecords), null, 2)}\n`;
     if (Buffer.byteLength(encoded) > maxBytes) throw capacityError();
     await fsImpl.mkdir(path.dirname(filePath), { recursive: true });
-    const temporary = `${filePath}.${randomUUID()}.tmp`;
-    try {
-      await fsImpl.writeFile(temporary, encoded, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-      await fsImpl.chmod(temporary, 0o600);
-      await fsImpl.rename(temporary, filePath);
-    } catch (error) {
-      await fsImpl.rm(temporary, { force: true }).catch(() => {});
-      throw error;
-    }
+    await writeFileDurable(filePath, encoded, { mode: 0o600, fsPromises: fsImpl });
   };
   const write = (directory, bootstrapState) => enqueue(async () => {
     const fingerprint = await directoryFingerprint(directory, fsImpl);

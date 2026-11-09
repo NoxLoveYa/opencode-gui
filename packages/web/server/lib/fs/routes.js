@@ -1556,7 +1556,14 @@ export const registerFsRoutes = (app, dependencies) => {
       // seeing an empty file during the O_TRUNC window of direct writeFile.
       const tmp = `${writePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
-        await fsPromises.writeFile(tmp, content, 'utf8');
+        // Flushed before the rename: a crash must not leave the user's file as zeros.
+        const handle = await fsPromises.open(tmp, 'w');
+        try {
+          await handle.writeFile(content, 'utf8');
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
         await fsPromises.rename(tmp, writePath);
       } catch (error) {
         await fsPromises.unlink(tmp).catch(() => {});

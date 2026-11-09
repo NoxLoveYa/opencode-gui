@@ -17,6 +17,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { writeFileDurable } from '../shared/durable-write.js';
 import {
   BUILTIN_CATEGORIES,
   DEFAULT_MIN_CONFIDENCE,
@@ -137,10 +138,7 @@ const readJsonFile = async (file, schema) => {
 
 const writeJsonFile = async (file, value, mode) => {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode });
-  await fs.rename(tmp, file);
-  if (mode) await fs.chmod(file, mode);
+  await writeFileDurable(file, `${JSON.stringify(value, null, 2)}\n`, { mode, fsPromises: fs });
 };
 
 const emptyFile = () => ({ version: FILE_VERSION });

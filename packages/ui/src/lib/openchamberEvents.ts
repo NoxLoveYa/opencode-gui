@@ -182,15 +182,24 @@ type LimitFailoverEvent = { type: 'limit-failover'; failover: z.infer<typeof lim
 /**
  * The server watches Claude usage while a Claude Agent session works, and moved
  * to another account before paid extra usage could start (`switched`), or found
- * every account over its threshold and stayed (`all-over`).
+ * every account over its threshold and stayed (`all-over`). It also moves when
+ * the live account's usage cannot be read, to an account known to be under
+ * (`switched` with `reason: 'unreadable'`, which carries no window or percent).
  */
-const claudeUsageGuardSchema = z.discriminatedUnion('kind', [
+const claudeUsageGuardSchema = z.union([
   z.object({
     kind: z.literal('switched'),
+    reason: z.undefined().optional(),
     fromAccount: z.string().nullable(),
     toAccount: z.string().min(1),
     window: z.enum(['5h', 'week']),
     percent: z.number(),
+  }),
+  z.object({
+    kind: z.literal('switched'),
+    reason: z.literal('unreadable'),
+    fromAccount: z.string().nullable(),
+    toAccount: z.string().min(1),
   }),
   z.object({ kind: z.literal('all-over'), window: z.enum(['5h', 'week']), percent: z.number() }),
   // The live account's usage cannot be read, or its login is not one that was saved: nothing is watching it.
@@ -281,6 +290,7 @@ type TrackedItemsChangedEvent = { type: 'tracked-items-changed'; records: z.infe
 
 const eventStreamReadySchema = z.object({ connectionId: z.string().min(1).optional() });
 const sourceControlActivitySchema = z.object({ directory: z.string().min(1) });
+const terminalExitedSchema = z.object({ sessionId: z.string().min(1), sequence: z.number().int().nonnegative() });
 // The host follows one isolated space's queue or permission modes again.
 const spaceStreamConnectedSchema = z.object({ spaceId: z.string().regex(/^[0-9a-f]{12}$/), status: z.literal('connected') });
 
@@ -290,7 +300,6 @@ const notificationPropertiesSchema = z.object({
   tag: z.string().optional(),
   kind: z.string().optional(),
   sessionId: z.string().optional(),
-const terminalExitedSchema = z.object({ sessionId: z.string().min(1), sequence: z.number().int().nonnegative() });
   directory: z.string().optional(),
   requireHidden: z.boolean().optional(),
   showWhenFocused: z.boolean().optional(),

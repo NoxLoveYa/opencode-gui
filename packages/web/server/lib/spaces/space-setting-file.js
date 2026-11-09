@@ -25,14 +25,22 @@ export const readSpaceSettingFile = async (filePath, schema) => {
   }
 };
 
-/** Atomically replaces a small setting; never opens the destination or an existing temporary file. */
+/** Atomically replaces a small setting; never opens the destination or an existing temporary file, and flushes the temporary file before the rename. */
 export const writeSpaceSettingFile = async (filePath, value, schema) => {
   const text = `${JSON.stringify(schema.parse(value))}\n`;
   if (Buffer.byteLength(text) > MAX_SETTING_BYTES) throw new Error('Space setting exceeds 1 KiB');
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = `${filePath}.${crypto.randomUUID()}.tmp`;
   try {
-    await fs.promises.writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
+    // An exclusive handle, flushed before the rename: a crash must not leave a
+    // file of zeros where the setting was.
+    const handle = await fs.promises.open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(text, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await fs.promises.rename(temporary, filePath);
   } finally {
     await fs.promises.rm(temporary, { force: true });

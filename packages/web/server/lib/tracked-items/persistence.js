@@ -1,5 +1,6 @@
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import { writeFileDurable } from '../shared/durable-write.js';
 import { isPlainRecord, parseTrackedItem } from './items.js';
 
 const FILE_NAME = 'tracked-items.json';
@@ -30,10 +31,7 @@ export function createTrackedItemsPersistence({ dataDir, fs = fsPromises }) {
       });
     },
     async save(items) {
-      // Temp file in the same directory, so the rename is atomic on one device.
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fs.writeFile(tmpPath, JSON.stringify({ version: VERSION, items }), 'utf8');
-      await fs.rename(tmpPath, filePath);
+      await writeFileDurable(filePath, JSON.stringify({ version: VERSION, items }), { fsPromises: fs });
     },
   };
 }

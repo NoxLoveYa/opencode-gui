@@ -46,10 +46,12 @@ describe('top-level projects in bindings', () => {
       mkdir: async () => {}, chmod: async () => {}, rm: async (file) => { files.delete(file); },
       writeFile: async (file, text) => { files.set(file, text); },
       rename: async (from, to) => { files.set(to, files.get(from)); files.delete(from); },
-      open: async (file) => {
+      open: async (file, flags) => {
+        // A read-only open is the flush of the directory after a write.
+        if (flags === 'r') return { sync: async () => {}, close: async () => {} };
         if (files.has(file)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
         files.set(file, '');
-        return { writeFile: async (text) => { files.set(file, text); }, stat: async () => ({ dev: 1n, ino: 1n }), close: async () => {} };
+        return { writeFile: async (text) => { files.set(file, text); }, sync: async () => {}, stat: async () => ({ dev: 1n, ino: 1n }), close: async () => {} };
       },
       lstat: async () => ({ dev: 1n, ino: 1n }), unlink: async (file) => { files.delete(file); },
     };

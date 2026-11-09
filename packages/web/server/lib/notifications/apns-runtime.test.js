@@ -12,8 +12,22 @@ const APNS_CONFIG = { keyId: 'KEY123', teamId: 'TEAM123', p8: P8, bundleId: 'com
 // In-memory fs so add-then-read reflects within a test.
 const createMemoryFs = () => {
   let content = null;
+  const writeFile = vi.fn(async (_path, data) => {
+    content = data;
+  });
   return {
     mkdir: vi.fn(async () => {}),
+    // The store writes through a handle, then renames the temp file into place.
+    open: vi.fn(async (file) => ({
+      writeFile: (data) => writeFile(file, data),
+      sync: async () => {},
+      close: async () => {},
+    })),
+    rename: vi.fn(async () => {}),
+    rm: vi.fn(async () => {}),
+    // The file is not a link: the store resolves it before writing.
+    realpath: vi.fn(async (file) => file),
+    writeFile,
     readFile: vi.fn(async () => {
       if (content == null) {
         const err = new Error('ENOENT');
@@ -21,9 +35,6 @@ const createMemoryFs = () => {
         throw err;
       }
       return content;
-    }),
-    writeFile: vi.fn(async (_path, data) => {
-      content = data;
     }),
   };
 };

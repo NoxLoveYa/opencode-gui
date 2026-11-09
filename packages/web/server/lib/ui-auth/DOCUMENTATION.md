@@ -21,6 +21,9 @@ Browsers key a cookie jar on the host only, never the port (RFC 6265). Two OpenC
 
 Compatibility: upgrading renames the cookie for any explicit-port host, so already-signed-in browser sessions must log in once again. No on-disk format changes.
 
+## Session signing secret
+The HMAC key of every UI session is `OPENCODE_JWT_SECRET` when set, else `<data dir>/jwt-secret`, written through `writeFileDurableSync` (mode `0600`, a symlinked file stays a link) so a crash cannot leave it zeroed. A file that holds only NUL bytes and whitespace (what a crash leaves behind) is treated as missing: a key of zeros would let anyone forge a session, so a new secret is generated, one warning is logged, and every existing UI session becomes invalid. Other contents are used as they are.
+
 ## URL auth tokens
 `POST /auth/url-token` returns `{ token, expiresAt, expiresIn }`. `expiresAt` is on the server's clock; `expiresIn` is the remaining lifetime in milliseconds. The shared UI places the expiry on its own clock from `expiresIn` (`packages/ui/src/lib/runtime-auth.ts`), because a phone whose clock is a minute ahead of the server otherwise treats every fresh token as expired and opens the terminal and event sockets without one (issue #5614). `expiresAt` stays for clients older than `expiresIn`.
 

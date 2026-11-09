@@ -9,6 +9,7 @@ const loadJose = () => {
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { writeFileDurableSync } from '../shared/durable-write.js';
 import { createUiPasskeys } from './ui-passkeys.js';
 import { sessionCookieNameForRequest } from './session-cookie.js';
 import { sourceControlProviderDescriptors } from '../source-control/provider-descriptors.js';
@@ -418,6 +419,9 @@ const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
   : path.join(os.homedir(), '.config', 'openchamber');
 const JWT_SECRET_FILE = path.join(OPENCHAMBER_DATA_DIR, 'jwt-secret');
 
+/** Nothing but NUL bytes and whitespace: what a crash leaves where a secret was. */
+const isBlankSecret = (value) => /^[\s\0]*$/.test(value);
+
 function getOrCreateJwtSecret() {
   const envSecret = process.env.OPENCODE_JWT_SECRET;
   if (envSecret) {
@@ -426,7 +430,11 @@ function getOrCreateJwtSecret() {
 
   try {
     if (fs.existsSync(JWT_SECRET_FILE)) {
-      return new TextEncoder().encode(fs.readFileSync(JWT_SECRET_FILE, 'utf8').trim());
+      const stored = fs.readFileSync(JWT_SECRET_FILE, 'utf8').trim();
+      if (!isBlankSecret(stored)) return new TextEncoder().encode(stored);
+      // A crash can leave the file as zeros; signing with a key of zeros would
+      // let anyone forge a session, so it is replaced below.
+      console.warn('[JWT] Secret file is empty or zeroed; generating a new one. Existing sessions are signed out.');
     }
   } catch (e) {
     console.warn('[JWT] Failed to read secret file:', e.message);
@@ -435,7 +443,7 @@ function getOrCreateJwtSecret() {
   const secret = crypto.randomBytes(32).toString('hex');
   try {
     fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
-    fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
+    writeFileDurableSync(JWT_SECRET_FILE, secret, { mode: 0o600, followSymlinks: true });
     console.log('[JWT] Generated and persisted new secret to', JWT_SECRET_FILE);
   } catch (e) {
     console.warn('[JWT] Failed to persist secret:', e.message);
@@ -452,7 +460,7 @@ function persistJwtSecret(secret) {
   }
 
   fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
-  fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
+  writeFileDurableSync(JWT_SECRET_FILE, secret, { mode: 0o600, followSymlinks: true });
   return new TextEncoder().encode(secret);
 }
 

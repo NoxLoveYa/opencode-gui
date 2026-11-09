@@ -16,6 +16,7 @@ import { readProjectStartCommand } from '../../web/server/lib/opencode/project-s
 import { resolveWorktreeDirectory } from './worktree-directory';
 import { readSubmoduleState, resolveGitPathTarget, type GitPathUnavailable, type GitSubmoduleState } from './gitPathDiff';
 import { parseGitRemoteListing, type GitRemote } from './gitRemoteListing';
+import { writeFileDurable } from './durable-write';
 import type { API as GitAPI, Repository, GitExtension, Status } from './git.d';
 
 let gitApi: GitAPI | null = null;
@@ -1259,7 +1260,7 @@ const ensureOpenCodeProjectId = async (primaryWorktree: string): Promise<string>
   }
 
   await fs.promises.mkdir(gitDir, { recursive: true }).catch(() => undefined);
-  await fs.promises.writeFile(idFile, projectId, 'utf8').catch(() => undefined);
+  await writeFileDurable(idFile, projectId, { followSymlinks: true }).catch(() => undefined);
   return projectId;
 };
 

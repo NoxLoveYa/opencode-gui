@@ -12,14 +12,14 @@ describe('managed remote tunnel config', () => {
     const runtime = createManagedTunnelConfigRuntime({
       fsPromises: {
         ...fsPromises,
-        writeFile: async (file, ...rest) => {
-          if (failNextWrite && file === configPath) {
+        open: async (file, ...rest) => {
+          if (failNextWrite && String(file).startsWith(`${configPath}.tmp-`)) {
             failNextWrite = false;
             const error = new Error('ENOSPC: no space left on device, write');
             error.code = 'ENOSPC';
             throw error;
           }
-          return fsPromises.writeFile(file, ...rest);
+          return fsPromises.open(file, ...rest);
         },
       },
       path,

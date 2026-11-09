@@ -1,3 +1,5 @@
+import { writeFileDurable } from '../shared/durable-write.js';
+
 const STORE_VERSION = 1;
 const PAIRING_ID_PREFIX = 'pair_';
 const SECRET_BYTES = 32;
@@ -155,10 +157,7 @@ export const createClientPairingRuntime = ({
 
   const writeStore = async (store) => {
     await fsPromises.mkdir(path.dirname(storePath), { recursive: true, mode: 0o700 });
-    await fsPromises.writeFile(storePath, JSON.stringify(normalizeStore(store), null, 2), { mode: 0o600 });
-    if (typeof fsPromises.chmod === 'function') {
-      await fsPromises.chmod(storePath, 0o600).catch(() => {});
-    }
+    await writeFileDurable(storePath, JSON.stringify(normalizeStore(store), null, 2), { mode: 0o600, followSymlinks: true, fsPromises });
   };
 
   const sweepExpiredSessionsFromStore = (store) => {

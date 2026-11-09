@@ -136,7 +136,7 @@ describe('GitHub auth credentials', () => {
     ]);
 
     await expect(firstStore.listAccounts()).resolves.toHaveLength(2);
-    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.includes('.tmp'))).toEqual([]);
   });
 
   it('does not lose concurrent credentials written by separate processes', async () => {
@@ -155,7 +155,7 @@ describe('GitHub auth credentials', () => {
 
     const store = auth.createGitHubAuthStore({ filePath });
     await expect(store.listAccounts()).resolves.toHaveLength(2);
-    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.endsWith('.tmp'))).toEqual([]);
+    expect((await fs.readdir(directory)).filter((name) => name.endsWith('.lock') || name.includes('.tmp'))).toEqual([]);
   });
 
   it('constructs Octokit for the exact requested credential', async () => {

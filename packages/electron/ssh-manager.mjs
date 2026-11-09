@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { replaceFileWithRetry } from './windows-file-replace.mjs';
+import { replaceFileWithRetry, syncDirectory, writeFileSynced } from './windows-file-replace.mjs';
 
 const LOCAL_HOST_ID = 'local';
 const DEFAULT_CONNECTION_TIMEOUT_SEC = 60;
@@ -111,8 +111,9 @@ const writeJsonRoot = async (settingsFilePath, root) => {
   // causing the next read-modify-write wipe the entire settings file.
   const tmp = `${settingsFilePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    await fsp.writeFile(tmp, JSON.stringify(root, null, 2));
+    await writeFileSynced(tmp, JSON.stringify(root, null, 2));
     await replaceFileWithRetry(tmp, settingsFilePath);
+    await syncDirectory(path.dirname(settingsFilePath));
   } catch (error) {
     await fsp.rm(tmp, { force: true }).catch(() => {});
     throw error;

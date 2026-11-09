@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { GUEST_STORAGE_KEY_MAX, GUEST_STORAGE_KEYS_MAX, GUEST_STORAGE_TOTAL_BYTES, GUEST_STORAGE_VALUE_BYTES } from '@openchamber/sdk';
+import { writeFileDurable } from '../shared/durable-write.js';
 
 const stores = new Map();
 const documentSchema = z.record(z.string().min(1).max(GUEST_STORAGE_KEY_MAX), z.json());
@@ -56,13 +56,7 @@ export const runGuestStorage = (persistPath, id, request, authorize) => {
     const data = JSON.stringify(Object.fromEntries(entries));
     if (entries.size > GUEST_STORAGE_KEYS_MAX || Buffer.byteLength(data) > GUEST_STORAGE_TOTAL_BYTES) throw new Error('Extension storage is full');
     await fs.mkdir(path.dirname(file), { recursive: true });
-    const temporary = `${file}.${randomUUID()}.tmp`;
-    try {
-      await fs.writeFile(temporary, data, { mode: 0o600, flag: 'wx' });
-      await fs.rename(temporary, file);
-    } finally {
-      await fs.rm(temporary, { force: true });
-    }
+    await writeFileDurable(file, data, { mode: 0o600, fsPromises: fs });
     return { storage: true, op: request.op };
   });
 };

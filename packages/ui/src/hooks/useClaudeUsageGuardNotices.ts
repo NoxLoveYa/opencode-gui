@@ -4,7 +4,9 @@
  * The guard runs on the server (`claude-accounts/usage-guard.js`) while a Claude
  * Agent session works. It moves the login to another account before the 5-hour
  * or weekly window reaches the user's threshold, which is where paid extra usage
- * starts, so a switch of every session's account should not happen unannounced.
+ * starts, or when it cannot read the live account's usage and another account is
+ * known to be under, so a switch of every session's account should not happen
+ * unannounced.
  * With no account left to move to it says so once, and so it does when it cannot
  * watch the live account at all (its usage cannot be read, or its login is not
  * one that was saved), because then nothing stands between the user and extra usage.
@@ -28,6 +30,10 @@ export const useClaudeUsageGuardNotices = (): void => {
     }
     if (guard.kind === 'all-over') {
       toast.warning(t('settings.providers.claude.usageGuard.toast.allOver'));
+      return;
+    }
+    if (guard.reason === 'unreadable') {
+      toast.info(t('settings.providers.claude.usageGuard.toast.switchedUnreadable', { account: guard.toAccount }));
       return;
     }
     toast.info(t('settings.providers.claude.usageGuard.toast.switched', {
